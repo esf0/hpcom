@@ -1,5 +1,8 @@
 import numpy as np
-from . import metrics
+
+
+def get_sq_of_average_power(points):
+    return np.sqrt(np.mean(np.power(np.absolute(points), 2)))
 
 
 def get_modulation_type_from_order(order):
@@ -164,11 +167,11 @@ def get_bits_from_constellation_points(points, type="qpsk"):
 def get_scale_coef_constellation(mod_type):
     # return np.max(np.absolute(get_constellation(mod_type)))
     # return np.sqrt(np.mean(np.power(np.absolute(get_constellation(mod_type)), 2)))
-    return metrics.get_sq_of_average_power(get_constellation(mod_type))
+    return get_sq_of_average_power(get_constellation(mod_type))
 
 
 def get_scale_coef(points, mod_type):
-    return get_scale_coef_constellation(mod_type) / metrics.get_sq_of_average_power(points)
+    return get_scale_coef_constellation(mod_type) / get_sq_of_average_power(points)
 
 
 def get_nearest_constellation_points_new(points, constellation):

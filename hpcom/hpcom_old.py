@@ -5,7 +5,7 @@ from ssfm_gpu import ssfm_gpu
 import tensorflow as tf
 
 from datetime import datetime
-from decorators import execution_time
+from .decorators import execution_time
 
 # from . import metrics
 # from . import modulation

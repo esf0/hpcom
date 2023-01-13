@@ -6,8 +6,7 @@ import tensorflow as tf
 
 from datetime import datetime
 
-from . import modulation
-from .modulation import get_n_bits, get_constellation_point, get_modulation_type_from_order, \
+from hpcom.modulation import get_n_bits, get_constellation_point, get_modulation_type_from_order, \
     get_scale_coef_constellation
 
 
@@ -77,8 +76,8 @@ def create_wdm_parameters(n_channels, p_ave_dbm, n_symbols, m_order, roll_off, u
     wdm['p_ave_dbm'] = p_ave_dbm
     wdm['n_symbols'] = n_symbols
     wdm['m_order'] = m_order
-    wdm['modulation_type'] = modulation.get_modulation_type_from_order(m_order)
-    wdm['n_bits_symbol'] = modulation.get_n_bits(wdm['modulation_type'])
+    wdm['modulation_type'] = get_modulation_type_from_order(m_order)
+    wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
     wdm['roll_off'] = roll_off
     wdm['upsampling'] = upsampling
     wdm['downsampling_rate'] = downsampling_rate
@@ -107,8 +106,8 @@ def get_default_wdm_parameters():
     wdm['sample_freq'] = int(wdm['symb_freq'] * wdm['upsampling'])
     wdm['np_filter'] = 2 ** 12
     wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # mW
-    wdm['modulation_type'] = modulation.get_modulation_type_from_order(wdm['m_order'])
-    wdm['n_bits_symbol'] = modulation.get_n_bits(wdm['modulation_type'])
+    wdm['modulation_type'] = get_modulation_type_from_order(wdm['m_order'])
+    wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
     wdm['seed'] = 'fixed'
 
     return wdm
@@ -133,39 +132,30 @@ def check_wdm_parameters(wdm):
 
 def generate_wdm_base(wdm, bits=None, points=None, seed=0):
 
-    symb_freq = int(wdm['symb_freq'])  # symbol frequency
-    sample_freq = int(symb_freq * wdm['upsampling'])  # sampling frequency used for the discrete simulation of analog signals
-    # dt = 1 / sample_freq
-    t_s = 1 / symb_freq  # symbol spacing
-    # bandwidth = 1 / (2 * t_s)  # Nyquist bandwidth of the base band signal
-    ups = int(t_s * sample_freq)  # Number of samples per second in the analog domain
-    # np_filter = 2 ** 12  # Filter length in symbols
+    sample_freq = int(wdm['symb_freq'] * wdm['upsampling'])  # sampling frequency
+    t_s = 1 / wdm['symb_freq']  # symbol spacing
 
     if wdm['seed'] == 'time':
         seed = datetime.now().timestamp()
     # else:
         # seed = seed
 
-    # modem = commpy.QAMModem(wdm['m_order'])
-    # n_bits = int(modem.num_bits_symbol * wdm['n_symbols'])
     if bits is None:
-        # bits = np.random.randint(0, 2, n_bits, int)  # Random bit stream
+        # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
         bits = gen_wdm_bit_sequence(wdm['n_symbols'], wdm['modulation_type'],
                                     n_carriers=1, seed=seed)
     else:
         if len(bits) != wdm['n_bits_symbol'] * wdm['n_symbols']:
             print('[generate_wdm_base] Error: length of input bits does not correspond to the parameters')
 
-    # gray = binarytoGray(bits, modem.num_bits_symbol)  # after gray code
     if points is None:
-        # points = modem.modulate(gray) / np.sqrt(modem.Es)  # Modulated baud points sQ = mod1.modulate(sB)/np.sqrt(mod1.Es)
         points = get_constellation_point(bits, type=wdm['modulation_type'])
         mod_type = get_modulation_type_from_order(wdm['m_order'])
         scale_constellation = np.sqrt(wdm['p_ave']) / get_scale_coef_constellation(mod_type)
         points = points * scale_constellation  # normilise power and scale to power
 
-    points_sequence = np.zeros(ups * wdm['n_symbols'], dtype='complex')
-    points_sequence[::ups] = points  # every ups samples, the value of sQ is inserted into the sequence
+    points_sequence = np.zeros(wdm['upsampling'] * wdm['n_symbols'], dtype='complex')
+    points_sequence[::wdm['upsampling']] = points  # every 'upsampling' samples, the value of points is inserted into the sequence
     points_sequence = tf.cast(points_sequence, tf.complex128)
 
     np_sequence = len(points_sequence)
@@ -181,7 +171,6 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
     additional = {
         'ft_filter_values': ft_filter_values,
         'bits': bits,
-        # 'gray': gray,
         'points': points
     }
 
@@ -322,6 +311,10 @@ def generate_wdm_optimise(wdm, points_x, points_y, ft_filter_values):
 
 # Demodulation of the signal (receiver side, Rx)
 
+def nonlinear_shift(points, points_orig):
+
+    return np.dot(np.transpose(np.conjugate(points_orig)), points_orig) / np.dot(np.transpose(np.conjugate(points_orig)), points)
+
 
 def cut_spectrum(spectrum, freq, bandwidth):
     if len(freq) != len(spectrum):
@@ -338,7 +331,10 @@ def cut_spectrum(spectrum, freq, bandwidth):
 def filter_shaper(signal, ft_filter_val):
 
     spectrum = tf.signal.fftshift(tf.signal.fft(signal))
-    return tf.signal.ifft(tf.signal.ifftshift(spectrum * ft_filter_val))
+    print('with ifftshift')
+    return tf.signal.ifftshift(tf.signal.ifft(tf.signal.ifftshift(spectrum * ft_filter_val)))
+    # print('no ifftshift')
+    # return tf.signal.ifft(tf.signal.ifftshift(spectrum * ft_filter_val))
 
     # return tf_convolution(signal, filter_val)
     # return np.convolve(signal, filter_val)
@@ -346,7 +342,10 @@ def filter_shaper(signal, ft_filter_val):
 
 def filter_shaper_spectral(spectrum, filter_val):
 
-    return tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val))
+    print('with ifftshift')
+    return tf.signal.ifftshift(tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val)))
+    # print('no ifftshift')
+    # return tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val))
 
 
 # def matched_filter_wdm(signal, filter_val, frequences, channel_bandwidth, n_channel):
@@ -426,6 +425,14 @@ def receiver(signal_x, signal_y, ft_filter_values, downsampling_rate):
     # print("Matched filter took", execution_time, "ms")
 
     return signal_x, signal_y
+
+
+def get_points_wdm(samples, wdm):
+
+    sample_step = int(wdm['upsampling'] / wdm['downsampling_rate'])
+    points = samples[::sample_step].numpy()
+
+    return points
 
 
 # Additional functions

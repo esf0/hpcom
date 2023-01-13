@@ -2,7 +2,7 @@ import numpy as np
 import scipy as sp
 
 # from . import modulation
-from .modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
+from hpcom.modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
     get_bits_from_constellation_points
 
 
