@@ -137,8 +137,8 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
 
     if wdm['seed'] == 'time':
         seed = datetime.now().timestamp()
-    # else:
-        # seed = seed
+    else:
+        seed = seed
 
     if bits is None:
         # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
@@ -152,7 +152,7 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
         points = get_constellation_point(bits, type=wdm['modulation_type'])
         mod_type = get_modulation_type_from_order(wdm['m_order'])
         scale_constellation = np.sqrt(wdm['p_ave']) / get_scale_coef_constellation(mod_type)
-        points = points * scale_constellation  # normilise power and scale to power
+        points = points * scale_constellation  # normalise power and scale to power
 
     points_sequence = np.zeros(wdm['upsampling'] * wdm['n_symbols'], dtype='complex')
     points_sequence[::wdm['upsampling']] = points  # every 'upsampling' samples, the value of points is inserted into the sequence
@@ -177,7 +177,7 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
     return tf.cast(signal, tf.complex128), additional
 
 
-def generate_wdm(wdm):
+def generate_wdm(wdm, bits=None, points=None):
 
     # n_symbols - Number of Symbols transmitted
     # m_order - Modulation Level
