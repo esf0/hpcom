@@ -137,11 +137,11 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
         dict: containing the points and BER and Q-value of the signal in the x and y component
 
         - 'points_x' -- an array of the points of the x component of the signal after processing
-        - 'points_orig_x' -- an array of the original points of the x component of the signal
+        - 'points_x_orig' -- an array of the original points of the x component of the signal
         - 'points_x_shifted' -- an array of the points of the x component of the signal after shifting
         - 'points_x_found' -- an array of the nearest constellation points of the x component of the signal
         - 'points_y' -- an array of the points of the y component of the signal after processing
-        - 'points_orig_y' -- an array of the original points of the y component of the signal
+        - 'points_y_orig' -- an array of the original points of the y component of the signal
         - 'points_y_shifted' -- an array of the points of the y component of the signal after shifting
         - 'points_y_found' -- an array of the nearest constellation points of the y component of the signal
         - 'ber_x' -- the bit error rate of the x component of the signal
@@ -161,8 +161,8 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
     # generate_wdm is for multichannel wdm
     # for only one channel we have to take [0] element in list
     # that will correspond to desired values
-    points_orig_x = wdm_info['points_x'][0]
-    points_orig_y = wdm_info['points_y'][0]
+    points_x_orig = wdm_info['points_x'][0]
+    points_y_orig = wdm_info['points_y'][0]
     ft_filter_values = wdm_info['ft_filter_values_x'][0]
     np_signal = len(signal_x)
 
@@ -196,10 +196,10 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
     points_x = samples_x[::sample_step].numpy()
     points_y = samples_y[::sample_step].numpy()
 
-    nl_shift_x = nonlinear_shift(points_x, points_orig_x)
+    nl_shift_x = nonlinear_shift(points_x, points_x_orig)
     points_x_shifted = points_x * nl_shift_x
 
-    nl_shift_y = nonlinear_shift(points_y, points_orig_y)
+    nl_shift_y = nonlinear_shift(points_y, points_y_orig)
     points_y_shifted = points_y * nl_shift_y
 
     mod_type = get_modulation_type_from_order(wdm['m_order'])
@@ -212,25 +212,25 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
           (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
     start_time = datetime.now()
-    ber_x = get_ber_by_points(points_orig_x * scale_constellation, points_x_found, mod_type)
-    ber_y = get_ber_by_points(points_orig_y * scale_constellation, points_y_found, mod_type)
+    ber_x = get_ber_by_points(points_x_orig * scale_constellation, points_x_found, mod_type)
+    ber_y = get_ber_by_points(points_y_orig * scale_constellation, points_y_found, mod_type)
     print("ber for x and y took",
           (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
     q_x = np.sqrt(2) * sp.special.erfcinv(2 * ber_x[0])
     q_y = np.sqrt(2) * sp.special.erfcinv(2 * ber_y[0])
 
-    # print("BER (x / y):", BER_est(wdm['m_order'], points_x_shifted, points_orig_x), BER_est(wdm['m_order'], points_y_shifted, points_orig_y))
+    # print("BER (x / y):", BER_est(wdm['m_order'], points_x_shifted, points_x_orig), BER_est(wdm['m_order'], points_y_shifted, points_y_orig))
     print("BER (x / y):", ber_x, ber_y) if verbose >= 1 else ...
     print("Q^2-factor (x / y):", q_x, q_y) if verbose >= 1 else ...
 
     result = {
         'points_x': points_x,
-        'points_orig_x': points_orig_x,
+        'points_x_orig': points_x_orig,
         'points_x_shifted': points_x_shifted,
         'points_x_found': points_x_found,
         'points_y': points_y,
-        'points_orig_y': points_orig_y,
+        'points_y_orig': points_y_orig,
         'points_y_shifted': points_y_shifted,
         'points_y_found': points_y_found,
         'ber_x': ber_x,
