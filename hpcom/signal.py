@@ -162,7 +162,7 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
 
     filter_values = rrcosfilter(np_sequence, wdm['roll_off'], t_s, sample_freq)
     filter_values = tf.cast(filter_values, tf.complex128)
-    print('filter_values_mean', np.mean(filter_values))
+    # print('filter_values_mean', np.mean(filter_values))
 
     ft_filter_values = tf.signal.fftshift(tf.signal.fft(filter_values))
     ft_filter_values = tf.cast(ft_filter_values, tf.complex128)
@@ -190,7 +190,7 @@ def generate_wdm(wdm):
         print('[generate_wdm] Error: wrong wdm parameters')
         return -1
 
-    start_time = datetime.now()
+    # start_time = datetime.now()
 
     symb_freq = int(wdm['symb_freq'])  # symbol frequency
     sample_freq = int(symb_freq * wdm['upsampling'])  # sampling frequency used for the discrete simulation of analog signals
@@ -252,10 +252,10 @@ def generate_wdm(wdm):
             ft_filter_values_x.append(additional_x['ft_filter_values'])
             ft_filter_values_y.append(additional_y['ft_filter_values'])
 
-    end_time = datetime.now()
-    time_diff = (end_time - start_time)
-    execution_time = time_diff.total_seconds() * 1000
-    print("Signal generation took", execution_time, "ms")
+    # end_time = datetime.now()
+    # time_diff = (end_time - start_time)
+    # execution_time = time_diff.total_seconds() * 1000
+    # print("Signal generation took", execution_time, "ms")
 
     additional_all = {
         'ft_filter_values_x': ft_filter_values_x,
@@ -331,7 +331,7 @@ def cut_spectrum(spectrum, freq, bandwidth):
 def filter_shaper(signal, ft_filter_val):
 
     spectrum = tf.signal.fftshift(tf.signal.fft(signal))
-    print('with ifftshift')
+    # print('with ifftshift')
     return tf.signal.ifftshift(tf.signal.ifft(tf.signal.ifftshift(spectrum * ft_filter_val)))
     # print('no ifftshift')
     # return tf.signal.ifft(tf.signal.ifftshift(spectrum * ft_filter_val))
@@ -342,7 +342,7 @@ def filter_shaper(signal, ft_filter_val):
 
 def filter_shaper_spectral(spectrum, filter_val):
 
-    print('with ifftshift')
+    # print('with ifftshift')
     return tf.signal.ifftshift(tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val)))
     # print('no ifftshift')
     # return tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val))
@@ -386,7 +386,7 @@ def matched_filter_spectral(spectrum, filter_val):
 
 def receiver_wdm(signal, ft_filter_values, wdm):
 
-    start_time = datetime.now()
+    # start_time = datetime.now()
     # signals_decoded = []
 
     # nt = len(signal)
@@ -402,10 +402,10 @@ def receiver_wdm(signal, ft_filter_values, wdm):
     for k in range(wdm['n_channels']):
         signals_decoded[k] = signals_decoded[k][::wdm['downsampling_rate']]
 
-    end_time = datetime.now()
-    time_diff = (end_time - start_time)
-    execution_time = time_diff.total_seconds() * 1000
-    print("Matched filter took", execution_time, "ms")
+    # end_time = datetime.now()
+    # time_diff = (end_time - start_time)
+    # execution_time = time_diff.total_seconds() * 1000
+    # print("Matched filter took", execution_time, "ms")
 
     return signals_decoded
 

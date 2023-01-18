@@ -4,7 +4,7 @@ import scipy as sp
 from datetime import datetime
 
 from .signal import create_wdm_parameters, generate_wdm, generate_wdm_optimise, receiver, receiver_wdm,\
-    nonlinear_shift, dbm_to_mw
+    nonlinear_shift, dbm_to_mw, get_default_wdm_parameters
 from .modulation import get_modulation_type_from_order, get_scale_coef_constellation, \
     get_nearest_constellation_points_unscaled
 from .metrics import get_ber_by_points, get_ber_by_points_ultimate, get_energy, get_average_power, get_evm_ultimate
@@ -114,35 +114,80 @@ def full_line_model_default():
 
     # Specify signal parameters
 
-    wdm = create_wdm_parameters()
+    wdm = get_default_wdm_parameters()
 
     return full_line_model(channel, wdm)
 
 
-def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, points_y=None):
+def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, points_y=None, verbose=0):
+    """
+    Simulates a full optical transmission line, including generation of a wavelength division multiplexed (WDM)
+    signal with one WDM channel, propagation through a specified channel, and detection at the receiver.
+
+    Args:
+        channel: object, channel through which the WDM signal is passed
+        wdm: dict, contains information about the WDM signal
+        bits_x: int, number of bits in the x component of the signal (optional)
+        bits_y: int, number of bits in the y component of the signal (optional)
+        points_x: array, points of the x component of the signal (optional)
+        points_y: array, points of the y component of the signal (optional)
+        verbose: int: level of system messages. 0 -- nothing, 1 -- +metrics, 2 -- +time, 3 -- +everything (optional)
+
+    Returns:
+        dict: containing the points and BER and Q-value of the signal in the x and y component
+
+        - 'points_x' -- an array of the points of the x component of the signal after processing
+        - 'points_orig_x' -- an array of the original points of the x component of the signal
+        - 'points_x_shifted' -- an array of the points of the x component of the signal after shifting
+        - 'points_x_found' -- an array of the nearest constellation points of the x component of the signal
+        - 'points_y' -- an array of the points of the y component of the signal after processing
+        - 'points_orig_y' -- an array of the original points of the y component of the signal
+        - 'points_y_shifted' -- an array of the points of the y component of the signal after shifting
+        - 'points_y_found' -- an array of the nearest constellation points of the y component of the signal
+        - 'ber_x' -- the bit error rate of the x component of the signal
+        - 'ber_y' -- the bit error rate of the y component of the signal
+        - 'q_x' -- the Q-value of the x component of the signal
+        - 'q_y' -- the Q-value of the y component of the signal
+
+    """
+
+    if wdm['n_channels'] > 1:
+        raise Exception('Wrong number of WDM channels for [full_line_model] use [full_line_model_wdm]')
 
     sample_freq = int(wdm['symb_freq'] * wdm['upsampling'])
     dt = 1. / sample_freq
 
     signal_x, signal_y, wdm_info = generate_wdm(wdm)
-    points_orig_x = wdm_info['points_x']
-    points_orig_y = wdm_info['points_y']
-    ft_filter_values = wdm_info['ft_filter_values']
+    # generate_wdm is for multichannel wdm
+    # for only one channel we have to take [0] element in list
+    # that will correspond to desired values
+    points_orig_x = wdm_info['points_x'][0]
+    points_orig_y = wdm_info['points_y'][0]
+    ft_filter_values = wdm_info['ft_filter_values_x'][0]
     np_signal = len(signal_x)
 
     e_signal_x = get_energy(signal_x, dt * np_signal)
     e_signal_y = get_energy(signal_y, dt * np_signal)
+    p_signal_x = get_average_power(signal_x, dt)
+    p_signal_y = get_average_power(signal_y, dt)
+    p_signal_correct = dbm_to_mw(wdm['p_ave_dbm']) / 1000 / wdm['n_polarisations'] * wdm['n_channels']
+    print("Average signal power (x / y): "
+          "%1.7f / %1.7f (has to be close to %1.7f)" % (
+          p_signal_x, p_signal_y, p_signal_correct)) if verbose >= 3 else ...
 
-    signal_x, signal_y = propagate_manakov(channel, signal_x, signal_y, sample_freq)
+    start_time = datetime.now()
+    signal_x, signal_y = propagate_manakov(channel, signal_x, signal_y, wdm['sample_freq'])
+    print("propagation took", (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
     e_signal_x_prop = get_energy(signal_x, dt * np_signal)
     e_signal_y_prop = get_energy(signal_y, dt * np_signal)
 
-    # print("Signal energy before propagation (x / y):", e_signal_x, e_signal_y)
-    # print("Signal energy after propagation (x / y):", e_signal_x_prop, e_signal_y_prop)
-    # print("Signal energy difference (x / y):",
-    #       np.absolute(e_signal_x - e_signal_x_prop),
-    #       np.absolute(e_signal_y - e_signal_y_prop))
+    if verbose >= 3:
+        print("Signal energy before propagation (x / y):", e_signal_x, e_signal_y)
+        print("Signal energy after propagation (x / y):", e_signal_x_prop, e_signal_y_prop)
+        print("Signal energy difference (x / y):",
+              np.absolute(e_signal_x - e_signal_x_prop),
+              np.absolute(e_signal_y - e_signal_y_prop))
 
     samples_x, samples_y = receiver(signal_x, signal_y, ft_filter_values, wdm['downsampling_rate'])
     samples_x, samples_y = dispersion_compensation_manakov(channel, samples_x, samples_y, dt * wdm['downsampling_rate'])
@@ -158,16 +203,26 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
     points_y_shifted = points_y * nl_shift_y
 
     mod_type = get_modulation_type_from_order(wdm['m_order'])
-    scale_constellation = get_scale_coef_constellation(mod_type) / np.sqrt(wdm['p_ave'] / 2)
+    scale_constellation = get_scale_coef_constellation(mod_type) / np.sqrt(wdm['p_ave'] / wdm['n_polarisations'])
 
+    start_time = datetime.now()
     points_x_found = get_nearest_constellation_points_unscaled(points_x_shifted, mod_type)
     points_y_found = get_nearest_constellation_points_unscaled(points_y_shifted, mod_type)
+    print("search x and y points took",
+          (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
+    start_time = datetime.now()
     ber_x = get_ber_by_points(points_orig_x * scale_constellation, points_x_found, mod_type)
     ber_y = get_ber_by_points(points_orig_y * scale_constellation, points_y_found, mod_type)
+    print("ber for x and y took",
+          (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
+
+    q_x = np.sqrt(2) * sp.special.erfcinv(2 * ber_x[0])
+    q_y = np.sqrt(2) * sp.special.erfcinv(2 * ber_y[0])
 
     # print("BER (x / y):", BER_est(wdm['m_order'], points_x_shifted, points_orig_x), BER_est(wdm['m_order'], points_y_shifted, points_orig_y))
-    # print("BER (x / y):", ber_x, ber_y)
+    print("BER (x / y):", ber_x, ber_y) if verbose >= 1 else ...
+    print("Q^2-factor (x / y):", q_x, q_y) if verbose >= 1 else ...
 
     result = {
         'points_x': points_x,
@@ -177,14 +232,50 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
         'points_y': points_y,
         'points_orig_y': points_orig_y,
         'points_y_shifted': points_y_shifted,
-        'points_y_found': points_y_found
+        'points_y_found': points_y_found,
+        'ber_x': ber_x,
+        'ber_y': ber_y,
+        'q_x': q_x,
+        'q_y': q_y
     }
 
     return result
 
 
 # @execution_time
-def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None, points_x=None, points_y=None, channels_type='all'):
+def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None,
+                        points_x=None, points_y=None, channels_type='all', verbose=0):
+    """
+        Simulates a full optical transmission line, including generation of a wavelength division multiplexed (WDM)
+        signal with multiple WDM channels, propagation through a specified channel, and detection at the receiver.
+
+        Args:
+            channel: object, channel through which the WDM signal is passed
+            wdm: dict, contains information about the WDM signal
+            bits_x: int, number of bits in the x component of the signal (optional)
+            bits_y: int, number of bits in the y component of the signal (optional)
+            points_x: array, points of the x component of the signal (optional)
+            points_y: array, points of the y component of the signal (optional)
+            channels_type: str: 'all' -- calculate metrics for all channels, 'middle' -- calculate only for middle (optional)
+            verbose: int: level of system messages. 0 -- nothing, 1 -- +metrics, 2 -- +time, 3 -- +everything (optional)
+
+        Returns:
+            dict: containing the points and BER and Q-value of the signal in the x and y component
+
+            - 'points_x' -- an array of the points of the x component of the signal after processing
+            - 'points_orig_x' -- an array of the original points of the x component of the signal
+            - 'points_x_shifted' -- an array of the points of the x component of the signal after shifting
+            - 'points_x_found' -- an array of the nearest constellation points of the x component of the signal
+            - 'points_y' -- an array of the points of the y component of the signal after processing
+            - 'points_orig_y' -- an array of the original points of the y component of the signal
+            - 'points_y_shifted' -- an array of the points of the y component of the signal after shifting
+            - 'points_y_found' -- an array of the nearest constellation points of the y component of the signal
+            - 'ber_x' -- the bit error rate of the x component of the signal
+            - 'ber_y' -- the bit error rate of the y component of the signal
+            - 'q_x' -- the Q-value of the x component of the signal
+            - 'q_y' -- the Q-value of the y component of the signal
+
+        """
 
     dt = 1. / wdm['sample_freq']
 
@@ -196,34 +287,34 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None, points_x=None, p
     ft_filter_values = wdm_info['ft_filter_values_x']
     np_signal = len(signal_x)
 
-    # e_signal_x = get_energy(signal_x, dt * np_signal)
-    # e_signal_y = get_energy(signal_y, dt * np_signal)
+    e_signal_x = get_energy(signal_x, dt * np_signal)
+    e_signal_y = get_energy(signal_y, dt * np_signal)
     p_signal_x = get_average_power(signal_x, dt)
     p_signal_y = get_average_power(signal_y, dt)
-    p_signal_correct = dbm_to_mw(wdm['p_ave_dbm']) / 1000 / 2 * wdm['n_channels']
-    print("Average signal power (x / y): %1.7f / %1.7f (has to be close to %1.7f)" % (p_signal_x, p_signal_y, p_signal_correct))
+    p_signal_correct = dbm_to_mw(wdm['p_ave_dbm']) / 1000 / wdm['n_polarisations'] * wdm['n_channels']
+    print("Average signal power (x / y): "
+          "%1.7f / %1.7f (has to be close to %1.7f)" % (p_signal_x, p_signal_y, p_signal_correct)) if verbose >= 3 else ...
 
     start_time = datetime.now()
     signal_x, signal_y = propagate_manakov(channel, signal_x, signal_y, wdm['sample_freq'])
-    end_time = datetime.now()
-    time_diff = (end_time - start_time)
-    execution_time = time_diff.total_seconds() * 1000
-    print("propagation took", execution_time, "ms")
+    print("propagation took", (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
-    # e_signal_x_prop = get_energy(signal_x, dt * np_signal)
-    # e_signal_y_prop = get_energy(signal_y, dt * np_signal)
+    e_signal_x_prop = get_energy(signal_x, dt * np_signal)
+    e_signal_y_prop = get_energy(signal_y, dt * np_signal)
 
-    # print("Signal energy before propagation (x / y):", e_signal_x, e_signal_y)
-    # print("Signal energy after propagation (x / y):", e_signal_x_prop, e_signal_y_prop)
-    # print("Signal energy difference (x / y):",
-    #       np.absolute(e_signal_x - e_signal_x_prop),
-    #       np.absolute(e_signal_y - e_signal_y_prop))
+    if verbose >= 3:
+        print("Signal energy before propagation (x / y):", e_signal_x, e_signal_y)
+        print("Signal energy after propagation (x / y):", e_signal_x_prop, e_signal_y_prop)
+        print("Signal energy difference (x / y):",
+              np.absolute(e_signal_x - e_signal_x_prop),
+              np.absolute(e_signal_y - e_signal_y_prop))
 
     signal_x, signal_y = dispersion_compensation_manakov(channel, signal_x, signal_y, 1. / wdm['sample_freq'])
 
     samples_x = receiver_wdm(signal_x, ft_filter_values, wdm)
     samples_y = receiver_wdm(signal_y, ft_filter_values, wdm)
 
+    # TODO: make CDC after receiver
     # for k in range(wdm['n_channels']):
     #     samples_x[k], samples_y[k] = dispersion_compensation(channel, samples_x[k], samples_y[k], wdm['downsampling_rate'] / wdm['sample_freq'])
 
@@ -253,7 +344,7 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None, points_x=None, p
             points_y_shifted.append(points_y[k] * nl_shift_y)
 
         mod_type = get_modulation_type_from_order(wdm['m_order'])
-        scale_constellation = get_scale_coef_constellation(mod_type) / np.sqrt(wdm['p_ave'] / 2)
+        scale_constellation = get_scale_coef_constellation(mod_type) / np.sqrt(wdm['p_ave'] / wdm['n_polarisations'])
 
         points_x_found = []
         points_y_found = []
@@ -263,27 +354,25 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None, points_x=None, p
         q_x = []
         q_y = []
         for k in range(wdm['n_channels']):
-            start_time = datetime.now()
-            points_x_found.append(get_nearest_constellation_points_unscaled(points_x_shifted[k], mod_type))
-            print("search x took", (datetime.now() - start_time).total_seconds() * 1000, "ms")
+            print('WDM channel', k) if verbose >= 1 else ...
 
             start_time = datetime.now()
+            points_x_found.append(get_nearest_constellation_points_unscaled(points_x_shifted[k], mod_type))
             points_y_found.append(get_nearest_constellation_points_unscaled(points_y_shifted[k], mod_type))
-            print("search y took", (datetime.now() - start_time).total_seconds() * 1000, "ms")
+            print("search x and y points took",
+                  (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
             start_time = datetime.now()
             ber_x.append(get_ber_by_points(points_x_orig[k] * scale_constellation, points_x_found[k], mod_type))
-            print("ber x took", (datetime.now() - start_time).total_seconds() * 1000, "ms")
-
-            start_time = datetime.now()
             ber_y.append(get_ber_by_points(points_y_orig[k] * scale_constellation, points_y_found[k], mod_type))
-            print("ber y took", (datetime.now() - start_time).total_seconds() * 1000, "ms")
+            print("ber for x and y took",
+                  (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
             q_x.append(np.sqrt(2) * sp.special.erfcinv(2 * ber_x[k][0]))
             q_y.append(np.sqrt(2) * sp.special.erfcinv(2 * ber_y[k][0]))
 
-            print("BER (x / y):", ber_x[k], ber_y[k])
-            print(r'Q^2-factor (x / y):', q_x[k], q_y[k])
+            print("BER (x / y):", ber_x[k], ber_y[k]) if verbose >= 1 else ...
+            print(r'Q^2-factor (x / y):', q_x[k], q_y[k]) if verbose >= 1 else ...
 
     elif channels_type == 'middle':
 
@@ -302,15 +391,25 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None, points_x=None, p
         points_y_shifted = points_y * nl_shift_y
 
         mod_type = get_modulation_type_from_order(wdm['m_order'])
-        scale_constellation = get_scale_coef_constellation(mod_type) / np.sqrt(wdm['p_ave'] / 2)
+        scale_constellation = get_scale_coef_constellation(mod_type) / np.sqrt(wdm['p_ave'] / wdm['n_polarisations'])
 
+        start_time = datetime.now()
         points_x_found = get_nearest_constellation_points_unscaled(points_x_shifted, mod_type)
         points_y_found = get_nearest_constellation_points_unscaled(points_y_shifted, mod_type)
+        print("search x and y points took",
+              (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
+        start_time = datetime.now()
         ber_x = get_ber_by_points(points_x_orig[k] * scale_constellation, points_x_found, mod_type)
         ber_y = get_ber_by_points(points_y_orig[k] * scale_constellation, points_y_found, mod_type)
+        print("ber for x and y took",
+              (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
+
         q_x = np.sqrt(2) * sp.special.erfcinv(2 * ber_x[0])
         q_y = np.sqrt(2) * sp.special.erfcinv(2 * ber_y[0])
+
+        print("BER (x / y):", ber_x, ber_y) if verbose >= 1 else ...
+        print(r'Q^2-factor (x / y):', q_x, q_y) if verbose >= 1 else ...
 
     else:
         print('Error[full_line_model_wdm]: no such type of channels_type variable')
