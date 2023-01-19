@@ -158,7 +158,10 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
     sample_freq = int(wdm['symb_freq'] * wdm['upsampling'])
     dt = 1. / sample_freq
 
-    signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=(bits_x, bits_y), points=(points_x, points_y))
+    bits = None if bits_x is None or bits_y is None else bits = (bits_x, bits_y)
+    points = None if points_x is None or points_y is None else bits = (points_x, points_y)
+
+    signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=bits, points=points)
     # generate_wdm is for multichannel wdm
     # for only one channel we have to take [0] element in list
     # that will correspond to desired values
@@ -280,7 +283,10 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None,
 
     dt = 1. / wdm['sample_freq']
 
-    signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=(bits_x, bits_y), points=(points_x, points_y))
+    bits = None if bits_x is None or bits_y is None else bits = (bits_x, bits_y)
+    points = None if points_x is None or points_y is None else bits = (points_x, points_y)
+
+    signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=bits, points=points)
 
     points_x_orig = wdm_info['points_x']
     points_y_orig = wdm_info['points_y']
