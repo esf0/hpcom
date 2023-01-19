@@ -120,7 +120,7 @@ def full_line_model_default():
     return full_line_model(channel, wdm)
 
 
-def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, points_y=None, verbose=0):
+def full_line_model(channel, wdm, bits=None, points=None, verbose=0):
     """
     Simulates a full optical transmission line, including generation of a wavelength division multiplexed (WDM)
     signal with one WDM channel, propagation through a specified channel, and detection at the receiver.
@@ -128,10 +128,8 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
     Args:
         channel: object, channel through which the WDM signal is passed
         wdm: dict, contains information about the WDM signal
-        bits_x: int, number of bits in the x component of the signal (optional)
-        bits_y: int, number of bits in the y component of the signal (optional)
-        points_x: array, points of the x component of the signal (optional)
-        points_y: array, points of the y component of the signal (optional)
+        bits_x: tuple, number of bits in the x (and y) component of the signal (optional)
+        points_x: tuple, points of the x (and y) component of the signal (optional)
         verbose: int: level of system messages. 0 -- nothing, 1 -- +metrics, 2 -- +time, 3 -- +everything (optional)
 
     Returns:
@@ -157,9 +155,6 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
 
     sample_freq = int(wdm['symb_freq'] * wdm['upsampling'])
     dt = 1. / sample_freq
-
-    bits = None if bits_x is None or bits_y is None else bits = (bits_x, bits_y)
-    points = None if points_x is None or points_y is None else bits = (points_x, points_y)
 
     signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=bits, points=points)
     # generate_wdm is for multichannel wdm
@@ -247,8 +242,7 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
 
 
 # @execution_time
-def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None,
-                        points_x=None, points_y=None, channels_type='all', verbose=0):
+def full_line_model_wdm(channel, wdm, bits=None, points=None, channels_type='all', verbose=0):
     """
         Simulates a full optical transmission line, including generation of a wavelength division multiplexed (WDM)
         signal with multiple WDM channels, propagation through a specified channel, and detection at the receiver.
@@ -256,10 +250,8 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None,
         Args:
             channel: object, channel through which the WDM signal is passed
             wdm: dict, contains information about the WDM signal
-            bits_x: int, number of bits in the x component of the signal (optional)
-            bits_y: int, number of bits in the y component of the signal (optional)
-            points_x: array, points of the x component of the signal (optional)
-            points_y: array, points of the y component of the signal (optional)
+            bits: tuple, number of bits in the x (and y) component of the signal (optional)
+            points: tuple, points of the x (and y) component of the signal (optional)
             channels_type: str: 'all' -- calculate metrics for all channels, 'middle' -- calculate only for middle (optional)
             verbose: int: level of system messages. 0 -- nothing, 1 -- +metrics, 2 -- +time, 3 -- +everything (optional)
 
@@ -282,9 +274,6 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None,
         """
 
     dt = 1. / wdm['sample_freq']
-
-    bits = None if bits_x is None or bits_y is None else bits = (bits_x, bits_y)
-    points = None if points_x is None or points_y is None else bits = (points_x, points_y)
 
     signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=bits, points=points)
 
