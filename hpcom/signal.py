@@ -197,6 +197,10 @@ def generate_wdm(wdm, bits=None, points=None):
     dt = 1. / sample_freq
     dw = wdm['channel_spacing']
 
+    bits_x = []
+    bits_y = []
+    points_x = []
+    points_y = []
     ft_filter_values_x = []
     ft_filter_values_y = []
 
@@ -206,11 +210,6 @@ def generate_wdm(wdm, bits=None, points=None):
     elif bits is not None:
         bits_x = bits[0]
         bits_y = bits[1]
-    else:
-        bits_x = []
-        bits_y = []
-        points_x = []
-        points_y = []
 
     if wdm['n_polarisations'] == 2:
         wdm_process = wdm.copy()
@@ -257,7 +256,6 @@ def generate_wdm(wdm, bits=None, points=None):
                 signal_x_temp, additional_x = generate_wdm_base(wdm_process, seed=wdm_index)
                 signal_y_temp, additional_y = generate_wdm_base(wdm_process, seed=wdm_index + wdm['n_channels'])
 
-
             if wdm_index == 0:
                 signal_x = signal_x_temp
                 signal_y = signal_y_temp
@@ -270,10 +268,12 @@ def generate_wdm(wdm, bits=None, points=None):
                 signal_x += signal_x_temp * np.exp(1.0j * w_channel * t)
                 signal_y += signal_y_temp * np.exp(1.0j * w_channel * t)
 
-            bits_x.append(additional_x['bits'])
-            bits_y.append(additional_y['bits'])
-            points_x.append(additional_x['points'])
-            points_y.append(additional_y['points'])
+            if bits is None:
+                bits_x.append(additional_x['bits'])
+                bits_y.append(additional_y['bits'])
+            if points is None:
+                points_x.append(additional_x['points'])
+                points_y.append(additional_y['points'])
             ft_filter_values_x.append(additional_x['ft_filter_values'])
             ft_filter_values_y.append(additional_y['ft_filter_values'])
 
