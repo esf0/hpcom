@@ -197,12 +197,20 @@ def generate_wdm(wdm, bits=None, points=None):
     dt = 1. / sample_freq
     dw = wdm['channel_spacing']
 
-    bits_x = []
-    bits_y = []
-    points_x = []
-    points_y = []
     ft_filter_values_x = []
     ft_filter_values_y = []
+
+    if points is not None:
+        points_x = points[0]
+        points_y = points[1]
+    elif bits is not None:
+        bits_x = bits[0]
+        bits_y = bits[1]
+    else:
+        bits_x = []
+        bits_y = []
+        points_x = []
+        points_y = []
 
     if wdm['n_polarisations'] == 2:
         wdm_process = wdm.copy()
@@ -210,13 +218,18 @@ def generate_wdm(wdm, bits=None, points=None):
     else:
         wdm_process = wdm
 
-
     for wdm_index in range(wdm['n_channels']):
 
         w_channel = -2. * np.pi * dw * (wdm_index - (wdm['n_channels'] - 1) // 2)
 
         if wdm['n_polarisations'] == 1:
-            signal_temp, additional = generate_wdm_base(wdm_process, seed=wdm_index)
+            if points is not None:
+                signal_temp, additional = generate_wdm_base(wdm_process, points=points_x[wdm_index], seed=wdm_index)
+            elif bits is not None:
+                signal_temp, additional = generate_wdm_base(wdm_process, bits=bits_x[wdm_index], seed=wdm_index)
+            else:
+                signal_temp, additional = generate_wdm_base(wdm_process, seed=wdm_index)
+
             if wdm_index == 0:
                 signal = signal_temp
                 np_signal = len(signal)
@@ -225,13 +238,25 @@ def generate_wdm(wdm, bits=None, points=None):
             else:
                 signal += signal_temp * np.exp(1.0j * w_channel * t)
 
-            bits_x.append(additional['bits'])
-            points_x.append(additional['points'])
+            if bits is None:
+                bits_x.append(additional['bits'])
+            if points is None:
+                points_x.append(additional['points'])
             ft_filter_values_x.append(additional['ft_filter_values'])
 
         elif wdm['n_polarisations'] == 2:
-            signal_x_temp, additional_x = generate_wdm_base(wdm_process, seed=wdm_index)
-            signal_y_temp, additional_y = generate_wdm_base(wdm_process, seed=wdm_index + wdm['n_channels'])
+            if points is not None:
+                signal_x_temp, additional_x = generate_wdm_base(wdm_process, points=points_x[wdm_index], seed=wdm_index)
+                signal_y_temp, additional_y = generate_wdm_base(wdm_process, points=points_y[wdm_index],
+                                                                seed=wdm_index + wdm['n_channels'])
+            elif bits is not None:
+                signal_x_temp, additional_x = generate_wdm_base(wdm_process, bits=bits_x[wdm_index], seed=wdm_index)
+                signal_y_temp, additional_y = generate_wdm_base(wdm_process, bits=bits_y[wdm_index],
+                                                                seed=wdm_index + wdm['n_channels'])
+            else:
+                signal_x_temp, additional_x = generate_wdm_base(wdm_process, seed=wdm_index)
+                signal_y_temp, additional_y = generate_wdm_base(wdm_process, seed=wdm_index + wdm['n_channels'])
+
 
             if wdm_index == 0:
                 signal_x = signal_x_temp

@@ -9,7 +9,8 @@ from .modulation import get_modulation_type_from_order, get_scale_coef_constella
     get_nearest_constellation_points_unscaled
 from .metrics import get_ber_by_points, get_ber_by_points_ultimate, get_energy, get_average_power, get_evm_ultimate
 
-from ssfm_gpu.propagation import propagate_manakov, propagate_schrodinger, dispersion_compensation_manakov
+from ssfm_gpu.propagation import propagate_manakov, propagate_manakov_backward, \
+    propagate_schrodinger, dispersion_compensation_manakov
 
 # Channel parameters
 
@@ -157,7 +158,7 @@ def full_line_model(channel, wdm, bits_x=None, bits_y=None, points_x=None, point
     sample_freq = int(wdm['symb_freq'] * wdm['upsampling'])
     dt = 1. / sample_freq
 
-    signal_x, signal_y, wdm_info = generate_wdm(wdm)
+    signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=(bits_x, bits_y), points=(points_x, points_y))
     # generate_wdm is for multichannel wdm
     # for only one channel we have to take [0] element in list
     # that will correspond to desired values
@@ -279,7 +280,7 @@ def full_line_model_wdm(channel, wdm, bits_x=None, bits_y=None,
 
     dt = 1. / wdm['sample_freq']
 
-    signal_x, signal_y, wdm_info = generate_wdm(wdm)
+    signal_x, signal_y, wdm_info = generate_wdm(wdm, bits=(bits_x, bits_y), points=(points_x, points_y))
 
     points_x_orig = wdm_info['points_x']
     points_y_orig = wdm_info['points_y']
@@ -575,8 +576,12 @@ def full_line_model_back_to_back(channel, wdm, bits_x=None, bits_y=None, points_
 
     channel_back = channel.copy()
     channel_back['z_span'] = -channel['z_span']
+
+    # [propagate_manakov_backward] is the proper function for backpropagation
+    # which properly handle attenuation of the signal
+    # if you still wand to use [propagate_manakov] then you have to set alpha = -alpha for channel parameters
     start_time = datetime.now()
-    signal_x, signal_y = propagate_manakov(channel_back, signal_x, signal_y, wdm['sample_freq'])
+    signal_x, signal_y = propagate_manakov_backward(channel_back, signal_x, signal_y, wdm['sample_freq'])
     print("backward propagation took", (datetime.now() - start_time).total_seconds() * 1000,
           "ms") if verbose >= 2 else ...
 
@@ -595,7 +600,8 @@ def full_line_model_back_to_back(channel, wdm, bits_x=None, bits_y=None, points_
               )
 
     samples_x, samples_y = receiver(signal_x, signal_y, ft_filter_values, wdm['downsampling_rate'])
-    samples_x, samples_y = dispersion_compensation_manakov(channel, samples_x, samples_y, dt * wdm['downsampling_rate'])
+    # for back-to-back we don't need dispersion compensation
+    # samples_x, samples_y = dispersion_compensation_manakov(channel, samples_x, samples_y, dt * wdm['downsampling_rate'])
 
     sample_step = int(wdm['upsampling'] / wdm['downsampling_rate'])
     points_x = samples_x[::sample_step].numpy()
