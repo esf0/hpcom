@@ -67,7 +67,7 @@ def create_channel_parameters(n_spans, z_span, alpha_db, gamma, noise_figure_db,
     alpha = alpha_db / (10 * np.log10(np.exp(1)))
     noise_figure = 10 ** (noise_figure_db / 10)
     gain = np.exp(alpha * z_span)  # gain for one span
-    beta2 = -(1550e-9 ** 2) * (dispersion_parameter * 1e-3) / (2 * np.pi * 3e8)  # conversion to beta2 - Chromatic Dispersion Coefficient [s^2 km^−1]
+    beta2 = -(1550e-9 ** 2) * (dispersion_parameter * 1e-3) / (2 * np.pi * 3e8)  # conversion to beta2 [s^2 km^−1], D [s km^-2] or [ps nm^-1 km^-1]
     beta3 = 0
     h_planck = 6.6256e-34  # Planck's constant [J/s]
     # nu = 299792458 / 1550e-9  # light frequency carrier [Hz]
