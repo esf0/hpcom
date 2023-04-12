@@ -2,9 +2,10 @@ import numpy as np
 import scipy as sp
 
 # from . import modulation
-from hpcom.modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
+# from hpcom.modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
+#     get_bits_from_constellation_points
+from .modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
     get_bits_from_constellation_points
-
 
 def get_energy(signal, dt):
     return np.sum(np.power(np.absolute(signal), 2)) * dt

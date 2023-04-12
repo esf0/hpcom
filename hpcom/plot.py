@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
-from . import modulation
+from .modulation import get_bits_dict_for_constellation
 
 
 def plot_constellation_with_bits(type="qpsk"):
 
-    dict, _ = modulation.get_bits_dict_for_constellation(type)
+    dict, _ = get_bits_dict_for_constellation(type)
 
     fig, axs = plt.subplots(1, 1, figsize=(10, 10))
 

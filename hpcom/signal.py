@@ -6,7 +6,9 @@ import tensorflow as tf
 
 from datetime import datetime
 
-from hpcom.modulation import get_n_bits, get_constellation_point, get_modulation_type_from_order, \
+# from hpcom.modulation import get_n_bits, get_constellation_point, get_modulation_type_from_order, \
+#     get_scale_coef_constellation
+from .modulation import get_n_bits, get_constellation_point, get_modulation_type_from_order, \
     get_scale_coef_constellation
 
 
