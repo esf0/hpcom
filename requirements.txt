@@ -3,3 +3,4 @@ tensorflow
 scipy
 datetime
 matplotlib
+ssfm-gpu
