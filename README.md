@@ -1,4 +1,4 @@
-# HPCOM
+# High Performance Communication Library (HPCOM)
 
 [![PyPI](https://img.shields.io/pypi/v/hpcom.svg)](https://pypi.python.org/pypi/hpcom)
 [![PyPI version](https://img.shields.io/pypi/pyversions/hpcom.svg)](https://pypi.python.org/pypi/hpcom)
