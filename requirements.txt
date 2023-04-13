@@ -1,1 +1,5 @@
 numpy
+tensorflow
+scipy
+datetime
+matplotlib
