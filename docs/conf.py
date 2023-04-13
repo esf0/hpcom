@@ -59,6 +59,9 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # Napoleon settings
 napoleon_google_docstring = True
 
+# Mocking imports
+autodoc_mock_imports = ["tensorflow", "numpy", "matplotlib", "scipy", "pandas", "matplotlib", "ssfm-gpu", "datetime"]
+
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
