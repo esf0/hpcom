@@ -60,7 +60,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 napoleon_google_docstring = True
 
 # Mocking imports
-autodoc_mock_imports = ["tensorflow", "numpy", "matplotlib", "scipy", "pandas", "matplotlib", "ssfm-gpu", "datetime"]
+autodoc_mock_imports = ["tensorflow", "numpy", "matplotlib", "scipy", "pandas", "matplotlib", "ssfm_gpu", "datetime"]
 
 # -- Options for HTML output -------------------------------------------------
 
