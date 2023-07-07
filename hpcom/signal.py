@@ -1,4 +1,3 @@
-
 import random
 
 import numpy as np
@@ -132,7 +131,7 @@ def check_wdm_parameters(wdm):
     return 0
 
 
-def generate_wdm_base(wdm, bits=None, points=None, seed=0):
+def generate_wdm_base(wdm, bits=None, points=None, seed=0, ft_filter_values=None):
 
     sample_freq = int(wdm['symb_freq'] * wdm['upsampling'])  # sampling frequency
     t_s = 1 / wdm['symb_freq']  # symbol spacing
@@ -145,11 +144,12 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
     if bits is None:
         # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
         bits = gen_wdm_bit_sequence(wdm['n_symbols'], wdm['modulation_type'],
-                                    n_carriers=1, seed=seed)
+                                    n_carriers=1, seed=seed)  # n_carriers is 1 cause it one carrier per channel
     else:
         if len(bits) != wdm['n_bits_symbol'] * wdm['n_symbols']:
             print('[generate_wdm_base] Error: length of input bits does not correspond to the parameters')
 
+    # if points provided than we do not set the power (it will be defined by points)
     if points is None:
         points = get_constellation_point(bits, type=wdm['modulation_type'])
         mod_type = get_modulation_type_from_order(wdm['m_order'])
@@ -162,12 +162,13 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
 
     np_sequence = len(points_sequence)
 
-    filter_values = rrcosfilter(np_sequence, wdm['roll_off'], t_s, sample_freq)
-    filter_values = tf.cast(filter_values, tf.complex128)
-    # print('filter_values_mean', np.mean(filter_values))
+    if ft_filter_values is None:
+        filter_values = rrcosfilter(np_sequence, wdm['roll_off'], t_s, sample_freq)
+        filter_values = tf.cast(filter_values, tf.complex128)
+        # print('filter_values_mean', np.mean(filter_values))
+        ft_filter_values = tf.signal.fftshift(tf.signal.fft(filter_values))
+        ft_filter_values = tf.cast(ft_filter_values, tf.complex128)
 
-    ft_filter_values = tf.signal.fftshift(tf.signal.fft(filter_values))
-    ft_filter_values = tf.cast(ft_filter_values, tf.complex128)
     signal = filter_shaper(points_sequence, ft_filter_values)
 
     additional = {
@@ -179,7 +180,7 @@ def generate_wdm_base(wdm, bits=None, points=None, seed=0):
     return tf.cast(signal, tf.complex128), additional
 
 
-def generate_wdm(wdm, bits=None, points=None):
+def generate_wdm(wdm, bits=None, points=None, ft_filter_values=None):
 
     # n_symbols - Number of Symbols transmitted
     # m_order - Modulation Level
@@ -221,15 +222,25 @@ def generate_wdm(wdm, bits=None, points=None):
 
     for wdm_index in range(wdm['n_channels']):
 
-        w_channel = -2. * np.pi * dw * (wdm_index - (wdm['n_channels'] - 1) // 2)
+        if ft_filter_values is None:
+            ft_filter_values_to_x = None
+            ft_filter_values_to_y = None
+        else:
+            ft_filter_values_to_x = ft_filter_values[0][wdm_index]
+            ft_filter_values_to_y = ft_filter_values[1][wdm_index]
+
+        w_channel = 2. * np.pi * dw * (wdm_index - (wdm['n_channels'] - 1) // 2)
 
         if wdm['n_polarisations'] == 1:
             if points is not None:
-                signal_temp, additional = generate_wdm_base(wdm_process, points=points_x[wdm_index], seed=wdm_index)
+                signal_temp, additional = generate_wdm_base(wdm_process, points=points_x[wdm_index], seed=wdm_index,
+                                                            ft_filter_values=ft_filter_values_to_x)
             elif bits is not None:
-                signal_temp, additional = generate_wdm_base(wdm_process, bits=bits_x[wdm_index], seed=wdm_index)
+                signal_temp, additional = generate_wdm_base(wdm_process, bits=bits_x[wdm_index], seed=wdm_index,
+                                                            ft_filter_values=ft_filter_values_to_x)
             else:
-                signal_temp, additional = generate_wdm_base(wdm_process, seed=wdm_index)
+                signal_temp, additional = generate_wdm_base(wdm_process, seed=wdm_index,
+                                                            ft_filter_values=ft_filter_values_to_x)
 
             if wdm_index == 0:
                 signal = signal_temp
@@ -247,16 +258,22 @@ def generate_wdm(wdm, bits=None, points=None):
 
         elif wdm['n_polarisations'] == 2:
             if points is not None:
-                signal_x_temp, additional_x = generate_wdm_base(wdm_process, points=points_x[wdm_index], seed=wdm_index)
+                signal_x_temp, additional_x = generate_wdm_base(wdm_process, points=points_x[wdm_index], seed=wdm_index,
+                                                                ft_filter_values=ft_filter_values_to_x)
                 signal_y_temp, additional_y = generate_wdm_base(wdm_process, points=points_y[wdm_index],
-                                                                seed=wdm_index + wdm['n_channels'])
+                                                                seed=wdm_index + wdm['n_channels'],
+                                                                ft_filter_values=ft_filter_values_to_y)
             elif bits is not None:
-                signal_x_temp, additional_x = generate_wdm_base(wdm_process, bits=bits_x[wdm_index], seed=wdm_index)
+                signal_x_temp, additional_x = generate_wdm_base(wdm_process, bits=bits_x[wdm_index], seed=wdm_index,
+                                                                ft_filter_values=ft_filter_values_to_x)
                 signal_y_temp, additional_y = generate_wdm_base(wdm_process, bits=bits_y[wdm_index],
-                                                                seed=wdm_index + wdm['n_channels'])
+                                                                seed=wdm_index + wdm['n_channels'],
+                                                                ft_filter_values=ft_filter_values_to_y)
             else:
-                signal_x_temp, additional_x = generate_wdm_base(wdm_process, seed=wdm_index)
-                signal_y_temp, additional_y = generate_wdm_base(wdm_process, seed=wdm_index + wdm['n_channels'])
+                signal_x_temp, additional_x = generate_wdm_base(wdm_process, seed=wdm_index,
+                                                                ft_filter_values=ft_filter_values_to_x)
+                signal_y_temp, additional_y = generate_wdm_base(wdm_process, seed=wdm_index + wdm['n_channels'],
+                                                                ft_filter_values=ft_filter_values_to_y)
 
             if wdm_index == 0:
                 signal_x = signal_x_temp
@@ -276,6 +293,8 @@ def generate_wdm(wdm, bits=None, points=None):
             if points is None:
                 points_x.append(additional_x['points'])
                 points_y.append(additional_y['points'])
+
+            # To check filter we return it
             ft_filter_values_x.append(additional_x['ft_filter_values'])
             ft_filter_values_y.append(additional_y['ft_filter_values'])
 
@@ -299,6 +318,7 @@ def generate_wdm(wdm, bits=None, points=None):
         return tf.cast(signal_x, tf.complex128), tf.cast(signal_y, tf.complex128), additional_all
 
 
+# TODO: delete the usage of it
 def generate_wdm_optimise(wdm, points_x, points_y, ft_filter_values):
 
     # n_symbols - Number of Symbols transmitted
@@ -367,10 +387,10 @@ def filter_shaper(signal, ft_filter_val):
     # return np.convolve(signal, filter_val)
 
 
-def filter_shaper_spectral(spectrum, filter_val):
-
+def filter_shaper_spectral(spectrum, ft_filter_val):
+    # if we alrady have spectrum of the signal we don't need to calculate it again
     # print('with ifftshift')
-    return tf.signal.ifftshift(tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val)))
+    return tf.signal.ifftshift(tf.signal.ifft(tf.signal.ifftshift(spectrum * ft_filter_val)))
     # print('no ifftshift')
     # return tf.signal.ifft(tf.signal.ifftshift(spectrum * filter_val))
 
@@ -389,11 +409,12 @@ def matched_filter_wdm(signal, ft_filter_values, wdm):
     nt = len(signal)
     dt = 1. / wdm['sample_freq']
     t_span = dt * nt
-    t = np.array([dt * (k - nt / 2) for k in range(nt)])
-    f = np.array([(i - nt / 2) * (1. / t_span) for i in range(nt)])
+    t = np.arange(-nt / 2, nt / 2) * dt
+    f = np.arange(-nt / 2, nt / 2) * (1. / t_span)
 
     for k in range(wdm['n_channels']):
-        w_channel = 2. * np.pi * wdm['channel_spacing'] * (k - (wdm['n_channels'] - 1) // 2)
+
+        w_channel = -2. * np.pi * wdm['channel_spacing'] * (k - (wdm['n_channels'] - 1) // 2)
         signal_shifted = signal * np.exp(1.0j * w_channel * t)
         spectrum = cut_spectrum(tf.signal.fftshift(tf.signal.fft(signal_shifted)), f, wdm['channel_spacing'])
         signals_decoded.append(matched_filter_spectral(spectrum, ft_filter_values[k]))
@@ -402,54 +423,29 @@ def matched_filter_wdm(signal, ft_filter_values, wdm):
 
 
 def matched_filter(signal, filter_val):
-    # return filter_shaper(signal, filter_val) / tf.cast(tf.reduce_sum(tf.math.pow(tf.math.abs(filter_val), 2)), tf.complex128)
-    return filter_shaper(signal, filter_val) / tf.cast(tf.reduce_sum(tf.math.abs(filter_val)), tf.complex128)
+    return filter_shaper(signal, filter_val / tf.cast(tf.reduce_mean(tf.math.pow(tf.math.abs(filter_val), 2)), tf.complex128))
 
 
 def matched_filter_spectral(spectrum, filter_val):
-    # return filter_shaper_spectral(spectrum, filter_val) / tf.cast(tf.reduce_sum(tf.math.pow(tf.math.abs(filter_val), 2)), tf.complex128)
-    return filter_shaper_spectral(spectrum, filter_val) / tf.cast(tf.reduce_sum(tf.math.abs(filter_val)), tf.complex128)
+    return filter_shaper_spectral(spectrum, filter_val / tf.cast(tf.reduce_mean(tf.math.pow(tf.math.abs(filter_val), 2)), tf.complex128))
 
 
 def receiver_wdm(signal, ft_filter_values, wdm):
 
-    # start_time = datetime.now()
-    # signals_decoded = []
-
-    # nt = len(signal)
-    # t_span = 1 / wdm['sample_freq'] * nt
-    # f = np.array([(i - nt / 2) * (1. / t_span) for i in range(nt)])
-
-    # for n_channel in range(-wdm['n_channels'] // 2 + 1, wdm['n_channels'] // 2 + 1):
-    #     signal = matched_filter_wdm(signal, ft_filter_values, f, wdm['channel_spacing'], n_channel)
-    #     signals_decoded.append(signal[::wdm['downsampling_rate']])  # downsample
-
     signals_decoded = matched_filter_wdm(signal, ft_filter_values, wdm)
-
     for k in range(wdm['n_channels']):
         signals_decoded[k] = signals_decoded[k][::wdm['downsampling_rate']]
-
-    # end_time = datetime.now()
-    # time_diff = (end_time - start_time)
-    # execution_time = time_diff.total_seconds() * 1000
-    # print("Matched filter took", execution_time, "ms")
 
     return signals_decoded
 
 
 def receiver(signal_x, signal_y, ft_filter_values, downsampling_rate):
 
-    # start_time = datetime.now()
     signal_x = matched_filter(signal_x, ft_filter_values)
     signal_y = matched_filter(signal_y, ft_filter_values)
 
     signal_x = signal_x[::downsampling_rate]  # downsample
     signal_y = signal_y[::downsampling_rate]
-
-    # end_time = datetime.now()
-    # time_diff = (end_time - start_time)
-    # execution_time = time_diff.total_seconds() * 1000
-    # print("Matched filter took", execution_time, "ms")
 
     return signal_x, signal_y
 
@@ -460,6 +456,122 @@ def get_points_wdm(samples, wdm):
     points = samples[::sample_step].numpy()
 
     return points
+
+
+# OFDM functions
+
+def create_ofdm_parameters(n_carriers, p_ave_dbm, n_symbols, m_order, symb_freq,
+                          cp_len, n_guard, n_pilot,
+                          n_polarisations=2, seed='fixed'):
+    ofdm = {'n_carriers': n_carriers,
+            'cp_len': cp_len,
+            'n_guard': n_guard,
+            'n_pilot': n_pilot,
+            'n_polarisations': n_polarisations,
+            'p_ave_dbm': p_ave_dbm,
+            'n_symbols': n_symbols,
+            'm_order': m_order,
+            'symb_freq': symb_freq,
+            'modulation_type': get_modulation_type_from_order(m_order),
+            'n_bits_symbol': get_n_bits(get_modulation_type_from_order(m_order)),
+            'seed': seed
+            }
+
+    ofdm['p_ave'] = (10 ** (ofdm['p_ave_dbm'] / 10)) / 1000
+
+    return ofdm
+
+
+def generate_ofdm_symbol(ofdm, bits=None, points=None, seed='time'):
+
+    sample_freq = int(ofdm['symb_freq'] * ofdm['n_carriers'])  # sampling frequency
+    t_s = 1 / ofdm['symb_freq']  # symbol spacing
+
+    if ofdm['seed'] == 'time':
+        seed = datetime.now().timestamp()
+    else:
+        seed = seed
+
+    if bits is None:
+        # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
+        bits = gen_wdm_bit_sequence(1, ofdm['modulation_type'],
+                                    n_carriers=ofdm['n_carriers'], seed=seed)
+    else:
+        if len(bits) != ofdm['n_bits_symbol'] * ofdm['n_carriers']:
+            print('[generate_ofdm_signal] Error: length of input bits does not correspond to the parameters')
+
+    # if points provided than we do not set the power (it will be defined by points)
+    if points is None:
+        points = get_constellation_point(bits, type=ofdm['modulation_type'])
+        mod_type = get_modulation_type_from_order(ofdm['m_order'])
+        scale_constellation = np.sqrt(ofdm['p_ave']) / get_scale_coef_constellation(mod_type)
+        points = points * scale_constellation  # normalise power and scale to power
+
+    if len(points) != ofdm['n_carriers']:
+        print('[generate_ofdm_signal] Error: length of input points does not correspond to the parameters')
+
+    # generate OFDM symbol
+    # ofdm_symbol = np.fft.ifft(points, ofdm['n_carriers'])  # IFFT
+    ofdm_symbol = np.fft.ifft(points)  # IFFT
+    # add cyclic prefix
+    if ofdm['cp_len'] > 0:
+        ofdm_symbol = np.concatenate((ofdm_symbol[-ofdm['cp_len']:], ofdm_symbol))
+
+
+    return ofdm_symbol
+
+
+def generate_ofdm_signal(ofdm, bits=None, points=None, seed='time'):
+    # generate OFDM signal
+
+    if bits is None:
+        # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
+        bits = gen_wdm_bit_sequence(ofdm['n_symbols'], ofdm['modulation_type'],
+                                    n_carriers=ofdm['n_carriers'], seed=seed)
+    else:
+        if len(bits) != ofdm['n_bits_symbol'] * ofdm['n_carriers'] * ofdm['n_symbols']:
+            print('[generate_ofdm_signal] Error: length of input bits does not correspond to the parameters')
+
+    # if points provided than we do not set the power (it will be defined by points)
+    if points is None:
+        points = get_constellation_point(bits, type=ofdm['modulation_type'])
+        mod_type = get_modulation_type_from_order(ofdm['m_order'])
+        scale_constellation = np.sqrt(ofdm['p_ave']) / get_scale_coef_constellation(mod_type)
+        points = points * scale_constellation  # normalise power and scale to power
+
+    ofdm_symbols = [generate_ofdm_symbol(ofdm, points=points[i * ofdm['n_carriers']:(i + 1) * ofdm['n_carriers']]) for i in range(ofdm['n_symbols'])]
+    ofdm_signal = np.concatenate(ofdm_symbols)
+
+    add = {
+        'bits': bits,
+        'points': points
+    }
+
+    return ofdm_signal, add
+
+
+def decode_ofdm_symbol(ofdm_symbol, ofdm):
+
+    # remove cyclic prefix
+    if ofdm['cp_len'] > 0:
+        ofdm_symbol = ofdm_symbol[ofdm['cp_len']:]
+    # FFT
+    points = np.fft.fft(ofdm_symbol, ofdm['n_carriers'])
+
+    return points
+
+
+def decode_ofdm_signal(ofdm_signal, ofdm):
+
+    # split the signal into OFDM symbols
+    ofdm_symbols = np.split(ofdm_signal, ofdm['n_symbols'])
+
+    # decode OFDM symbols
+    points = [decode_ofdm_symbol(ofdm_symbol, ofdm) for ofdm_symbol in ofdm_symbols]
+    points = np.concatenate(points)
+
+    return points
+
 
 
 # Additional functions
