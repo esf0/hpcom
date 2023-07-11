@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+import json
 
 from datetime import datetime
 
@@ -59,6 +60,20 @@ def get_default_channel_parameters():
     channel['nz'] = int(channel['z_span'] / channel['dz'])  # number of steps per each span
     channel['noise_density'] = channel['h_planck'] * channel['fc'] * (channel['gain'] - 1) * channel['noise_figure']
     channel['seed'] = 'fixed'
+
+    return channel
+
+
+def update_channel_parameters_from_json(json_file):
+    # Load the JSON file as a dictionary
+    with open(json_file, 'r') as f:
+        update_params = json.load(f)
+
+    # Get the default channel parameters
+    channel = get_default_channel_parameters()
+
+    # Update the default parameters with the ones from the JSON
+    channel.update(update_params)
 
     return channel
 
