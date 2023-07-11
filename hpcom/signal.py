@@ -115,6 +115,16 @@ def get_default_wdm_parameters():
     return wdm
 
 
+def update_wdm_parameters(wdm):
+
+    wdm['sample_freq'] = int(wdm['symb_freq'] * wdm['upsampling'])
+    wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # mW
+    wdm['modulation_type'] = get_modulation_type_from_order(wdm['m_order'])
+    wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
+
+    return wdm
+
+
 def update_wdm_parameters_from_json(json_file):
     # Load the JSON file as a dictionary
     with open(json_file, 'r') as f:
@@ -126,7 +136,7 @@ def update_wdm_parameters_from_json(json_file):
     # Update the default parameters with the ones from the JSON
     wdm.update(update_params)
 
-    return wdm
+    return update_wdm_parameters(wdm)
 
 
 def check_wdm_parameters(wdm):

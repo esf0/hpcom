@@ -64,6 +64,17 @@ def get_default_channel_parameters():
     return channel
 
 
+def update_channel_parameters(channel):
+    channel['alpha'] = channel['alpha_db'] / (10 * np.log10(np.exp(1)))
+    channel['noise_figure'] = 10 ** (channel['noise_figure_db'] / 10)
+    channel['gain'] = np.exp(channel['alpha'] * channel['z_span'])  # gain for one span
+    channel['beta2'] = -(1550e-9 ** 2) * (channel['dispersion_parameter'] * 1e-3) / (2 * np.pi * 3e8)  # conversion to beta2 - Chromatic Dispersion Coefficient [s^2 km^−1]
+    channel['nz'] = int(channel['z_span'] / channel['dz'])  # number of steps per each span
+    channel['noise_density'] = channel['h_planck'] * channel['fc'] * (channel['gain'] - 1) * channel['noise_figure']
+
+    return channel
+
+
 def update_channel_parameters_from_json(json_file):
     # Load the JSON file as a dictionary
     with open(json_file, 'r') as f:
@@ -75,7 +86,7 @@ def update_channel_parameters_from_json(json_file):
     # Update the default parameters with the ones from the JSON
     channel.update(update_params)
 
-    return channel
+    return update_channel_parameters(channel)
 
 
 def create_channel_parameters(n_spans, z_span, alpha_db, gamma, noise_figure_db, dispersion_parameter, dz, seed='fixed'):
