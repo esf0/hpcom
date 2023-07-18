@@ -11,5 +11,6 @@ __all__ = [
     'channel',
     'metrics',
     'decorators',
-    'plot'
+    'plot',
+    '_sklearn_functions'
 ]

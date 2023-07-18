@@ -88,6 +88,8 @@ def create_wdm_parameters(n_channels, p_ave_dbm, n_symbols, m_order, roll_off, u
     wdm['np_filter'] = np_filter
     wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000
     wdm['seed'] = seed
+    wdm['scale_coef'] = get_scale_coef_constellation(wdm['modulation_type']) / \
+                        np.sqrt(wdm['p_ave'] / wdm['n_polarisations'])
 
     return wdm
 
@@ -111,6 +113,8 @@ def get_default_wdm_parameters():
     wdm['modulation_type'] = get_modulation_type_from_order(wdm['m_order'])
     wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
     wdm['seed'] = 'fixed'
+    wdm['scale_coef'] = get_scale_coef_constellation(wdm['modulation_type']) / \
+                        np.sqrt(wdm['p_ave'] / wdm['n_polarisations'])
 
     return wdm
 
@@ -121,6 +125,8 @@ def update_wdm_parameters(wdm):
     wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # mW
     wdm['modulation_type'] = get_modulation_type_from_order(wdm['m_order'])
     wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
+    wdm['scale_coef'] = get_scale_coef_constellation(wdm['modulation_type']) / \
+                        np.sqrt(wdm['p_ave'] / wdm['n_polarisations'])
 
     return wdm
 

@@ -1,11 +1,16 @@
 import numpy as np
 import scipy as sp
 
+# from ._sklearn_functions import crosstab, mutual_info_score
+from scipy.stats.contingency import crosstab
+from sklearn.metrics import mutual_info_score
+
 # from . import modulation
 # from hpcom.modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
 #     get_bits_from_constellation_points
 from .modulation import get_scale_coef, get_constellation, get_nearest_constellation_points_new, \
     get_bits_from_constellation_points
+
 
 def get_energy(signal, dt):
     """
@@ -153,3 +158,13 @@ def get_ber_from_evm(points_init, points, m):
     evm_rms = get_evm_rms_new(points_init, points)
     ber = 2 * (1. - np.power(m, -0.5)) / (np.log2(m)) * sp.special.erfc(np.sqrt(1.5 / ((m - 1) * np.power(evm_rms, 2))))
     return ber
+
+
+def get_q_factor_from_ber(ber):
+    return np.sqrt(2) * sp.special.erfcinv(2 * ber)
+
+
+def calculate_mutual_information(x, y):
+    c_xy = crosstab(x, y)
+    mi = mutual_info_score(None, None, contingency=c_xy[1])
+    return mi

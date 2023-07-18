@@ -224,3 +224,92 @@ def get_nearest_constellation_points_unscaled(points, mod_type):
     scale = get_scale_coef(points, mod_type)
     # return get_nearest_constellation_points(points * scale, mod_type)
     return get_nearest_constellation_points_new(points * scale, get_constellation(mod_type))
+
+
+# new constellations
+def generate_grey_code(n):
+    # Base case
+    if n <= 0:
+        return ['0']
+    elif n == 1:
+        return ['0', '1']
+
+    # Recursive case
+    first_half = generate_grey_code(n - 1)
+    second_half = first_half.copy()
+
+    # Reverse the second half
+    second_half.reverse()
+
+    # Append 0 to the first half
+    first_half = ['0' + code for code in first_half]
+
+    # Append 1 to the second half
+    second_half = ['1' + code for code in second_half]
+
+    # Concatenate both halves
+    result = first_half + second_half
+
+    return result
+
+
+def generate_grey_code_2d(n):
+    if n % 2 != 0:
+        raise ValueError('n must be even.')
+    # Generate 1D Grey code sequence
+    grey_code_1d = np.array(generate_grey_code(n // 2))
+
+    # Generate 2D Grey code sequence by concatenating 1D sequences
+    grey_code_2d = np.char.add(grey_code_1d[:, None], grey_code_1d)
+
+    return grey_code_2d
+
+
+# TODO: finish odd degrees of 2 (32, 128, 512, etc.)
+def generate_grey_code_2d_rect(n):
+    n_small = n // 2
+    n_big = n - n_small
+    # Generate 1D Grey code sequence
+    grey_code_1d_big = np.array(generate_grey_code(n_big))
+    grey_code_1d_small = np.array(generate_grey_code(n_small))
+
+    # Generate 2D Grey code sequence by concatenating 1D sequences
+    grey_code_2d = np.char.add(grey_code_1d_big[:, None], grey_code_1d_small)
+
+    return grey_code_2d
+
+
+def generate_constellation(n):
+    if n % 2 != 0:
+        raise ValueError('n must be even.')
+    # Generate 2D Grey code sequence
+    grey_code_2d = generate_grey_code_2d(n)
+
+    # Number of points along one dimension
+    num_points = 2**(n // 2)
+
+    # Generate coordinates
+    coords = np.arange(num_points)
+
+    # Scale and shift coordinates to match the constellation
+    coords = 2*coords - (num_points - 1)
+
+    # Generate grid
+    I, Q = np.meshgrid(coords, -coords)  # Q coordinates are negated to match the conventional QAM constellation
+
+    # Convert to complex
+    constellation = I + 1j * Q
+
+    return constellation, grey_code_2d
+
+
+def generate_constellation_dict(n):
+
+    result = {}
+    constellation, grey_code_2d = generate_constellation(n)
+    for i in range(len(grey_code_2d)):
+        for j in range(len(grey_code_2d[i])):
+            result[grey_code_2d[i, j]] = constellation[i, j]
+
+    return result
+
