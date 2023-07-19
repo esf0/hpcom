@@ -9,7 +9,7 @@ from .signal import create_wdm_parameters, generate_wdm, generate_wdm_optimise, 
 from .modulation import get_modulation_type_from_order, get_scale_coef_constellation, \
     get_nearest_constellation_points_unscaled
 from .metrics import get_ber_by_points, get_ber_by_points_ultimate, get_energy, get_average_power, get_evm_ultimate, \
-    get_evm
+    get_evm, calculate_mutual_information
 
 from ssfm_gpu.propagation import propagate_manakov, propagate_manakov_backward, \
     propagate_schrodinger, dispersion_compensation_manakov
@@ -529,6 +529,8 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         q_y = []
         evm_x = []
         evm_y = []
+        mi_x = []
+        mi_y = []
 
         for k in range(wdm['n_channels']):
             print('WDM channel', k) if verbose >= 1 else ...
@@ -539,20 +541,29 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
             print("search x and y points took",
                   (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
+            points_x_orig_scaled = points_x_orig[k] * scale_constellation
+            points_y_orig_scaled = points_y_orig[k] * scale_constellation
+
+
             start_time = datetime.now()
-            ber_x.append(get_ber_by_points(points_x_orig[k] * scale_constellation, points_x_found[k], mod_type))
-            ber_y.append(get_ber_by_points(points_y_orig[k] * scale_constellation, points_y_found[k], mod_type))
+            ber_x.append(get_ber_by_points(points_x_orig_scaled, points_x_found[k], mod_type))
+            ber_y.append(get_ber_by_points(points_y_orig_scaled, points_y_found[k], mod_type))
             print("ber for x and y took",
                   (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
             q_x.append(np.sqrt(2) * sp.special.erfcinv(2 * ber_x[k][0]))
             q_y.append(np.sqrt(2) * sp.special.erfcinv(2 * ber_y[k][0]))
 
-            evm_x.append(get_evm(points_x_orig[k] * scale_constellation, points_x_shifted[k] * scale_constellation))
-            evm_y.append(get_evm(points_y_orig[k] * scale_constellation, points_y_shifted[k] * scale_constellation))
+            evm_x.append(get_evm(points_x_orig_scaled, points_x_shifted[k] * scale_constellation))
+            evm_y.append(get_evm(points_y_orig_scaled, points_y_shifted[k] * scale_constellation))
+
+            mi_x.append(calculate_mutual_information(points_x_orig_scaled, points_x_found[k]))
+            mi_y.append(calculate_mutual_information(points_y_orig_scaled, points_y_found[k]))
 
             print("BER (x / y):", ber_x[k], ber_y[k]) if verbose >= 1 else ...
             print(r'Q^2-factor (x / y):', q_x[k], q_y[k]) if verbose >= 1 else ...
+            print(r'EVM (x / y):', evm_x[k], evm_y[k]) if verbose >= 1 else ...
+            print(r'MI (x / y):', mi_x[k], mi_y[k]) if verbose >= 1 else ...
 
     elif channels_type == 'middle':
 
@@ -579,20 +590,28 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         print("search x and y points took",
               (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
+        points_x_orig_scaled = points_x_orig[k] * scale_constellation
+        points_y_orig_scaled = points_y_orig[k] * scale_constellation
+
         start_time = datetime.now()
-        ber_x = get_ber_by_points(points_x_orig[k] * scale_constellation, points_x_found, mod_type)
-        ber_y = get_ber_by_points(points_y_orig[k] * scale_constellation, points_y_found, mod_type)
+        ber_x = get_ber_by_points(points_x_orig_scaled, points_x_found, mod_type)
+        ber_y = get_ber_by_points(points_y_orig_scaled, points_y_found, mod_type)
         print("ber for x and y took",
               (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
         q_x = np.sqrt(2) * sp.special.erfcinv(2 * ber_x[0])
         q_y = np.sqrt(2) * sp.special.erfcinv(2 * ber_y[0])
 
-        evm_x = get_evm(points_x_orig[k] * scale_constellation, points_x_shifted[k] * scale_constellation)
-        evm_y = get_evm(points_y_orig[k] * scale_constellation, points_y_shifted[k] * scale_constellation)
+        evm_x = get_evm(points_x_orig_scaled, points_x_shifted[k] * scale_constellation)
+        evm_y = get_evm(points_y_orig_scaled, points_y_shifted[k] * scale_constellation)
 
-        print("BER (x / y):", ber_x, ber_y) if verbose >= 1 else ...
-        print(r'Q^2-factor (x / y):', q_x, q_y) if verbose >= 1 else ...
+        mi_x = calculate_mutual_information(points_x_orig_scaled, points_x_found[k])
+        mi_y = calculate_mutual_information(points_y_orig_scaled, points_y_found[k])
+
+        print("BER (x / y):", ber_x[k], ber_y[k]) if verbose >= 1 else ...
+        print(r'Q^2-factor (x / y):', q_x[k], q_y[k]) if verbose >= 1 else ...
+        print(r'EVM (x / y):', evm_x[k], evm_y[k]) if verbose >= 1 else ...
+        print(r'MI (x / y):', mi_x[k], mi_y[k]) if verbose >= 1 else ...
 
     else:
         print('Error[full_line_model_wdm]: no such type of channels_type variable')
@@ -614,7 +633,9 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
             'q_x': q_x,
             'q_y': q_y,
             'evm_x': evm_x,
-            'evm_y': evm_y
+            'evm_y': evm_y,
+            'mi_x': mi_x,
+            'mi_y': mi_y
         }
 
     elif optimise == 'ber_x':
@@ -625,6 +646,10 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         return evm_x
     elif optimise == 'evm_y':
         return evm_y
+    elif optimise == 'mi_x':
+        return mi_x
+    elif optimise == 'mi_y':
+        return mi_y
     else:
         print('Error[full_line_model_wdm]: no such type of optimise variable')
         return None
