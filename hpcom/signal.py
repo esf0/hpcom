@@ -513,7 +513,7 @@ def create_ofdm_parameters(n_carriers, p_ave_dbm, n_symbols, m_order, symb_freq,
     return ofdm
 
 
-def generate_ofdm_symbol(ofdm, bits=None, points=None, seed='time'):
+def generate_ofdm_symbol(ofdm, bits=None, points=None, seed=0):
 
     sample_freq = int(ofdm['symb_freq'] * ofdm['n_carriers'])  # sampling frequency
     t_s = 1 / ofdm['symb_freq']  # symbol spacing
@@ -543,17 +543,27 @@ def generate_ofdm_symbol(ofdm, bits=None, points=None, seed='time'):
 
     # generate OFDM symbol
     # ofdm_symbol = np.fft.ifft(points, ofdm['n_carriers'])  # IFFT
-    ofdm_symbol = np.fft.ifft(points)  # IFFT
+    ofdm_symbol = np.fft.ifft(points, norm='forward')  # IFFT
     # add cyclic prefix
     if ofdm['cp_len'] > 0:
         ofdm_symbol = np.concatenate((ofdm_symbol[-ofdm['cp_len']:], ofdm_symbol))
 
-
     return ofdm_symbol
 
 
-def generate_ofdm_signal(ofdm, bits=None, points=None, seed='time'):
+def generate_ofdm_signal(ofdm_init, bits=None, points=None, seed=0):
     # generate OFDM signal
+
+    if ofdm_init['n_polarisations'] == 2:
+        ofdm = ofdm_init.copy()
+        ofdm['p_ave'] = ofdm['p_ave'] / 2
+    else:
+        ofdm = ofdm_init
+
+    if ofdm['seed'] == 'time':
+        seed = datetime.now().timestamp()
+    else:
+        seed = seed
 
     if bits is None:
         # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
@@ -567,7 +577,7 @@ def generate_ofdm_signal(ofdm, bits=None, points=None, seed='time'):
     if points is None:
         points = get_constellation_point(bits, type=ofdm['modulation_type'])
         mod_type = get_modulation_type_from_order(ofdm['m_order'])
-        scale_constellation = np.sqrt(ofdm['p_ave']) / get_scale_coef_constellation(mod_type)
+        scale_constellation = np.sqrt(ofdm['p_ave'] / ofdm['n_carriers']) / get_scale_coef_constellation(mod_type)
         points = points * scale_constellation  # normalise power and scale to power
 
     ofdm_symbols = [generate_ofdm_symbol(ofdm, points=points[i * ofdm['n_carriers']:(i + 1) * ofdm['n_carriers']]) for i in range(ofdm['n_symbols'])]
@@ -587,7 +597,7 @@ def decode_ofdm_symbol(ofdm_symbol, ofdm):
     if ofdm['cp_len'] > 0:
         ofdm_symbol = ofdm_symbol[ofdm['cp_len']:]
     # FFT
-    points = np.fft.fft(ofdm_symbol, ofdm['n_carriers'])
+    points = np.fft.fft(ofdm_symbol, ofdm['n_carriers'], norm='forward')
 
     return points
 
@@ -602,7 +612,6 @@ def decode_ofdm_signal(ofdm_signal, ofdm):
     points = np.concatenate(points)
 
     return points
-
 
 
 # Additional functions
