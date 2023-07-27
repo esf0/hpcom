@@ -551,7 +551,7 @@ def generate_ofdm_symbol(ofdm, bits=None, points=None, seed=0):
     return ofdm_symbol
 
 
-def generate_ofdm_signal(ofdm_init, bits=None, points=None, seed=0):
+def generate_ofdm_signal(ofdm_init, bits_init=None, points_init=None, seed=0):
     # generate OFDM signal
 
     if ofdm_init['n_polarisations'] == 2:
@@ -565,30 +565,43 @@ def generate_ofdm_signal(ofdm_init, bits=None, points=None, seed=0):
     else:
         seed = seed
 
-    if bits is None:
-        # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
-        bits = gen_wdm_bit_sequence(ofdm['n_symbols'], ofdm['modulation_type'],
-                                    n_carriers=ofdm['n_carriers'], seed=seed)
-    else:
-        if len(bits) != ofdm['n_bits_symbol'] * ofdm['n_carriers'] * ofdm['n_symbols']:
-            print('[generate_ofdm_signal] Error: length of input bits does not correspond to the parameters')
+    signal = []
+    bits_return = []
+    points_return = []
 
-    # if points provided than we do not set the power (it will be defined by points)
-    if points is None:
-        points = get_constellation_point(bits, type=ofdm['modulation_type'])
-        mod_type = get_modulation_type_from_order(ofdm['m_order'])
-        scale_constellation = np.sqrt(ofdm['p_ave'] / ofdm['n_carriers']) / get_scale_coef_constellation(mod_type)
-        points = points * scale_constellation  # normalise power and scale to power
+    for k in range(ofdm['n_polarisations']):
 
-    ofdm_symbols = [generate_ofdm_symbol(ofdm, points=points[i * ofdm['n_carriers']:(i + 1) * ofdm['n_carriers']]) for i in range(ofdm['n_symbols'])]
-    ofdm_signal = np.concatenate(ofdm_symbols)
+        if bits_init is None:
+            # bits = np.random.randint(0, 2, n_bits, int)  # random bit stream
+            bits = gen_wdm_bit_sequence(ofdm['n_symbols'], ofdm['modulation_type'],
+                                        n_carriers=ofdm['n_carriers'], seed=seed + k)
+        else:
+            if len(bits_init[k]) != ofdm['n_bits_symbol'] * ofdm['n_carriers'] * ofdm['n_symbols']:
+                print('[generate_ofdm_signal] Error: length of input bits does not correspond to the parameters')
+            bits = bits_init[k]
+
+        # if points provided than we do not set the power (it will be defined by points)
+        if points_init is None:
+            points = get_constellation_point(bits, type=ofdm['modulation_type'])
+            mod_type = get_modulation_type_from_order(ofdm['m_order'])
+            scale_constellation = np.sqrt(ofdm['p_ave'] / ofdm['n_carriers']) / get_scale_coef_constellation(mod_type)
+            points = points * scale_constellation  # normalise power and scale to power
+        else:
+            points = points_init[k]
+
+        ofdm_symbols = [generate_ofdm_symbol(ofdm, points=points[i * ofdm['n_carriers']:(i + 1) * ofdm['n_carriers']]) for i in range(ofdm['n_symbols'])]
+        ofdm_signal = np.concatenate(ofdm_symbols)
+
+        signal.append(ofdm_signal)
+        bits_return.append(bits)
+        points_return.append(points)
 
     add = {
-        'bits': bits,
-        'points': points
+        'bits': bits_return,
+        'points': points_return
     }
 
-    return ofdm_signal, add
+    return signal, add
 
 
 def decode_ofdm_symbol(ofdm_symbol, ofdm):
@@ -604,14 +617,17 @@ def decode_ofdm_symbol(ofdm_symbol, ofdm):
 
 def decode_ofdm_signal(ofdm_signal, ofdm):
 
-    # split the signal into OFDM symbols
-    ofdm_symbols = np.split(ofdm_signal, ofdm['n_symbols'])
+    points_return = []
 
-    # decode OFDM symbols
-    points = [decode_ofdm_symbol(ofdm_symbol, ofdm) for ofdm_symbol in ofdm_symbols]
-    points = np.concatenate(points)
+    for k in range(ofdm['n_polarisations']):
+        # split the signal into OFDM symbols
+        ofdm_symbols = np.split(ofdm_signal[k], ofdm['n_symbols'])
 
-    return points
+        # decode OFDM symbols
+        points = [decode_ofdm_symbol(ofdm_symbol, ofdm) for ofdm_symbol in ofdm_symbols]
+        points_return.append(np.concatenate(points))
+
+    return points_return
 
 
 # Additional functions
