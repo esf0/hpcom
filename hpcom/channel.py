@@ -593,6 +593,7 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         points_x_orig_scaled = points_x_orig[k] * scale_constellation
         points_y_orig_scaled = points_y_orig[k] * scale_constellation
 
+
         start_time = datetime.now()
         ber_x = get_ber_by_points(points_x_orig_scaled, points_x_found, mod_type)
         ber_y = get_ber_by_points(points_y_orig_scaled, points_y_found, mod_type)
@@ -605,13 +606,13 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         evm_x = get_evm(points_x_orig_scaled, points_x_shifted[k] * scale_constellation)
         evm_y = get_evm(points_y_orig_scaled, points_y_shifted[k] * scale_constellation)
 
-        mi_x = calculate_mutual_information(points_x_orig_scaled, points_x_found[k])
-        mi_y = calculate_mutual_information(points_y_orig_scaled, points_y_found[k])
+        mi_x = calculate_mutual_information(points_x_orig_scaled, points_x_found)
+        mi_y = calculate_mutual_information(points_y_orig_scaled, points_y_found)
 
-        print("BER (x / y):", ber_x[k], ber_y[k]) if verbose >= 1 else ...
-        print(r'Q^2-factor (x / y):', q_x[k], q_y[k]) if verbose >= 1 else ...
-        print(r'EVM (x / y):', evm_x[k], evm_y[k]) if verbose >= 1 else ...
-        print(r'MI (x / y):', mi_x[k], mi_y[k]) if verbose >= 1 else ...
+        print("BER (x / y):", ber_x, ber_y) if verbose >= 1 else ...
+        print(r'Q^2-factor (x / y):', q_x, q_y) if verbose >= 1 else ...
+        print(r'EVM (x / y):', evm_x, evm_y) if verbose >= 1 else ...
+        print(r'MI (x / y):', mi_x, mi_y) if verbose >= 1 else ...
 
     else:
         print('Error[full_line_model_wdm]: no such type of channels_type variable')
