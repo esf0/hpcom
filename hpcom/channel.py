@@ -1282,6 +1282,7 @@ def full_line_model_ofdm(channel, ofdm, bits=None, points=None, verbose=0, dbp=F
         av_pow_text = f"Average signal power (x): {p_signal_x:.7f} (has to be close to {p_signal_correct:.7f})"
     print(av_pow_text) if verbose >= 3 else ...
 
+    start_time = datetime.now()
     if ofdm['n_polarisations'] == 1:
         ofdm_signal_prop = propagate_schrodinger(channel, ofdm_signal[0], sample_freq=int(
             ofdm['symb_freq'] * ofdm['n_carriers']))
@@ -1291,6 +1292,7 @@ def full_line_model_ofdm(channel, ofdm, bits=None, points=None, verbose=0, dbp=F
                                              sample_freq=int(ofdm['symb_freq'] * ofdm['n_carriers']))
         ofdm_signal_cdc = dispersion_compensation_manakov(channel, ofdm_signal_prop[0],
                                                            ofdm_signal_prop[1], dt)
+    print("propagation took", (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
 
     points = decode_ofdm_signal(ofdm_signal_cdc, ofdm)
 

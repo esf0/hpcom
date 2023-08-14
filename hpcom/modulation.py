@@ -107,18 +107,13 @@ def generate_constellation(n):
 
 def generate_constellation_dict(n):
 
-    result = {}
     constellation, grey_code_2d = generate_constellation(n)
-    for i in range(len(grey_code_2d)):
-        for j in range(len(grey_code_2d[i])):
-            result[grey_code_2d[i, j]] = constellation[i, j]
-
+    result = {grey_code_2d[i, j]: constellation[i, j] for i in range(len(grey_code_2d)) for j in range(len(grey_code_2d[i]))}
     inv = {v: k for k, v in result.items()}
-
     return result, inv
 
 
-def get_constellation_point(bit_data, type="qpsk", constellation=None):
+def get_constellation_point_old(bit_data, type="qpsk", constellation=None):
     """
     Get constellation point for given bit sequence
     Args:
@@ -133,20 +128,8 @@ def get_constellation_point(bit_data, type="qpsk", constellation=None):
     n = get_n_bits(type)
 
     if constellation is None:
-        constellation = generate_constellation_dict(n)
+        constellation, _ = generate_constellation_dict(n)
 
-    # if type == "qpsk":
-    #     n = 1
-    # elif type == "16qam":
-    #     n = 2
-    # elif type == "64qam":
-    #     n = 3
-    # elif type == "256qam":
-    #     n = 4
-    # elif type == "1024qam":
-    #     n = 5
-    # else:
-    #     print("[get_constellation_point]: unknown constellation type")
 
     # if bit sequence has less number of bit than we need to the constellation type add bits to the beginning
     if len(bit_data) < n:
@@ -155,8 +138,8 @@ def get_constellation_point(bit_data, type="qpsk", constellation=None):
     elif len(bit_data) > n:
         # if length of the sequence has not integer number of subsequence
         # add '0' bits to the beginning
-        if len(bit_data) % (n) != 0:
-            temp_bit_data = ''.join('0' for add_bit in range(n - (len(bit_data) % (n)))) + bit_data
+        if len(bit_data) % n != 0:
+            temp_bit_data = ''.join('0' for add_bit in range(n - (len(bit_data) % n))) + bit_data
         else:
             temp_bit_data = bit_data
 
@@ -171,6 +154,33 @@ def get_constellation_point(bit_data, type="qpsk", constellation=None):
     point = constellation[temp_bit_data]
 
     return point
+
+
+def get_constellation_point(bit_data, type="qpsk", constellation=None):
+    """
+    Get constellation point for given bit sequence
+    Args:
+        bit_data: Bit sequence as a string
+        type: Type of constellation
+        constellation: Precomputed constellation dictionary
+
+    Returns:
+        Constellation points
+    """
+
+    n = get_n_bits(type)
+
+    if constellation is None:
+        constellation, _ = generate_constellation_dict(n)
+
+    # Ensure bit_data is a multiple of n by padding with zeros
+    padded_bit_data = bit_data.zfill((len(bit_data) + n - 1) // n * n)
+
+    # Iterate over chunks of n bits and look up the corresponding constellation point
+    points = [constellation[padded_bit_data[i:i + n]] for i in range(0, len(padded_bit_data), n)]
+
+    return np.array(points)
+
 
 
 def get_constellation(mod_type):
@@ -193,17 +203,13 @@ def get_bits_from_constellation_points(points, type="qpsk"):
     Returns: bit sequence
 
     """
+
     n_bits = get_n_bits(type)
-    dict_bits, dict_points = generate_constellation_dict(n_bits)
+    _, dict_points = generate_constellation_dict(n_bits)
 
-    bit_sequence = ''
-    for i in range(len(points)):
-        # symbol_bits = get_bits_from_constellation_point(points[i], type)
-        # print(points[i])
-        symbol_bits = dict_points[points[i]]
-        bit_sequence = bit_sequence + symbol_bits
+    bit_sequence = [dict_points[point] for point in points]
+    return ''.join(bit_sequence)
 
-    return bit_sequence
 
 
 def get_scale_coef_constellation(mod_type):
