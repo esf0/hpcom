@@ -34,7 +34,7 @@ def rrcosfilter_base(nt, beta, t_symb, sample_rate):
     one_over_ts = 1.0 / t_symb
     dt = 1. / float(sample_rate)
     t = (np.arange(nt) - nt / 2.) * dt
-    rrc = np.zeros(nt, dtype=np.float)
+    rrc = np.zeros(nt, dtype=float)
 
     # found ranges for conditions
     zero_pos = np.where(np.isclose(t, 0., atol=1e-16, rtol=1e-15))
@@ -509,6 +509,7 @@ def create_ofdm_parameters(n_carriers, p_ave_dbm, n_symbols, m_order, symb_freq,
             }
 
     ofdm['p_ave'] = (10 ** (ofdm['p_ave_dbm'] / 10)) / 1000
+    ofdm['scale_coef'] = get_scale_coef_constellation(ofdm['modulation_type']) / np.sqrt(ofdm['p_ave'] / ofdm['n_polarisations'] / ofdm['n_carriers'])
 
     return ofdm
 
@@ -592,9 +593,9 @@ def generate_ofdm_signal(ofdm_init, bits_init=None, points_init=None, seed=0):
         ofdm_symbols = [generate_ofdm_symbol(ofdm, points=points[i * ofdm['n_carriers']:(i + 1) * ofdm['n_carriers']]) for i in range(ofdm['n_symbols'])]
         ofdm_signal = np.concatenate(ofdm_symbols)
 
-        signal.append(ofdm_signal)
+        signal.append(tf.cast(ofdm_signal, tf.complex128))
         bits_return.append(bits)
-        points_return.append(points)
+        points_return.append(np.array(points))
 
     add = {
         'bits': bits_return,

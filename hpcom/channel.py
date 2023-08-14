@@ -5,14 +5,14 @@ import json
 from datetime import datetime
 
 from .signal import create_wdm_parameters, generate_wdm, generate_wdm_optimise, receiver, receiver_wdm,\
-    nonlinear_shift, dbm_to_mw, get_default_wdm_parameters, get_points_wdm
+    nonlinear_shift, dbm_to_mw, get_default_wdm_parameters, get_points_wdm, generate_ofdm_signal, decode_ofdm_signal
 from .modulation import get_modulation_type_from_order, get_scale_coef_constellation, \
-    get_nearest_constellation_points_unscaled
+    get_nearest_constellation_points_unscaled, get_constellation, get_nearest_constellation_points_new
 from .metrics import get_ber_by_points, get_ber_by_points_ultimate, get_energy, get_average_power, get_evm_ultimate, \
     get_evm, calculate_mutual_information
 
 from ssfm_gpu.propagation import propagate_manakov, propagate_manakov_backward, \
-    propagate_schrodinger, dispersion_compensation_manakov
+    propagate_schrodinger, dispersion_compensation_manakov, dispersion_compensation
 
 # Channel parameters
 
@@ -1255,5 +1255,93 @@ def receiver_model(wdm, signal, points_orig, ft_filter_values_rx,
     else:
         print('Error[full_line_model_wdm]: no such type of optimise variable')
         return None
+
+    return result
+
+
+# OFDM
+
+def full_line_model_ofdm(channel, ofdm, bits=None, points=None, verbose=0, dbp=False):
+
+    ofdm_signal, add = generate_ofdm_signal(ofdm)
+
+    point_orig = add['points']
+
+    np_signal = len(ofdm_signal)
+    dt = 1. / ofdm['symb_freq'] / ofdm['n_carriers']
+
+    e_signal = get_energy(ofdm_signal[0], dt * np_signal)
+    p_signal_x = get_average_power(ofdm_signal[0], dt)
+    p_signal_correct = dbm_to_mw(ofdm['p_ave_dbm']) / 1000 / ofdm['n_polarisations']
+
+    if ofdm['n_polarisations'] == 2:
+        p_signal_y = get_average_power(ofdm_signal[1], dt)
+        av_pow_text = (f"Average signal power (x / y): {p_signal_x:.7f} "
+                       f"/ {p_signal_y:.7f} (has to be close to {p_signal_correct:.7f})")
+    else:
+        av_pow_text = f"Average signal power (x): {p_signal_x:.7f} (has to be close to {p_signal_correct:.7f})"
+    print(av_pow_text) if verbose >= 3 else ...
+
+    if ofdm['n_polarisations'] == 1:
+        ofdm_signal_prop = propagate_schrodinger(channel, ofdm_signal[0], sample_freq=int(
+            ofdm['symb_freq'] * ofdm['n_carriers']))
+        ofdm_signal_cdc = dispersion_compensation(channel, ofdm_signal_prop, dt)
+    else:
+        ofdm_signal_prop = propagate_manakov(channel, ofdm_signal[0], ofdm_signal[1],
+                                             sample_freq=int(ofdm['symb_freq'] * ofdm['n_carriers']))
+        ofdm_signal_cdc = dispersion_compensation_manakov(channel, ofdm_signal_prop[0],
+                                                           ofdm_signal_prop[1], dt)
+
+    points = decode_ofdm_signal(ofdm_signal_cdc, ofdm)
+
+    points_shifted = []
+    points_found = []
+    ber = []
+    q = []
+    evm = []
+    mi = []
+
+    for k in range(ofdm['n_polarisations']):
+        nl_shift = nonlinear_shift(points[k], add['points'][k])
+        points_shifted.append(points[k] * nl_shift)
+
+        mod_type = get_modulation_type_from_order(ofdm['m_order'])
+        constellation = get_constellation(mod_type)
+
+        points_orig_scaled = point_orig[k] * ofdm['scale_coef']
+
+        start_time = datetime.now()
+        points_found.append(get_nearest_constellation_points_new(points_shifted[k] * ofdm['scale_coef'], constellation))
+        print(f"search {k} polarisation points took {(datetime.now() - start_time).total_seconds() * 1000} ms") if verbose >= 2 else ...
+
+        start_time = datetime.now()
+        ber.append(get_ber_by_points(points_orig_scaled, points_found[k], mod_type))
+        q.append(np.sqrt(2) * sp.special.erfcinv(2 * ber[k][0]))
+        print(
+            f"search {k} polarisation BER took {(datetime.now() - start_time).total_seconds() * 1000} ms") if verbose >= 2 else ...
+
+        evm.append(get_evm(points_orig_scaled, points_shifted[k] * ofdm['scale_coef']))
+        mi.append(calculate_mutual_information(points_orig_scaled, points_found[k]))
+
+    ber_text = f"BER (x / y): {ber[0]} / {ber[1]}" if ofdm['n_polarisations'] == 2 else f"BER (x): {ber[0]}"
+    q_text = f"Q^2-factor (x / y): {q[0]} / {q[1]}" if ofdm['n_polarisations'] == 2 else f"Q^2-factor (x): {q[0]}"
+    evm_text = f"EVM (x / y): {evm[0]} / {evm[1]}" if ofdm['n_polarisations'] == 2 else f"EVM (x): {evm[0]}"
+    mi_text = f"MI (x / y): {mi[0]} / {mi[1]}" if ofdm['n_polarisations'] == 2 else f"MI (x): {mi[0]}"
+
+    print(ber_text) if verbose >= 1 else ...
+    print(q_text) if verbose >= 1 else ...
+    print(evm_text) if verbose >= 1 else ...
+    print(mi_text) if verbose >= 1 else ...
+
+    result = {
+        'points': points,
+        'points_orig': point_orig,
+        'points_shifted': points_shifted,
+        'points_found': points_found,
+        'ber': ber,
+        'q': q,
+        'evm': evm,
+        'mi': mi
+    }
 
     return result
