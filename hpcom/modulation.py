@@ -16,18 +16,124 @@ def get_modulation_type_from_order(order):
     return mod_type[order]
 
 
-def get_constellation_point(bit_data, type="qpsk"):
-    # 64QAM -> 6 bits
-    # 0b000000 for example
-    # 1 bit -> the sigh of the real part: 0 -> '-'; 1 -> '+'
-    # 2 and 3 bits -> value to convert to int and multiply by 2 and add 1
-    # 00 -> 0 -> 0 * 2 + 1 = 1; 01 -> 1 -> 1 * 2 + 1 = 3;
-    # 10 -> 2 -> 2 * 2 + 1 = 5; 11 -> 3 -> 3 * 2 + 1 = 7;
-    # 4 bit -> the sigh of the imag part: 0 -> '-'; 1 -> '+'
-    # 5 and 6 bits -> same as for real
+def get_n_bits(type):
+    n_bits = {"qpsk": 2, "16qam": 4, "64qam": 6, "256qam": 8, "1024qam": 10}
+    return n_bits[type]
 
-    n_mod_type = {"qpsk": 1, "16qam": 2, "64qam": 3, "256qam": 4, "1024qam": 5}
-    n = n_mod_type[type]
+
+def generate_grey_code(n):
+    # Base case
+    if n <= 0:
+        return ['0']
+    elif n == 1:
+        return ['0', '1']
+
+    # Recursive case
+    first_half = generate_grey_code(n - 1)
+    second_half = first_half.copy()
+
+    # Reverse the second half
+    second_half.reverse()
+
+    # Append 0 to the first half
+    first_half = ['0' + code for code in first_half]
+
+    # Append 1 to the second half
+    second_half = ['1' + code for code in second_half]
+
+    # Concatenate both halves
+    result = first_half + second_half
+
+    return result
+
+
+def generate_grey_code_2d(n):
+    if n % 2 != 0:
+        raise ValueError('n must be even.')
+    # Generate 1D Grey code sequence
+    grey_code_1d = np.array(generate_grey_code(n // 2))
+
+    # Generate 2D Grey code sequence by concatenating 1D sequences
+    grey_code_2d = np.char.add(grey_code_1d[:, None], grey_code_1d)
+
+    return grey_code_2d
+
+
+# TODO: finish odd degrees of 2 (32, 128, 512, etc.)
+def generate_grey_code_2d_rect(n):
+    n_small = n // 2
+    n_big = n - n_small
+    # Generate 1D Grey code sequence
+    grey_code_1d_big = np.array(generate_grey_code(n_big))
+    grey_code_1d_small = np.array(generate_grey_code(n_small))
+
+    # Generate 2D Grey code sequence by concatenating 1D sequences
+    grey_code_2d = np.char.add(grey_code_1d_big[:, None], grey_code_1d_small)
+
+    return grey_code_2d
+
+
+def generate_constellation(n):
+    """
+    Generates a 2D constellation of size 2^n x 2^n using Grey code.
+    Args:
+        n: number of bits
+
+    Returns:
+
+    """
+    if n % 2 != 0:
+        raise ValueError('n must be even.')
+    # Generate 2D Grey code sequence
+    grey_code_2d = generate_grey_code_2d(n)
+
+    # Number of points along one dimension
+    num_points = 2**(n // 2)
+
+    # Generate coordinates
+    coords = np.arange(num_points)
+
+    # Scale and shift coordinates to match the constellation
+    coords = 2*coords - (num_points - 1)
+
+    # Generate grid
+    I, Q = np.meshgrid(coords, -coords)  # Q coordinates are negated to match the conventional QAM constellation
+
+    # Convert to complex
+    constellation = I + 1j * Q
+
+    return constellation, grey_code_2d
+
+
+def generate_constellation_dict(n):
+
+    result = {}
+    constellation, grey_code_2d = generate_constellation(n)
+    for i in range(len(grey_code_2d)):
+        for j in range(len(grey_code_2d[i])):
+            result[grey_code_2d[i, j]] = constellation[i, j]
+
+    inv = {v: k for k, v in result.items()}
+
+    return result, inv
+
+
+def get_constellation_point(bit_data, type="qpsk", constellation=None):
+    """
+    Get constellation point for given bit sequence
+    Args:
+        bit_data:
+        type:
+        constellation:
+
+    Returns:
+
+    """
+
+    n = get_n_bits(type)
+
+    if constellation is None:
+        constellation = generate_constellation_dict(n)
 
     # if type == "qpsk":
     #     n = 1
@@ -43,87 +149,28 @@ def get_constellation_point(bit_data, type="qpsk"):
     #     print("[get_constellation_point]: unknown constellation type")
 
     # if bit sequence has less number of bit than we need to the constellation type add bits to the beginning
-    if len(bit_data) < 2 * n:
+    if len(bit_data) < n:
         # temp to not change initial data
-        temp_bit_data = ''.join('0' for add_bit in range(2 * n - len(bit_data))) + bit_data
-    elif len(bit_data) > 2 * n:
+        temp_bit_data = ''.join('0' for add_bit in range(n - len(bit_data))) + bit_data
+    elif len(bit_data) > n:
         # if length of the sequence has not integer number of subsequence
         # add '0' bits to the beginning
-        if len(bit_data) % (2 * n) != 0:
-            temp_bit_data = ''.join('0' for add_bit in range(2 * n - (len(bit_data) % (2 * n)))) + bit_data
+        if len(bit_data) % (n) != 0:
+            temp_bit_data = ''.join('0' for add_bit in range(n - (len(bit_data) % (n)))) + bit_data
         else:
             temp_bit_data = bit_data
 
         # use recursion for subsequences
-        points = [get_constellation_point(temp_bit_data[k * 2 * n:(k + 1) * 2 * n], type=type)
-                  for k in range(len(temp_bit_data) // (2 * n))]
+        points = [get_constellation_point(temp_bit_data[k * n:(k + 1) * n], type=type, constellation=constellation)
+                  for k in range(len(temp_bit_data) // n)]
         # print("[get_constellation_point]: more bits than needed")
         return np.array(points)
     else:
         temp_bit_data = bit_data
 
-    # generate constellation according to the Gray code (only 1 bit changes for neighbours)
-    point = 1 + 1j
-    if temp_bit_data[0] == '0':
-        point = complex(-1, point.imag)
-    if temp_bit_data[n] == '0':
-        point = complex(point.real, -1)
-
-    if type != "qpsk":
-        point = complex(point.real * (int(temp_bit_data[1:n], 2) * 2 + 1),
-                        point.imag * (int(temp_bit_data[n + 1:], 2) * 2 + 1))
+    point = constellation[temp_bit_data]
 
     return point
-
-
-def get_bits_from_constellation_point(point, type="qpsk"):
-    # 64QAM -> 6 bits
-    # 0b000000 for example
-    # 1 bit -> the sigh of the real part: 0 -> '-'; 1 -> '+'
-    # 2 and 3 bits -> value to convert to int and multiply by 2 and add 1
-    # 00 -> 0 -> 0 * 2 + 1 = 1; 01 -> 1 -> 1 * 2 + 1 = 3;
-    # 10 -> 2 -> 2 * 2 + 1 = 5; 11 -> 3 -> 3 * 2 + 1 = 7;
-    # 4 bit -> the sigh of the imag part: 0 -> '-'; 1 -> '+'
-    # 5 and 6 bits -> same as for real
-
-    n_mod_type = {"qpsk": 1, "16qam": 2, "64qam": 3, "256qam": 4, "1024qam": 5}
-    n = n_mod_type[type]
-
-    bit_data = ''
-    data_real = ''
-    data_imag = ''
-
-    if type != "qpsk":
-        data_real = "{0:b}".format(int((np.absolute(point.real) - 1) / 2))
-        if len(data_real) < n - 1:
-            data_real = ''.join('0' for add_bit in range(n - 1 - len(data_real))) + data_real
-
-        data_imag = "{0:b}".format(int((np.absolute(point.imag) - 1) / 2))
-        if len(data_imag) < n - 1:
-            data_imag = ''.join('0' for add_bit in range(n - 1 - len(data_imag))) + data_imag
-
-    # real part
-    if np.sign(point.real) == 1:
-        bit_data = bit_data + ''.join('1')
-    else:
-        bit_data = bit_data + ''.join('0')
-
-    bit_data = bit_data + data_real
-
-    # imag part
-    if np.sign(point.imag) == 1:
-        bit_data = bit_data + ''.join('1')
-    else:
-        bit_data = bit_data + ''.join('0')
-
-    bit_data = bit_data + data_imag
-
-    return bit_data
-
-
-def get_n_bits(type):
-    n_bits = {"qpsk": 2, "16qam": 4, "64qam": 6, "256qam": 8, "1024qam": 10}
-    return n_bits[type]
 
 
 def get_constellation(mod_type):
@@ -136,23 +183,18 @@ def get_constellation(mod_type):
     return points
 
 
-def get_bits_dict_for_constellation(type="qpsk"):
-
-    constellation = get_constellation(type)
-    dict = {}
-    for point in constellation:
-        bits = get_bits_from_constellation_point(point, type=type)
-        dict[bits] = point
-
-    dict_inv = {v: k for k, v in dict.items()}
-
-    return dict, dict_inv
-
-
 def get_bits_from_constellation_points(points, type="qpsk"):
-    dict_bits, dict_points = get_bits_dict_for_constellation(type=type)
-    # print(dict_bits)
-    # print(dict_points)
+    """
+    Get bit sequence for given constellation points
+    Args:
+        points: array of constellation points
+        type: type of constellation
+
+    Returns: bit sequence
+
+    """
+    n_bits = get_n_bits(type)
+    dict_bits, dict_points = generate_constellation_dict(n_bits)
 
     bit_sequence = ''
     for i in range(len(points)):
@@ -224,92 +266,3 @@ def get_nearest_constellation_points_unscaled(points, mod_type):
     scale = get_scale_coef(points, mod_type)
     # return get_nearest_constellation_points(points * scale, mod_type)
     return get_nearest_constellation_points_new(points * scale, get_constellation(mod_type))
-
-
-# new constellations
-def generate_grey_code(n):
-    # Base case
-    if n <= 0:
-        return ['0']
-    elif n == 1:
-        return ['0', '1']
-
-    # Recursive case
-    first_half = generate_grey_code(n - 1)
-    second_half = first_half.copy()
-
-    # Reverse the second half
-    second_half.reverse()
-
-    # Append 0 to the first half
-    first_half = ['0' + code for code in first_half]
-
-    # Append 1 to the second half
-    second_half = ['1' + code for code in second_half]
-
-    # Concatenate both halves
-    result = first_half + second_half
-
-    return result
-
-
-def generate_grey_code_2d(n):
-    if n % 2 != 0:
-        raise ValueError('n must be even.')
-    # Generate 1D Grey code sequence
-    grey_code_1d = np.array(generate_grey_code(n // 2))
-
-    # Generate 2D Grey code sequence by concatenating 1D sequences
-    grey_code_2d = np.char.add(grey_code_1d[:, None], grey_code_1d)
-
-    return grey_code_2d
-
-
-# TODO: finish odd degrees of 2 (32, 128, 512, etc.)
-def generate_grey_code_2d_rect(n):
-    n_small = n // 2
-    n_big = n - n_small
-    # Generate 1D Grey code sequence
-    grey_code_1d_big = np.array(generate_grey_code(n_big))
-    grey_code_1d_small = np.array(generate_grey_code(n_small))
-
-    # Generate 2D Grey code sequence by concatenating 1D sequences
-    grey_code_2d = np.char.add(grey_code_1d_big[:, None], grey_code_1d_small)
-
-    return grey_code_2d
-
-
-def generate_constellation(n):
-    if n % 2 != 0:
-        raise ValueError('n must be even.')
-    # Generate 2D Grey code sequence
-    grey_code_2d = generate_grey_code_2d(n)
-
-    # Number of points along one dimension
-    num_points = 2**(n // 2)
-
-    # Generate coordinates
-    coords = np.arange(num_points)
-
-    # Scale and shift coordinates to match the constellation
-    coords = 2*coords - (num_points - 1)
-
-    # Generate grid
-    I, Q = np.meshgrid(coords, -coords)  # Q coordinates are negated to match the conventional QAM constellation
-
-    # Convert to complex
-    constellation = I + 1j * Q
-
-    return constellation, grey_code_2d
-
-
-def generate_constellation_dict(n):
-
-    result = {}
-    constellation, grey_code_2d = generate_constellation(n)
-    for i in range(len(grey_code_2d)):
-        for j in range(len(grey_code_2d[i])):
-            result[grey_code_2d[i, j]] = constellation[i, j]
-
-    return result
-
