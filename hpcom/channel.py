@@ -4,8 +4,10 @@ import json
 
 from datetime import datetime
 
-from .signal import create_wdm_parameters, generate_wdm, generate_wdm_optimise, receiver, receiver_wdm,\
-    nonlinear_shift, dbm_to_mw, get_default_wdm_parameters, get_points_wdm, generate_ofdm_signal, decode_ofdm_signal
+from .signal import (create_wdm_parameters, generate_wdm, generate_wdm_optimise, receiver, receiver_wdm,
+                     nonlinear_shift, dbm_to_mw, get_default_wdm_parameters, get_points_wdm,
+                     generate_ofdm_signal, decode_ofdm_signal,
+                     generate_wdm_new)
 from .modulation import get_modulation_type_from_order, get_scale_coef_constellation, \
     get_nearest_constellation_points_unscaled, get_constellation, get_nearest_constellation_points_new
 from .metrics import get_ber_by_points, get_ber_by_points_ultimate, get_energy, get_average_power, get_evm_ultimate, \
@@ -603,8 +605,8 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         q_x = np.sqrt(2) * sp.special.erfcinv(2 * ber_x[0])
         q_y = np.sqrt(2) * sp.special.erfcinv(2 * ber_y[0])
 
-        evm_x = get_evm(points_x_orig_scaled, points_x_shifted[k] * scale_constellation)
-        evm_y = get_evm(points_y_orig_scaled, points_y_shifted[k] * scale_constellation)
+        evm_x = get_evm(points_x_orig_scaled, points_x_shifted * scale_constellation)
+        evm_y = get_evm(points_y_orig_scaled, points_y_shifted * scale_constellation)
 
         mi_x = calculate_mutual_information(points_x_orig_scaled, points_x_found)
         mi_y = calculate_mutual_information(points_y_orig_scaled, points_y_found)
@@ -656,6 +658,194 @@ def full_line_model_wdm(channel, wdm, bits=None, points=None,
         return None
 
     return result
+
+
+def full_line_model_wdm_new(channel, wdm, bits=None, points=None,
+                            channels_type='all', verbose=0, dbp=False, optimise='not',
+                            ft_filter_values_tx=None, ft_filter_values_rx=None):
+
+
+    # calculate timestep
+    dt = 1. / wdm['sample_freq']
+
+    # generate signal (one or two polarisations)
+    # signal contains one or two elements which is x and y polarisations
+    signal, wdm_info = generate_wdm_new(wdm, bits=bits, points=points, ft_filter_values=ft_filter_values_tx)
+
+    # same as signal. points_orig[0] contains points for x polarisation, points_orig[1] for y polarisation (if exist)
+    points_orig = wdm_info['points']
+
+    if ft_filter_values_rx is None:
+        ft_filter_values = wdm_info['ft_filter_values']
+    else:
+        ft_filter_values = ft_filter_values_rx
+
+    np_signal = len(signal[0])
+
+    e_signal_x = get_energy(signal[0], dt * np_signal)
+    p_signal_x = get_average_power(signal[0], dt)
+    p_signal_correct = dbm_to_mw(wdm['p_ave_dbm']) / 1000 / wdm['n_polarisations'] * wdm['n_channels']
+
+    if wdm['n_polarisations'] == 2:
+        e_signal_y = get_energy(signal[1], dt * np_signal)
+        p_signal_y = get_average_power(signal[1], dt)
+        mes = (f"Average signal power (x / y): {p_signal_x:.7f} "
+               f"/ {p_signal_y:.7f} (has to be close to {p_signal_correct:.7f})\n"
+               f"Average signal energy (x / y): {e_signal_x:.7f} / {e_signal_y:.7f}")
+    else:
+        mes = (f"Average signal power (x): {p_signal_x:.7f} "
+               f"(has to be close to {p_signal_correct:.7f})\n"
+               f"Average signal energy (x): {e_signal_x:.7f}")
+
+    print(mes) if verbose >= 3 else ...
+
+    start_time = datetime.now()
+    if wdm['n_polarisations'] == 1:
+        signal_prop = propagate_schrodinger(channel, signal[0], wdm['sample_freq'])
+        signal_cdc = dispersion_compensation(channel, signal_prop, dt)
+        signal_prop = (signal_prop,)  # create tuple to use [0] index for only one polarisation
+        signal_cdc = (signal_cdc,)
+    else:
+        signal_prop = propagate_manakov(channel, signal[0], signal[1], wdm['sample_freq'])
+        signal_cdc = dispersion_compensation_manakov(channel, signal_prop[0], signal_prop[1], dt)
+
+    print("propagation took", (datetime.now() - start_time).total_seconds() * 1000, "ms") if verbose >= 2 else ...
+
+    e_signal_x_prop = get_energy(signal_prop[0], dt * np_signal)
+    if wdm['n_polarisations'] == 2:
+        e_signal_y_prop = get_energy(signal_prop[1], dt * np_signal)
+        mes = (f"Average signal energy after propagation (x / y): {e_signal_x_prop:.7f} / {e_signal_y_prop:.7f} \n"
+               f"Energy difference (x / y): {np.absolute(e_signal_x_prop - e_signal_x):.7f} / "
+               f"{np.absolute(e_signal_y_prop - e_signal_y):.7f}")
+    else:
+        mes = (f"Average signal energy after propagation (x): {e_signal_x_prop:.7f} \n"
+               f"Energy difference (x): {np.absolute(e_signal_x_prop - e_signal_x):.7f}")
+
+    print(mes) if verbose >= 3 else ...
+
+
+    mod_type = get_modulation_type_from_order(wdm['m_order'])
+    constellation = get_constellation(mod_type)
+
+    sample_step = int(wdm['upsampling'] / wdm['downsampling_rate'])
+    samples = []
+
+    points = []
+    points_shifted = []
+    points_found = []
+    ber = []
+    q = []
+    evm = []
+    mi = []
+
+    for p in range(wdm['n_polarisations']):
+
+        print('Polarisation ', p) if verbose >= 1 else ...
+        samples.append(receiver_wdm(signal_cdc[p], ft_filter_values[p], wdm))
+
+        # TODO: make CDC after receiver
+        # TODO: handle dbp
+        # for k in range(wdm['n_channels']):
+        #     samples_x[k], samples_y[k] = dispersion_compensation(channel, samples_x[k], samples_y[k], wdm['downsampling_rate'] / wdm['sample_freq'])
+
+        points_per_pol = []
+        points_shifted_per_pol = []
+        points_found_per_pol = []
+        ber_per_pol = []
+        q_per_pol = []
+        evm_per_pol = []
+        mi_per_pol = []
+
+        for k in range(wdm['n_channels']):
+            if channels_type == 'middle' and k != (wdm['n_channels'] - 1) // 2:
+                continue
+
+            print('WDM channel', k) if verbose >= 1 else ...
+
+            points_per_pol.append(get_points_wdm(samples[p][k], wdm))
+
+            nl_shift = nonlinear_shift(points_per_pol[-1], points_orig[p][k])
+            points_shifted_per_pol.append(points_per_pol[-1] * nl_shift)
+
+            points_orig_scaled = points_orig[p][k] * wdm['scale_coef']
+
+            start_time = datetime.now()
+            points_found_per_pol.append(
+                get_nearest_constellation_points_new(points_shifted_per_pol[-1] * wdm['scale_coef'], constellation)
+                # get_nearest_constellation_points_unscaled(points_shifted_per_pol[-1], mod_type)
+            )
+            print(
+                f"search {p} polarisation {k} channel points took {(datetime.now() - start_time).total_seconds() * 1000} ms"
+            ) if verbose >= 2 else ...
+
+            start_time = datetime.now()
+            ber_per_pol.append(get_ber_by_points(points_orig_scaled, points_found_per_pol[-1], mod_type))
+            q_per_pol.append(np.sqrt(2) * sp.special.erfcinv(2 * ber_per_pol[-1][0]))
+            print(
+                f"search {p} polarisation {k} channel BER took {(datetime.now() - start_time).total_seconds() * 1000} ms"
+            ) if verbose >= 2 else ...
+
+            evm_per_pol.append(get_evm(points_orig_scaled, points_shifted_per_pol[-1] * wdm['scale_coef']))
+            mi_per_pol.append(calculate_mutual_information(points_orig_scaled, points_found_per_pol[-1]))
+
+        points.append(points_per_pol)
+        points_shifted.append(points_shifted_per_pol)
+        points_found.append(points_found_per_pol)
+        ber.append(ber_per_pol)
+        q.append(q_per_pol)
+        evm.append(evm_per_pol)
+        mi.append(mi_per_pol)
+
+    if channels_type == 'middle':
+        k_range = [0]
+    else:
+        k_range = range(wdm['n_channels'])
+
+    for k in k_range:
+
+        ber_text = f"BER (x / y): {ber[0][k]} / {ber[1][k]}" if wdm['n_polarisations'] == 2 else f"BER (x): {ber[0][k]}"
+        q_text = f"Q^2-factor (x / y): {q[0][k]} / {q[1][k]}" if wdm['n_polarisations'] == 2 else f"Q^2-factor (x): {q[0][k]}"
+        evm_text = f"EVM (x / y): {evm[0][k]} / {evm[1][k]}" if wdm['n_polarisations'] == 2 else f"EVM (x): {evm[0][k]}"
+        mi_text = f"MI (x / y): {mi[0][k]} / {mi[1][k]}" if wdm['n_polarisations'] == 2 else f"MI (x): {mi[0][k]}"
+
+        if verbose >= 1:
+            print('WDM channel (if channels_type == "middle", 0 for middle channel)', k)
+            print(ber_text)
+            print(q_text)
+            print(evm_text)
+            print(mi_text)
+
+    if optimise == 'not':
+
+        result = {
+            'points': points,
+            'points_orig': points_orig,
+            'points_shifted': points_shifted,
+            'points_found': points_found,
+            'ber': ber,
+            'q': q,
+            'evm': evm,
+            'mi': mi
+        }
+
+    elif optimise == 'ber_x':
+        return ber[0]
+    elif optimise == 'ber_y':
+        return ber[1]
+    elif optimise == 'evm_x':
+        return evm[0]
+    elif optimise == 'evm_y':
+        return evm[1]
+    elif optimise == 'mi_x':
+        return mi[0]
+    elif optimise == 'mi_y':
+        return mi[1]
+    else:
+        print('Error[full_line_model_wdm]: no such type of optimise variable')
+        return None
+
+    return result
+
 
 
 def dbp_model_wdm(channel, wdm, points, n_steps_per_span, n_samples_per_symbol, channels_type='all', verbose=0):
@@ -1268,7 +1458,7 @@ def full_line_model_ofdm(channel, ofdm, bits=None, points=None, verbose=0, dbp=F
 
     point_orig = add['points']
 
-    np_signal = len(ofdm_signal)
+    np_signal = len(ofdm_signal[0])
     dt = 1. / ofdm['symb_freq'] / ofdm['n_carriers']
 
     e_signal = get_energy(ofdm_signal[0], dt * np_signal)
@@ -1288,6 +1478,8 @@ def full_line_model_ofdm(channel, ofdm, bits=None, points=None, verbose=0, dbp=F
         ofdm_signal_prop = propagate_schrodinger(channel, ofdm_signal[0], sample_freq=int(
             ofdm['symb_freq'] * ofdm['n_carriers']))
         ofdm_signal_cdc = dispersion_compensation(channel, ofdm_signal_prop, dt)
+        ofdm_signal_prop = (ofdm_signal_prop,)  # create tuple to use [0] index for only one polarisation
+        ofdm_signal_cdc = (ofdm_signal_cdc,)
     else:
         ofdm_signal_prop = propagate_manakov(channel, ofdm_signal[0], ofdm_signal[1],
                                              sample_freq=int(ofdm['symb_freq'] * ofdm['n_carriers']))

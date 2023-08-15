@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 from hpcom.channel import (create_channel_parameters, full_line_model_default, full_line_model_wdm, full_line_model,
-                           full_line_model_ofdm)
+                           full_line_model_wdm_new, full_line_model_ofdm)
 from hpcom.signal import create_wdm_parameters, generate_wdm, create_ofdm_parameters
 
 from ssfm_gpu.propagation import propagate_manakov, propagate_schrodinger
@@ -10,7 +10,9 @@ from ssfm_gpu.conversion import convert_forward, convert_inverse
 import numpy as np
 
 # create parameters
-wdm = create_wdm_parameters(n_channels=1, p_ave_dbm=6, n_symbols=2 ** 16, m_order=16, roll_off=0.1, upsampling=16,
+p_ave_dbm = 6  # dBm
+# p_ave_dbm = 2.9897  # dBm for single polarisation equivalent for 6 dbm for two polarisations
+wdm = create_wdm_parameters(n_channels=1, p_ave_dbm=p_ave_dbm, n_symbols=2 ** 15, m_order=16, roll_off=0.1, upsampling=16,
                             downsampling_rate=1, symb_freq=34e9, channel_spacing=75e9, n_polarisations=2)
 
 ofdm = create_ofdm_parameters(n_carriers=512,
@@ -43,7 +45,10 @@ if gpus:
         # Virtual devices must be set before GPUs have been initialized
         print(e)
 
+channels_type = 'all'
+# channels_type = 'middle'
 # full_line_model_wdm(channel, wdm, channels_type='middle', verbose=3)
+full_line_model_wdm_new(channel, wdm, channels_type=channels_type, verbose=3)
 
 # Manakov - two polarisations
 try:
@@ -57,9 +62,9 @@ try:
     # full_line_model(channel, wdm, verbose=1)
     # print('[full_line_model]: verbose=2')
     # full_line_model(channel, wdm, verbose=2)
-    print('[full_line_model]: verbose=3')
-    full_line_model(channel, wdm, verbose=3)
-    print('[full_line_model]: finished')
+    # print('[full_line_model]: verbose=3')
+    # full_line_model(channel, wdm, verbose=3)
+    # print('[full_line_model]: finished')
 
     # print('[full_line_model_wdm]: verbose=0')
     # full_line_model_wdm(channel, wdm, channels_type='middle', verbose=0)
@@ -68,7 +73,7 @@ try:
     # print('[full_line_model_wdm]: verbose=2')
     # full_line_model_wdm(channel, wdm, channels_type='middle', verbose=2)
     print('[full_line_model_wdm]: verbose=3')
-    full_line_model_wdm(channel, wdm, channels_type='middle', verbose=3)
+    # full_line_model_wdm(channel, wdm, channels_type=channels_type, verbose=3)
     print('[full_line_model_wdm]: finished')
 
 

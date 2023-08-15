@@ -109,7 +109,7 @@ def get_default_wdm_parameters():
     wdm['symb_freq'] = 64e9  # GHz
     wdm['sample_freq'] = int(wdm['symb_freq'] * wdm['upsampling'])
     wdm['np_filter'] = 2 ** 12
-    wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # mW
+    wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # W
     wdm['modulation_type'] = get_modulation_type_from_order(wdm['m_order'])
     wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
     wdm['seed'] = 'fixed'
@@ -122,7 +122,7 @@ def get_default_wdm_parameters():
 def update_wdm_parameters(wdm):
 
     wdm['sample_freq'] = int(wdm['symb_freq'] * wdm['upsampling'])
-    wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # mW
+    wdm['p_ave'] = (10 ** (wdm['p_ave_dbm'] / 10)) / 1000  # W
     wdm['modulation_type'] = get_modulation_type_from_order(wdm['m_order'])
     wdm['n_bits_symbol'] = get_n_bits(wdm['modulation_type'])
     wdm['scale_coef'] = get_scale_coef_constellation(wdm['modulation_type']) / \
@@ -347,6 +347,27 @@ def generate_wdm(wdm, bits=None, points=None, ft_filter_values=None):
         return tf.cast(signal, tf.complex128), additional_all
     else:
         return tf.cast(signal_x, tf.complex128), tf.cast(signal_y, tf.complex128), additional_all
+
+
+def generate_wdm_new(wdm, bits=None, points=None, ft_filter_values=None):
+
+    if wdm['n_polarisations'] == 1:
+        signal, add = generate_wdm(wdm, bits=bits, points=points, ft_filter_values=ft_filter_values)
+        add_new = {
+            'ft_filter_values': (add['ft_filter_values_x'],),
+            'bits': (add['bits_x'],),
+            'points': (add['points_x'],)
+        }
+        return (signal,), add_new
+    else:
+        signal_x, signal_y, add = generate_wdm(wdm, bits=bits, points=points, ft_filter_values=ft_filter_values)
+        add_new = {
+            'ft_filter_values': (add['ft_filter_values_x'], add['ft_filter_values_y']),
+            'bits': (add['bits_x'], add['bits_y']),
+            'points': (add['points_x'], add['points_y'])
+        }
+        return (signal_x, signal_y), add_new
+
 
 
 # TODO: delete the usage of it
