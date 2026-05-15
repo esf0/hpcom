@@ -1,25 +1,89 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hpcom"
-version = "0.1.13"
+version = "0.2.0.dev0"
 authors = [
-  { name="Egor Sedov", email="e.sedov@g.nsu.ru" },
+  { name = "Egor Sedov", email = "egor.sedoff@gmail.com" },
 ]
 description = "High performance optical communication library"
 readme = "README.md"
-license = { file="LICENSE" }
-requires-python = ">=3.7"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Operating System :: OS Independent",
-    "Development Status :: 2 - Pre-Alpha",
-    "Topic :: Scientific/Engineering",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+  "Development Status :: 3 - Alpha",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "matplotlib>=3.7",
+  "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+tf = ["tensorflow>=2.15"]
+tf-gpu = ["tensorflow[and-cuda]>=2.15"]
+dev = [
+  "pytest>=7",
+  "pytest-cov>=4",
+  "hypothesis>=6",
+  "ruff>=0.4",
+  "mypy>=1.8",
+  "build>=1",
+  "sphinx>=7",
+  "furo>=2024.1",
+  "sphinx-autodoc-typehints>=2",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/esf0/hpcom"
+Homepage = "https://github.com/esf0/hpcom"
 "Bug Tracker" = "https://github.com/esf0/hpcom/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["hpcom*"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "slow: integration tests that may take >5s (deselect with '-m \"not slow\"')",
+  "gpu: tests that require a GPU-enabled TensorFlow install",
+  "legacy: tests for the deprecated _legacy modules",
+]
+filterwarnings = [
+  "ignore::DeprecationWarning:hpcom._legacy",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+extend-exclude = ["src/hpcom/_legacy", "notebooks", "tests/legacy", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/hpcom"]
+exclude = ["src/hpcom/_legacy/.*"]
+
+[[tool.mypy.overrides]]
+module = "hpcom._legacy.*"
+ignore_errors = true
