@@ -2,10 +2,16 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Guides
 
-   modules
+   concepts
+   backends
 
+.. toctree::
+   :maxdepth: 2
+   :caption: Reference
+
+   api
 
 Indices and tables
 ==================

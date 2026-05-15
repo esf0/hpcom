@@ -46,6 +46,11 @@ class Receiver:
     roll_off: float = 0.1
     pulse_span_symbols: int = 64
     equalize: EqualizerMode = "none"
+    cd_compensation_s2: float = 0.0
+    """Accumulated dispersion ``β₂ · L_total`` (in s²) to undo before the
+    matched filter. Set to ``fiber.beta2_s2_per_m * fiber.length_km * 1e3 * n_spans``
+    to remove the chromatic dispersion of an EDFA-compensated link. Leave at
+    ``0.0`` for back-to-back / dispersion-free scenarios."""
 
     def __post_init__(self) -> None:
         if self.equalize not in ("none", "unit_power"):
@@ -53,7 +58,22 @@ class Receiver:
                 f"equalize must be 'none' or 'unit_power', got {self.equalize!r}"
             )
 
-    def receive(self, field: ComplexArray) -> ReceivedSymbols:
+    def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
+        """Demodulate a received field.
+
+        ``dt_s`` (sample period in seconds) is required only when
+        :attr:`cd_compensation_s2` is non-zero — chromatic-dispersion
+        compensation needs the time scale to build the frequency grid.
+        Back-to-back / dispersion-free callers may omit it.
+        """
+        if self.cd_compensation_s2 != 0.0:
+            if dt_s is None:
+                raise ValueError(
+                    "dt_s is required when cd_compensation_s2 != 0 "
+                    "(needed for the frequency grid)"
+                )
+            field = self._undo_dispersion(field, dt_s)
+
         n_taps = self.pulse_span_symbols * self.samples_per_symbol + 1
         rrc = root_raised_cosine(n_taps, self.samples_per_symbol, self.roll_off)
         n_samples = field.shape[-1]
@@ -80,3 +100,17 @@ class Receiver:
             decisions=decisions,
             modulation_order=self.modulation_order,
         )
+
+    def _undo_dispersion(self, field: ComplexArray, dt_s: float) -> ComplexArray:
+        """Undo accumulated linear chromatic dispersion (β₂ · L) on the field.
+
+        Forward dispersion in :class:`hpcom.backends.numpy.linear.LinearNumpyPropagator`
+        applies ``exp(+i β₂/2 ω² L)`` in the frequency domain (NumPy FFT
+        convention); the inverse is ``exp(-i β₂/2 ω² L)``.
+        """
+        n = field.shape[-1]
+        omega = 2.0 * np.pi * np.fft.fftfreq(n, d=dt_s)
+        spectrum = np.fft.fft(field, axis=-1)
+        spectrum = spectrum * np.exp(-1j * self.cd_compensation_s2 / 2.0 * omega**2)
+        out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
+        return out

@@ -31,6 +31,12 @@ class Simulation:
     link: Link
     receiver: Receiver
     seed: int | None = None
+    launch_power_dbm: float | None = None
+    """Average launch power per polarization, in dBm. ``None`` (default) leaves
+    the transmitter's native power untouched. Set to a realistic value (e.g.
+    ``-3.0`` for SSMF + EDFA) to scale the field to that average power before
+    it enters the link — without this, defaults often land in the highly
+    nonlinear regime where the signal is unrecoverable."""
 
     def __post_init__(self) -> None:
         if self.transmitter.modulation_order != self.receiver.modulation_order:
@@ -69,8 +75,15 @@ class Simulation:
         link_rng = np.random.default_rng(link_seed_seq) if link_seed_seq is not None else None
 
         sent = self.transmitter.generate(rng=tx_rng)
-        propagated = self.link.propagate(sent.field, sent.dt_s, rng=link_rng)
-        received = self.receiver.receive(propagated)
+        field = sent.field
+        if self.launch_power_dbm is not None:
+            target_power_w = 10.0 ** (self.launch_power_dbm / 10.0) * 1e-3
+            current_power_w = float(np.mean(np.abs(field) ** 2))
+            if current_power_w > 0:
+                field = field * float(np.sqrt(target_power_w / current_power_w))
+
+        propagated = self.link.propagate(field, sent.dt_s, rng=link_rng)
+        received = self.receiver.receive(propagated, dt_s=sent.dt_s)
 
         # Drop pulse-shape edge transients before scoring metrics.
         skip = self.transmitter.pulse_span_symbols

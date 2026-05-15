@@ -70,6 +70,15 @@ class Link:
     def n_spans(self) -> int:
         return sum(1 for el in self.elements if isinstance(el, Fiber))
 
+    @property
+    def total_dispersion_s2(self) -> float:
+        """Sum of ``β₂ · length_m`` over every fiber span (used for CD compensation)."""
+        return sum(
+            el.beta2_s2_per_m * el.length_km * 1e3
+            for el in self.elements
+            if isinstance(el, Fiber)
+        )
+
     def propagate(
         self,
         field: ComplexArray,

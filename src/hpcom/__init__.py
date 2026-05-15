@@ -1,6 +1,6 @@
 """hpcom — High-performance optical communication library.
 
-The v1 public API:
+The v1 public API::
 
     from hpcom import (
         Transmitter, Fiber, EDFA, Amplifier, Receiver,
