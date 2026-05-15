@@ -69,11 +69,20 @@ filterwarnings = [
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
-extend-exclude = ["src/hpcom/_legacy", "notebooks", "tests/legacy", "docs"]
+extend-exclude = [
+  "src/hpcom/_legacy",
+  "src/hpcom/backends/tensorflow/_vendor",
+  "notebooks",
+  "tests/legacy",
+  "docs",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF"]
-ignore = ["E501"]
+# E501: line length handled by formatter; RUF001/2/3 flag Greek letters as
+# "ambiguous" which is wrong for a physics library where α/β/γ/ω/τ are
+# domain language. Keep them allowed.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -87,3 +96,11 @@ exclude = ["src/hpcom/_legacy/.*"]
 [[tool.mypy.overrides]]
 module = "hpcom._legacy.*"
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hpcom.backends.tensorflow._vendor.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "tensorflow.*"
+ignore_missing_imports = true
