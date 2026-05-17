@@ -140,13 +140,18 @@ def test_dual_pol_data_bits_strips_pilots_per_pol():
     assert received.data_bits().shape == (2, n_data * k)
 
 
-def test_dual_pol_plus_wdm_rejected_at_construction():
-    with pytest.raises(NotImplementedError, match="WDMReceiver"):
-        Receiver(
-            modulation_order=4,
-            polarization="dual",
-            wdm=WDMConfig(n_channels=3, spacing_hz=50e9),
-        )
+def test_dual_pol_plus_wdm_uses_wdm_receiver():
+    """Dual-pol × WDM demux is supported via WDMReceiver."""
+    from hpcom.receiver import WDMReceiver
+
+    rx = WDMReceiver(
+        modulation_order=4,
+        polarization="dual",
+        wdm=WDMConfig(n_channels=3, spacing_hz=50e9),
+        wdm_channel=1,
+    )
+    assert rx.polarization == "dual"
+    assert rx.wdm_channel == 1
 
 
 def test_dual_pol_invalid_polarization_rejected():

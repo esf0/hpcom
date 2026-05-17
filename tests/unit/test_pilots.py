@@ -16,7 +16,7 @@ import pytest
 
 from hpcom.modulation import bits_per_symbol
 from hpcom.pilots import PilotConfig
-from hpcom.receiver import Receiver
+from hpcom.receiver import Receiver, WDMReceiver
 from hpcom.transmitter import Transmitter, WDMTransmitter
 from hpcom.wdm import WDMConfig
 
@@ -198,7 +198,7 @@ def test_pilots_in_wdm_per_channel_recovery():
         )
 
     for ch in range(cfg_wdm.n_channels):
-        rx = Receiver(
+        rx = WDMReceiver(
             modulation_order=4,
             samples_per_symbol=tx.samples_per_symbol,
             roll_off=tx.roll_off,

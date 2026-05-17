@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hpcom.receiver import Receiver
+from hpcom.receiver import WDMReceiver
 from hpcom.transmitter import WDMTransmitter
 from hpcom.wdm import WDMConfig
 
@@ -71,7 +71,7 @@ def test_three_channel_wdm_b2b_center_channel_ber_zero():
     assert sent.field.ndim == 1
     assert sent.wdm is cfg
 
-    rx = Receiver(
+    rx = WDMReceiver(
         modulation_order=16,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -103,7 +103,7 @@ def test_three_channel_wdm_b2b_all_channels_ber_zero(ch: int):
         wdm=cfg,
     )
     sent = tx.generate()
-    rx = Receiver(
+    rx = WDMReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -139,4 +139,4 @@ def test_wdm_seed_makes_generation_deterministic():
 def test_receiver_rejects_out_of_range_wdm_channel():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     with pytest.raises(ValueError, match="wdm_channel"):
-        Receiver(modulation_order=4, wdm=cfg, wdm_channel=3)
+        WDMReceiver(modulation_order=4, wdm=cfg, wdm_channel=3)

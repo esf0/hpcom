@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hpcom.receiver import Receiver
+from hpcom.receiver import WDMReceiver
 from hpcom.transmitter import Transmitter, WDMTransmitter
 from hpcom.wdm import WDMConfig
 
@@ -128,7 +128,7 @@ def test_demux_channel_suppresses_neighbours_by_at_least_30_db(ch_demux: int):
     ref_symbols = np.zeros((n_ch, tx.n_symbols), dtype=np.complex128)
     ref_symbols[ch_demux] = 1.0 + 0.0j
     sent_ref = tx.generate(symbols=ref_symbols)
-    rx = Receiver(
+    rx = WDMReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -178,7 +178,7 @@ def test_per_channel_deterministic_bits_round_trip_in_wdm():
     np.testing.assert_array_equal(sent.bits, bits)
 
     for ch in range(n_ch):
-        rx = Receiver(
+        rx = WDMReceiver(
             modulation_order=4,
             samples_per_symbol=tx.samples_per_symbol,
             roll_off=tx.roll_off,
