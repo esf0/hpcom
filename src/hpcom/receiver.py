@@ -10,7 +10,8 @@ import numpy.typing as npt
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
-from hpcom.modulation import nearest_symbol_indices, square_qam, symbols_to_bits
+from hpcom.modulation import bits_per_symbol, nearest_symbol_indices, square_qam, symbols_to_bits
+from hpcom.pilots import PilotConfig
 from hpcom.wdm import WDMConfig
 
 #: How (or whether) to rescale received-symbol amplitudes before hard decision.
@@ -19,12 +20,38 @@ EqualizerMode = Literal["none", "unit_power"]
 
 @dataclass(frozen=True)
 class ReceivedSymbols:
-    """Output of :meth:`Receiver.receive`."""
+    """Output of :meth:`Receiver.receive`.
+
+    When ``pilots`` is set, ``pilot_symbols`` is the post-matched-filter
+    complex amplitudes at the pilot positions (no estimation applied) and the
+    bits at pilot positions in ``bits`` are kept (zero-equivalent under
+    hard-decision demap; use :meth:`data_bits` for the pilot-stripped view).
+    """
 
     symbols: ComplexArray
     bits: npt.NDArray[np.uint8]
     decisions: npt.NDArray[np.intp]  # constellation index per received symbol
     modulation_order: int
+    pilots: PilotConfig | None = None
+    pilot_symbols: ComplexArray | None = None
+
+    def data_bits(self) -> npt.NDArray[np.uint8]:
+        """Bits at data positions only — Option α convention.
+
+        Matches the shape conventions of :class:`TransmittedSignal.data_bits`.
+        """
+        if self.pilots is None:
+            return self.bits
+        k = bits_per_symbol(self.modulation_order)
+        n_symbols = self.symbols.shape[-1]
+        data_idx = self.pilots.data_indices(n_symbols)
+        return self.bits.reshape(-1, k)[data_idx].ravel()
+
+    def data_symbols(self) -> ComplexArray:
+        if self.pilots is None:
+            return self.symbols
+        n_symbols = self.symbols.shape[-1]
+        return self.symbols[..., self.pilots.data_indices(n_symbols)]
 
 
 @dataclass(frozen=True)
@@ -57,6 +84,9 @@ class Receiver:
     field. Pair with :attr:`wdm_channel` to pick which channel."""
     wdm_channel: int = 0
     """Index of the WDM channel to demux. Ignored when :attr:`wdm` is ``None``."""
+    pilots: PilotConfig | None = None
+    """If set, post-matched-filter samples at pilot positions are returned as
+    :attr:`ReceivedSymbols.pilot_symbols` and stripped from :meth:`data_bits`."""
 
     def __post_init__(self) -> None:
         if self.equalize not in ("none", "unit_power"):
@@ -116,11 +146,18 @@ class Receiver:
         decisions = nearest_symbol_indices(symbols_rx, constellation)
         bits = symbols_to_bits(symbols_rx, self.modulation_order)
 
+        pilot_symbols: ComplexArray | None = None
+        if self.pilots is not None:
+            n_sym = symbols_rx.shape[-1]
+            pilot_symbols = symbols_rx[self.pilots.pilot_indices(n_sym)]
+
         return ReceivedSymbols(
             symbols=symbols_rx,
             bits=bits,
             decisions=decisions,
             modulation_order=self.modulation_order,
+            pilots=self.pilots,
+            pilot_symbols=pilot_symbols,
         )
 
     def _undo_dispersion(self, field: ComplexArray, dt_s: float) -> ComplexArray:

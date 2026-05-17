@@ -19,6 +19,7 @@ import numpy.typing as npt
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
 from hpcom.modulation import bits_per_symbol, bits_to_symbols, symbols_to_bits
+from hpcom.pilots import PilotConfig
 from hpcom.wdm import WDMConfig
 
 
@@ -30,6 +31,11 @@ class TransmittedSignal:
     by :class:`hpcom.receiver.Receiver` to demodulate it. When ``wdm`` is set,
     ``bits`` has shape ``(n_channels, n_bits_per_channel)`` and ``symbols``
     has shape ``(n_channels, n_symbols)``; otherwise both are 1-D.
+
+    When ``pilots`` is set, ``symbols`` at pilot positions equal the configured
+    pilot value, and the corresponding ``bits`` are zero-filled (these are not
+    real data bits). Use :meth:`data_bits` / :meth:`data_symbols` for the
+    pilot-stripped views, or :attr:`pilot_indices` to mask externally.
     """
 
     field: ComplexArray
@@ -40,7 +46,46 @@ class TransmittedSignal:
     modulation_order: int
     roll_off: float
     pulse_span_symbols: int
+    n_symbols: int
     wdm: WDMConfig | None = None
+    pilots: PilotConfig | None = None
+
+    @property
+    def pilot_indices(self) -> npt.NDArray[np.intp]:
+        """Symbol-grid positions of pilots, or empty if no pilots configured."""
+        if self.pilots is None:
+            return np.empty(0, dtype=np.intp)
+        return self.pilots.pilot_indices(self.n_symbols)
+
+    @property
+    def data_indices(self) -> npt.NDArray[np.intp]:
+        """Symbol-grid positions of data symbols; all positions if no pilots."""
+        if self.pilots is None:
+            return np.arange(self.n_symbols, dtype=np.intp)
+        return self.pilots.data_indices(self.n_symbols)
+
+    def data_symbols(self) -> ComplexArray:
+        """Symbols at data positions only (1-D for single-channel, 2-D for WDM)."""
+        if self.pilots is None:
+            return self.symbols
+        idx = self.data_indices
+        return self.symbols[..., idx]
+
+    def data_bits(self) -> npt.NDArray[np.uint8]:
+        """Bits at data positions only — Option α convention.
+
+        Shape follows the underlying ``bits``: 1-D ``(n_data * k,)`` for
+        single-channel or 2-D ``(n_channels, n_data * k)`` for WDM.
+        """
+        if self.pilots is None:
+            return self.bits
+        k = bits_per_symbol(self.modulation_order)
+        idx = self.data_indices
+        if self.bits.ndim == 1:
+            return self.bits.reshape(-1, k)[idx].ravel()
+        # WDM: per-channel slice.
+        per_ch = self.bits.reshape(self.bits.shape[0], -1, k)
+        return per_ch[:, idx, :].reshape(self.bits.shape[0], -1)
 
 
 @dataclass(frozen=True)
@@ -62,6 +107,7 @@ class Transmitter:
     pulse_span_symbols: int = 64
     seed: int | None = None
     wdm: WDMConfig | None = None
+    pilots: PilotConfig | None = None
 
     def __post_init__(self) -> None:
         if self.n_symbols < 1:
@@ -140,7 +186,9 @@ class Transmitter:
                 modulation_order=self.modulation_order,
                 roll_off=self.roll_off,
                 pulse_span_symbols=self.pulse_span_symbols,
+                n_symbols=self.n_symbols,
                 wdm=None,
+                pilots=self.pilots,
             )
 
         # WDM path: spawn one independent RNG per channel from the same root
@@ -194,7 +242,9 @@ class Transmitter:
             modulation_order=self.modulation_order,
             roll_off=self.roll_off,
             pulse_span_symbols=self.pulse_span_symbols,
+            n_symbols=self.n_symbols,
             wdm=self.wdm,
+            pilots=self.pilots,
         )
 
     def _generate_one_channel(
@@ -225,6 +275,17 @@ class Transmitter:
         else:
             ch_bits = rng.integers(0, 2, size=self.n_symbols * k, dtype=np.uint8)
             ch_symbols = np.asarray(bits_to_symbols(ch_bits, self.modulation_order), dtype=np.complex128)
+
+        # Insert pilots after data generation: overwrite symbols at pilot
+        # positions, and zero-fill the corresponding bits (they are not real
+        # data; data_bits() strips them).
+        if self.pilots is not None:
+            pilot_idx = self.pilots.pilot_indices(self.n_symbols)
+            ch_symbols = ch_symbols.copy()
+            ch_symbols[pilot_idx] = self.pilots.symbol
+            ch_bits = ch_bits.copy()
+            for p in pilot_idx:
+                ch_bits[int(p) * k : (int(p) + 1) * k] = 0
 
         n_samples = self.n_symbols * self.samples_per_symbol
         upsampled = np.zeros(n_samples, dtype=np.complex128)
