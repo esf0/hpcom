@@ -106,7 +106,7 @@ Source plan: [`hpcom-v1-plan.md`](./hpcom-v1-plan.md). Tasks are ordered by depe
   - Verify: unit test back-to-back with `Transmitter` (no fiber): noiseless BER == 0.
   - Files: `src/hpcom/receiver.py`, test.
 
-- [ ] **T5.4 — WDM mode on `Transmitter`/`Receiver`**
+- [x] **T5.4 — WDM mode on `Transmitter`/`Receiver`** *(Simulation integration deferred — current guard raises NotImplementedError)*
   - Acceptance: `Transmitter(..., wdm=WDMConfig(n_channels=5, spacing_hz=50e9))`. Receiver demuxes channel `i`.
   - Verify: 3-channel back-to-back; center channel BER == 0.
   - Files: `src/hpcom/transmitter.py`, `receiver.py`, `wdm.py`, test.

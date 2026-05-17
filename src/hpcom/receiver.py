@@ -11,6 +11,7 @@ import numpy.typing as npt
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
 from hpcom.modulation import nearest_symbol_indices, square_qam, symbols_to_bits
+from hpcom.wdm import WDMConfig
 
 #: How (or whether) to rescale received-symbol amplitudes before hard decision.
 EqualizerMode = Literal["none", "unit_power"]
@@ -51,11 +52,21 @@ class Receiver:
     matched filter. Set to ``fiber.beta2_s2_per_m * fiber.length_km * 1e3 * n_spans``
     to remove the chromatic dispersion of an EDFA-compensated link. Leave at
     ``0.0`` for back-to-back / dispersion-free scenarios."""
+    wdm: WDMConfig | None = None
+    """If set, the receiver demuxes a single channel from a WDM-multiplexed
+    field. Pair with :attr:`wdm_channel` to pick which channel."""
+    wdm_channel: int = 0
+    """Index of the WDM channel to demux. Ignored when :attr:`wdm` is ``None``."""
 
     def __post_init__(self) -> None:
         if self.equalize not in ("none", "unit_power"):
             raise ValueError(
                 f"equalize must be 'none' or 'unit_power', got {self.equalize!r}"
+            )
+        if self.wdm is not None and not 0 <= self.wdm_channel < self.wdm.n_channels:
+            raise ValueError(
+                f"wdm_channel must be in [0, {self.wdm.n_channels}), "
+                f"got {self.wdm_channel}"
             )
 
     def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
@@ -66,6 +77,17 @@ class Receiver:
         compensation needs the time scale to build the frequency grid.
         Back-to-back / dispersion-free callers may omit it.
         """
+        if self.wdm is not None:
+            if dt_s is None:
+                raise ValueError(
+                    "dt_s is required when wdm is set (needed to downshift "
+                    "the selected channel to baseband)"
+                )
+            f_ch = float(self.wdm.channel_frequencies_hz()[self.wdm_channel])
+            n = field.shape[-1]
+            t = np.arange(n) * dt_s
+            field = field * np.exp(-2j * np.pi * f_ch * t)
+
         if self.cd_compensation_s2 != 0.0:
             if dt_s is None:
                 raise ValueError(

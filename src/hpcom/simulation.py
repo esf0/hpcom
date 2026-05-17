@@ -44,6 +44,12 @@ class Simulation:
                 "transmitter and receiver modulation_order must match: "
                 f"{self.transmitter.modulation_order} vs {self.receiver.modulation_order}"
             )
+        if self.transmitter.wdm is not None:
+            raise NotImplementedError(
+                "Simulation does not yet integrate WDM transmitters. Construct "
+                "the Tx → Link → Rx pipeline manually and demux per channel via "
+                "Receiver(wdm=..., wdm_channel=i)."
+            )
         if self.transmitter.samples_per_symbol != self.receiver.samples_per_symbol:
             raise ValueError(
                 "transmitter and receiver samples_per_symbol must match"
