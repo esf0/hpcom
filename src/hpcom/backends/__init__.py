@@ -65,8 +65,10 @@ def _autoregister_builtin_backends() -> None:
         from hpcom.backends.tensorflow import TensorFlowPropagator
 
         register_propagator("tensorflow", TensorFlowPropagator())
-    except ImportError:
+    except (ImportError, OSError):
         # TensorFlow is an optional extra (`pip install hpcom[tf]`).
+        # Broken CUDA stubs can raise OSError from inside `import tensorflow`,
+        # so we widen the catch to keep the registry usable in those envs.
         pass
 
 

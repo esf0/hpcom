@@ -85,14 +85,17 @@ class Simulation:
         propagated = self.link.propagate(field, sent.dt_s, rng=link_rng)
         received = self.receiver.receive(propagated, dt_s=sent.dt_s)
 
-        # Drop pulse-shape edge transients before scoring metrics.
+        # Drop pulse-shape edge transients before scoring metrics. When
+        # pulse_span_symbols=0, Python's [0:-0] would silently return empty —
+        # use None as the upper bound instead so the full range is kept.
         skip = self.transmitter.pulse_span_symbols
+        end = -skip if skip else None
         bps = bits_per_symbol(self.transmitter.modulation_order)
-        sent_bits = sent.bits.reshape(-1, bps)[skip:-skip].ravel()
-        rx_bits = received.bits.reshape(-1, bps)[skip:-skip].ravel()
+        sent_bits = sent.bits.reshape(-1, bps)[skip:end].ravel()
+        rx_bits = received.bits.reshape(-1, bps)[skip:end].ravel()
         ber, n_errors, n_bits = bit_error_rate(sent_bits, rx_bits)
 
-        rx_syms = received.symbols[skip:-skip]
+        rx_syms = received.symbols[skip:end]
         # EVM measured against each received symbol's hard decision.
         ref = bits_to_symbols(rx_bits, self.receiver.modulation_order)
         evm = evm_rms(rx_syms, ref)
