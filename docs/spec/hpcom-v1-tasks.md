@@ -193,22 +193,22 @@ Source plan: [`hpcom-v1-plan.md`](./hpcom-v1-plan.md). Tasks are ordered by depe
 
 ## M10 — CI + packaging
 
-- [ ] **T10.1 — GitHub Actions CI**
+- [x] **T10.1 — GitHub Actions CI**
   - Acceptance: `.github/workflows/ci.yml` runs ruff + mypy + `pytest tests/unit tests/numerical` on Python 3.10/3.11/3.12 × {ubuntu-latest, macos-latest}.
   - Verify: green on a draft PR.
   - Files: `.github/workflows/ci.yml`.
 
-- [ ] **T10.2 — GPU-marked tests opt-in**
+- [x] **T10.2 — GPU-marked tests opt-in**
   - Acceptance: `@pytest.mark.gpu` skipped by default in CI; `pytest -m gpu` runs them locally / on self-hosted.
   - Verify: standard CI run skips them; manual run executes them.
   - Files: `pyproject.toml` (pytest config), test markers.
 
-- [ ] **T10.3 — Wheel build + clean-venv install verification**
+- [x] **T10.3 — Wheel build + clean-venv install verification**
   - Acceptance: `python -m build` produces sdist + wheel; clean venv `pip install dist/*.whl` runs example 02.
   - Verify: workflow job that builds wheel and runs the example.
   - Files: `.github/workflows/ci.yml` (extend).
 
-- [ ] **T10.4 — Release workflow (tag → PyPI)**
+- [x] **T10.4 — Release workflow (tag → PyPI)** *(workflow written; live tag awaiting user checkpoint)*
   - Acceptance: `.github/workflows/release.yml` publishes on `v*` tag via PyPI Trusted Publishing.
   - Verify: dry-run against TestPyPI succeeds.
   - Files: `.github/workflows/release.yml`.
