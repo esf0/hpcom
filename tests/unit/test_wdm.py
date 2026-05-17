@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.transmitter import WDMTransmitter
 from hpcom.wdm import WDMConfig
 
 
@@ -36,7 +36,7 @@ def test_transmitter_rejects_undersampled_wdm():
     # 5 channels × 50 GHz spacing → outer center at ±100 GHz; with Rs=10 GHz
     # and sps=16 the wideband fs is 160 GHz, far below the 2 · 105 GHz needed.
     with pytest.raises(ValueError, match="Nyquist"):
-        Transmitter(
+        WDMTransmitter(
             modulation_order=4,
             symbol_rate_hz=10e9,
             n_symbols=64,
@@ -53,7 +53,7 @@ def test_three_channel_wdm_b2b_center_channel_ber_zero():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     # sps must cover 2 · (50e9 + Rs·(1+ro)/2) = 2 · (50e9 + 5.5e9) = 111 GHz.
     # With Rs=10 GHz, sps=16 → fs=160 GHz, comfortable.
-    tx = Transmitter(
+    tx = WDMTransmitter(
         modulation_order=16,
         symbol_rate_hz=10e9,
         n_symbols=2048,
@@ -92,7 +92,7 @@ def test_three_channel_wdm_b2b_center_channel_ber_zero():
 @pytest.mark.parametrize("ch", [0, 1, 2])
 def test_three_channel_wdm_b2b_all_channels_ber_zero(ch: int):
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
-    tx = Transmitter(
+    tx = WDMTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=1024,
@@ -130,8 +130,8 @@ def test_wdm_seed_makes_generation_deterministic():
         seed=7,
         wdm=cfg,
     )
-    a = Transmitter(**kwargs).generate()
-    b = Transmitter(**kwargs).generate()
+    a = WDMTransmitter(**kwargs).generate()
+    b = WDMTransmitter(**kwargs).generate()
     np.testing.assert_array_equal(a.bits, b.bits)
     np.testing.assert_array_equal(a.field, b.field)
 

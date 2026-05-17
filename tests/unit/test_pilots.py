@@ -17,7 +17,7 @@ import pytest
 from hpcom.modulation import bits_per_symbol
 from hpcom.pilots import PilotConfig
 from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.transmitter import Transmitter, WDMTransmitter
 from hpcom.wdm import WDMConfig
 
 
@@ -179,7 +179,7 @@ def test_pilots_in_wdm_per_channel_recovery():
     configured value at the receiver after frequency-shift and demux."""
     cfg_wdm = WDMConfig(n_channels=3, spacing_hz=50e9)
     cfg_pilot = PilotConfig(period=8, symbol=1 + 0j)
-    tx = Transmitter(
+    tx = WDMTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=512,

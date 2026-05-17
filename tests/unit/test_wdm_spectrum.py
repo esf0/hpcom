@@ -15,11 +15,11 @@ import numpy as np
 import pytest
 
 from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.transmitter import Transmitter, WDMTransmitter
 from hpcom.wdm import WDMConfig
 
 
-def _wdm_tx(*, n_channels: int = 3, **overrides: object) -> Transmitter:
+def _wdm_tx(*, n_channels: int = 3, **overrides: object) -> WDMTransmitter:
     """Reasonable defaults: 3 channels at 50 GHz, Rs=10 GHz, sps high enough."""
     base = dict(
         modulation_order=4,
@@ -32,7 +32,7 @@ def _wdm_tx(*, n_channels: int = 3, **overrides: object) -> Transmitter:
         wdm=WDMConfig(n_channels=n_channels, spacing_hz=50e9),
     )
     base.update(overrides)
-    return Transmitter(**base)  # type: ignore[arg-type]
+    return WDMTransmitter(**base)  # type: ignore[arg-type]
 
 
 def test_wdm_spectrum_peaks_at_expected_channel_frequencies():
@@ -76,7 +76,7 @@ def test_single_tone_per_channel_lands_at_correct_frequency():
     tone at exactly f_i in the composite field."""
     n_ch = 3
     cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    tx = Transmitter(
+    tx = WDMTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=512,
@@ -122,7 +122,7 @@ def test_demux_channel_suppresses_neighbours_by_at_least_30_db(ch_demux: int):
         pulse_span_symbols=32,
         wdm=cfg,
     )
-    tx = Transmitter(**base_kwargs)  # type: ignore[arg-type]
+    tx = WDMTransmitter(**base_kwargs)  # type: ignore[arg-type]
 
     # Reference: drive only the demux'd channel with the tone.
     ref_symbols = np.zeros((n_ch, tx.n_symbols), dtype=np.complex128)
@@ -146,7 +146,7 @@ def test_demux_channel_suppresses_neighbours_by_at_least_30_db(ch_demux: int):
             continue
         cross_symbols = np.zeros((n_ch, tx.n_symbols), dtype=np.complex128)
         cross_symbols[neighbour] = 1.0 + 0.0j
-        sent_cross = Transmitter(**base_kwargs).generate(symbols=cross_symbols)  # type: ignore[arg-type]
+        sent_cross = WDMTransmitter(**base_kwargs).generate(symbols=cross_symbols)  # type: ignore[arg-type]
         rx_cross = rx.receive(sent_cross.field, dt_s=sent_cross.dt_s)
         cross_power = float(np.mean(np.abs(rx_cross.symbols[skip:-skip]) ** 2))
         rejection_db = 10.0 * np.log10(ref_power / max(cross_power, 1e-30))
@@ -162,7 +162,7 @@ def test_per_channel_deterministic_bits_round_trip_in_wdm():
     steady-state region. Catches per-channel cross-talk and seed leakage."""
     n_ch = 3
     cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    tx = Transmitter(
+    tx = WDMTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=2048,
@@ -199,7 +199,7 @@ def test_wdm_tx_total_power_equals_sum_of_per_channel_powers():
     (channels are orthogonal in frequency, so cross terms time-average to 0)."""
     n_ch = 3
     cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    tx = Transmitter(
+    tx = WDMTransmitter(
         modulation_order=16,
         symbol_rate_hz=10e9,
         n_symbols=4096,

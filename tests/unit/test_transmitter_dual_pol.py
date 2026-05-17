@@ -162,17 +162,27 @@ def test_dual_pol_rejects_wrong_input_shapes():
         tx.generate(symbols=np.zeros(10, dtype=np.complex128))
 
 
-def test_dual_pol_plus_wdm_raises_not_implemented():
-    """Dual-pol × WDM is deferred to WDMTransmitter (next refactor commit)."""
-    with pytest.raises(NotImplementedError, match="WDMTransmitter"):
-        Transmitter(
-            modulation_order=4,
-            symbol_rate_hz=10e9,
-            n_symbols=64,
-            samples_per_symbol=16,
-            polarization="dual",
-            wdm=WDMConfig(n_channels=3, spacing_hz=50e9),
-        )
+def test_dual_pol_plus_wdm_uses_wdm_transmitter():
+    """Dual-pol × WDM is supported via WDMTransmitter. Verify it constructs
+    and produces a (2, n_samples) field with (2, n_channels, …) bits."""
+    from hpcom.transmitter import WDMTransmitter
+
+    tx = WDMTransmitter(
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        pulse_span_symbols=16,
+        polarization="dual",
+        seed=0,
+        wdm=WDMConfig(n_channels=3, spacing_hz=50e9),
+    )
+    sent = tx.generate()
+    n_samples = tx.n_symbols * tx.samples_per_symbol
+    assert sent.field.shape == (2, n_samples)
+    assert sent.bits.shape == (2, 3, tx.n_symbols * 2)
+    assert sent.polarization == "dual"
+    assert sent.wdm is tx.wdm
 
 
 def test_dual_pol_signal_average_power_is_split_evenly():
