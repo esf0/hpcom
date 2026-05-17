@@ -1,17 +1,22 @@
 """Optical transmitter: random bits → pulse-shaped complex baseband field.
 
-For wavelength-division multiplexing, pass a :class:`hpcom.wdm.WDMConfig` to
-``Transmitter.wdm``; the generator then synthesizes one independent baseband
-stream per channel, frequency-shifts each onto the WDM grid, and sums them
-into a composite wideband field. Per-channel bits and symbols are returned as
-2-D arrays of shape ``(n_channels, …)`` so a downstream :class:`Receiver`
-configured with the same ``WDMConfig`` and a ``wdm_channel`` index can score
-each channel independently.
+Three independent feature axes compose:
+
+* **Polarisation** — ``polarization="single"`` returns a 1-D field; ``"dual"``
+  returns a ``(2, n_samples)`` field with independent X/Y bit streams (PDM).
+* **WDM** — when :attr:`wdm` is set, each channel is independently generated
+  and frequency-shifted onto the grid before summation. Bits/symbols gain a
+  leading ``n_channels`` axis. (Dual-pol × WDM is handled by a subclass —
+  see :class:`hpcom.transmitter.WDMTransmitter` once it lands.)
+* **Pilots** — when :attr:`pilots` is set, every ``period``-th symbol carries
+  the configured reference value; the same pilot pattern is applied to every
+  stream (per polarisation, per WDM channel).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -22,20 +27,25 @@ from hpcom.modulation import bits_per_symbol, bits_to_symbols, symbols_to_bits
 from hpcom.pilots import PilotConfig
 from hpcom.wdm import WDMConfig
 
+Polarization = Literal["single", "dual"]
+
 
 @dataclass(frozen=True)
 class TransmittedSignal:
     """Output of :meth:`Transmitter.generate`.
 
-    Carries the field plus the original bits/symbols and the parameters needed
-    by :class:`hpcom.receiver.Receiver` to demodulate it. When ``wdm`` is set,
-    ``bits`` has shape ``(n_channels, n_bits_per_channel)`` and ``symbols``
-    has shape ``(n_channels, n_symbols)``; otherwise both are 1-D.
+    Shape conventions for ``field`` / ``bits`` / ``symbols``:
+
+    * Single-pol, no WDM: ``field=(n_samples,)``, ``bits=(n_symbols*k,)``,
+      ``symbols=(n_symbols,)``.
+    * Single-pol, WDM: ``field=(n_samples,)`` composite,
+      ``bits=(n_channels, n_symbols*k)``, ``symbols=(n_channels, n_symbols)``.
+    * Dual-pol, no WDM: ``field=(2, n_samples)``,
+      ``bits=(2, n_symbols*k)``, ``symbols=(2, n_symbols)``.
 
     When ``pilots`` is set, ``symbols`` at pilot positions equal the configured
-    pilot value, and the corresponding ``bits`` are zero-filled (these are not
-    real data bits). Use :meth:`data_bits` / :meth:`data_symbols` for the
-    pilot-stripped views, or :attr:`pilot_indices` to mask externally.
+    pilot value, and the corresponding ``bits`` are zero-filled. Use
+    :meth:`data_bits` / :meth:`data_symbols` for the pilot-stripped views.
     """
 
     field: ComplexArray
@@ -47,6 +57,7 @@ class TransmittedSignal:
     roll_off: float
     pulse_span_symbols: int
     n_symbols: int
+    polarization: Polarization = "single"
     wdm: WDMConfig | None = None
     pilots: PilotConfig | None = None
 
@@ -106,6 +117,7 @@ class Transmitter:
     roll_off: float = 0.1
     pulse_span_symbols: int = 64
     seed: int | None = None
+    polarization: Polarization = "single"
     wdm: WDMConfig | None = None
     pilots: PilotConfig | None = None
 
@@ -120,6 +132,16 @@ class Transmitter:
             )
         # Validate modulation order via the canonical helper.
         bits_per_symbol(self.modulation_order)
+
+        if self.polarization not in ("single", "dual"):
+            raise ValueError(
+                f"polarization must be 'single' or 'dual', got {self.polarization!r}"
+            )
+        if self.polarization == "dual" and self.wdm is not None:
+            raise NotImplementedError(
+                "dual-pol × WDM is handled by WDMTransmitter (planned subclass); "
+                "for now use polarization='single' when wdm is set."
+            )
 
         if self.wdm is not None:
             # Wideband Nyquist: sample rate must cover the outer channel edges.
@@ -170,7 +192,7 @@ class Transmitter:
         if bits is not None and symbols is not None:
             raise ValueError("pass at most one of `bits` or `symbols`, not both")
 
-        if self.wdm is None:
+        if self.wdm is None and self.polarization == "single":
             single_rng = rng if rng is not None else np.random.default_rng(self.seed)
             ch_bits, ch_syms, field = self._generate_one_channel(
                 single_rng,
@@ -187,12 +209,70 @@ class Transmitter:
                 roll_off=self.roll_off,
                 pulse_span_symbols=self.pulse_span_symbols,
                 n_symbols=self.n_symbols,
+                polarization="single",
+                wdm=None,
+                pilots=self.pilots,
+            )
+
+        if self.polarization == "dual":
+            # Dual-pol, no WDM. Two independent streams (X and Y), one
+            # sub-RNG each, stacked into (2, n_samples). Pilots and
+            # deterministic bits/symbols are applied per pol.
+            k = bits_per_symbol(self.modulation_order)
+            if bits is not None:
+                b2 = np.asarray(bits, dtype=np.uint8)
+                if b2.shape != (2, self.n_symbols * k):
+                    raise ValueError(
+                        f"dual-pol `bits` must have shape (2, {self.n_symbols * k}), "
+                        f"got {b2.shape}"
+                    )
+            if symbols is not None:
+                s2 = np.asarray(symbols, dtype=np.complex128)
+                if s2.shape != (2, self.n_symbols):
+                    raise ValueError(
+                        f"dual-pol `symbols` must have shape (2, {self.n_symbols}), "
+                        f"got {s2.shape}"
+                    )
+
+            if rng is not None:
+                seed_seq = np.random.SeedSequence(int(rng.integers(0, 2**63 - 1)))
+            else:
+                seed_seq = np.random.SeedSequence(self.seed)
+            pol_seqs = seed_seq.spawn(2)
+
+            per_pol_bits: list[npt.NDArray[np.uint8]] = []
+            per_pol_syms: list[ComplexArray] = []
+            per_pol_fields: list[ComplexArray] = []
+            for pol_idx, sub_seq in enumerate(pol_seqs):
+                pol_rng = np.random.default_rng(sub_seq)
+                p_bits, p_syms, p_field = self._generate_one_channel(
+                    pol_rng,
+                    bits=bits[pol_idx] if bits is not None else None,
+                    symbols=symbols[pol_idx] if symbols is not None else None,
+                )
+                per_pol_bits.append(p_bits)
+                per_pol_syms.append(p_syms)
+                per_pol_fields.append(p_field)
+
+            return TransmittedSignal(
+                field=np.stack(per_pol_fields, axis=0),
+                dt_s=self.dt_s,
+                symbols=np.stack(per_pol_syms, axis=0),
+                bits=np.stack(per_pol_bits, axis=0),
+                samples_per_symbol=self.samples_per_symbol,
+                modulation_order=self.modulation_order,
+                roll_off=self.roll_off,
+                pulse_span_symbols=self.pulse_span_symbols,
+                n_symbols=self.n_symbols,
+                polarization="dual",
                 wdm=None,
                 pilots=self.pilots,
             )
 
         # WDM path: spawn one independent RNG per channel from the same root
         # seed source so reproducibility is identical to single-channel.
+        # (single-pol × WDM only; dual-pol × WDM was rejected in __post_init__.)
+        assert self.wdm is not None
         n_ch = self.wdm.n_channels
         if bits is not None:
             bits_2d = np.asarray(bits, dtype=np.uint8)
