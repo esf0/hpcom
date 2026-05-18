@@ -6,6 +6,7 @@ flat API (``bits_to_symbols`` / ``symbols_to_bits``), plus a richer
 """
 
 from hpcom.modulation.constellations import bits_per_symbol, square_qam
+from hpcom.modulation.dm import ConstantCompositionDM, maxwell_boltzmann
 from hpcom.modulation.mapping import (
     bits_to_symbols,
     nearest_symbol_indices,
@@ -14,10 +15,12 @@ from hpcom.modulation.mapping import (
 from hpcom.modulation.shaping import ConstellationConfig, apsk
 
 __all__ = [
+    "ConstantCompositionDM",
     "ConstellationConfig",
     "apsk",
     "bits_per_symbol",
     "bits_to_symbols",
+    "maxwell_boltzmann",
     "nearest_symbol_indices",
     "square_qam",
     "symbols_to_bits",
