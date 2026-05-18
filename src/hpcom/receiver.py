@@ -20,7 +20,12 @@ import numpy.typing as npt
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
-from hpcom.modulation import ConstellationConfig, bits_per_symbol, nearest_symbol_indices
+from hpcom.modulation import (
+    ConstantCompositionDM,
+    ConstellationConfig,
+    bits_per_symbol,
+    nearest_symbol_indices,
+)
 from hpcom.pilots import PilotConfig
 from hpcom.transmitter import Polarization
 from hpcom.wdm import WDMConfig
@@ -85,6 +90,7 @@ class Receiver:
 
     modulation_order: int | None = None
     constellation: ConstellationConfig | None = None
+    dm: ConstantCompositionDM | None = None
     samples_per_symbol: int = 16
     roll_off: float = 0.1
     pulse_span_symbols: int = 64
@@ -120,6 +126,22 @@ class Receiver:
             assert self.constellation is not None  # for mypy
             resolved = self.constellation
         object.__setattr__(self, "_constellation", resolved)
+
+        if self.dm is not None:
+            if self.pilots is not None:
+                raise ValueError(
+                    "`pilots` and `dm` are mutually exclusive on the Receiver"
+                )
+            if self.constellation is None or self.constellation.probabilities is None:
+                raise ValueError(
+                    "`dm` requires `constellation` with non-None probabilities"
+                )
+            if self.dm.target_pmf.shape != self.constellation.probabilities.shape or not (
+                np.allclose(self.dm.target_pmf, self.constellation.probabilities, atol=1e-12)
+            ):
+                raise ValueError(
+                    "dm.target_pmf must match constellation.probabilities elementwise"
+                )
 
     @property
     def effective_modulation_order(self) -> int:
@@ -197,7 +219,12 @@ class Receiver:
 
         cfg = self._resolved_constellation()
         decisions = nearest_symbol_indices(symbols_rx, cfg.points)
-        bits = cfg.demap(symbols_rx)
+        if self.dm is not None:
+            n_blocks = decisions.size // self.dm.block_length
+            usable = n_blocks * self.dm.block_length
+            bits = self.dm.decode(decisions[:usable].astype(np.intp))
+        else:
+            bits = cfg.demap(symbols_rx)
 
         pilot_symbols: ComplexArray | None = None
         if self.pilots is not None:

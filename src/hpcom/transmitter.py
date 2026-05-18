@@ -22,7 +22,12 @@ import numpy.typing as npt
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
-from hpcom.modulation import ConstellationConfig, bits_per_symbol
+from hpcom.modulation import (
+    ConstantCompositionDM,
+    ConstellationConfig,
+    bits_per_symbol,
+    nearest_symbol_indices,
+)
 from hpcom.pilots import PilotConfig
 from hpcom.wdm import WDMConfig
 
@@ -110,12 +115,20 @@ class Transmitter:
     Constellation is specified by either ``modulation_order`` (Gray-coded
     square QAM) or ``constellation`` (a :class:`ConstellationConfig`, for
     geometric or probabilistic shaping). Exactly one must be set.
+
+    Probabilistic shaping is enabled by setting ``dm`` (a distribution
+    matcher whose ``target_pmf`` matches ``constellation.probabilities``).
+    With ``dm`` active, the bit-stream length per polarisation/channel is
+    ``(n_symbols / dm.block_length) * dm.bits_per_block`` rather than the
+    usual ``n_symbols * log₂ M``, and ``n_symbols`` must be a multiple of
+    ``dm.block_length``. Pilots and ``dm`` are mutually exclusive.
     """
 
     symbol_rate_hz: float
     n_symbols: int
     modulation_order: int | None = None
     constellation: ConstellationConfig | None = None
+    dm: ConstantCompositionDM | None = None
     samples_per_symbol: int = 16
     roll_off: float = 0.1
     pulse_span_symbols: int = 64
@@ -150,6 +163,28 @@ class Transmitter:
                 f"polarization must be 'single' or 'dual', got {self.polarization!r}"
             )
 
+        if self.dm is not None:
+            if self.pilots is not None:
+                raise ValueError(
+                    "`pilots` and `dm` are mutually exclusive — pilots displace data "
+                    "symbols and would break the DM block composition"
+                )
+            if self.constellation is None or self.constellation.probabilities is None:
+                raise ValueError(
+                    "`dm` requires `constellation` with non-None probabilities"
+                )
+            if self.dm.target_pmf.shape != self.constellation.probabilities.shape or not (
+                np.allclose(self.dm.target_pmf, self.constellation.probabilities, atol=1e-12)
+            ):
+                raise ValueError(
+                    "dm.target_pmf must match constellation.probabilities elementwise"
+                )
+            if self.n_symbols % self.dm.block_length != 0:
+                raise ValueError(
+                    f"n_symbols ({self.n_symbols}) must be a multiple of "
+                    f"dm.block_length ({self.dm.block_length})"
+                )
+
     @property
     def effective_modulation_order(self) -> int:
         """Constellation size — always defined, even when ``modulation_order`` is None."""
@@ -159,6 +194,16 @@ class Transmitter:
         """The internal :class:`ConstellationConfig` (built from ``modulation_order``
         or passed in directly)."""
         return self._constellation  # type: ignore[attr-defined,no-any-return]
+
+    def _bits_per_stream(self) -> int:
+        """Length of the bit-stream input expected per polarisation/channel.
+
+        Without DM: ``n_symbols * k``. With DM:
+        ``(n_symbols / block_length) * bits_per_block``.
+        """
+        if self.dm is not None:
+            return (self.n_symbols // self.dm.block_length) * self.dm.bits_per_block
+        return self.n_symbols * self._resolved_constellation().bits_per_symbol
 
     @property
     def dt_s(self) -> float:
@@ -201,13 +246,12 @@ class Transmitter:
             )
 
         # Dual-pol single-carrier.
-        k = self._resolved_constellation().bits_per_symbol
+        bps = self._bits_per_stream()
         if bits is not None:
             b2 = np.asarray(bits, dtype=np.uint8)
-            if b2.shape != (2, self.n_symbols * k):
+            if b2.shape != (2, bps):
                 raise ValueError(
-                    f"dual-pol `bits` must have shape (2, {self.n_symbols * k}), "
-                    f"got {b2.shape}"
+                    f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}"
                 )
         if symbols is not None:
             s2 = np.asarray(symbols, dtype=np.complex128)
@@ -280,7 +324,9 @@ class Transmitter:
         composite output (e.g. one call per WDM channel × polarisation).
         """
         cfg = self._resolved_constellation()
-        k = cfg.bits_per_symbol
+        dm = self.dm
+        n_bits = self._bits_per_stream()
+
         if symbols is not None:
             ch_symbols = np.asarray(symbols, dtype=np.complex128)
             if ch_symbols.shape != (self.n_symbols,):
@@ -288,20 +334,32 @@ class Transmitter:
                     f"`symbols` must have shape ({self.n_symbols},), "
                     f"got {ch_symbols.shape}"
                 )
-            ch_bits = cfg.demap(ch_symbols)
+            if dm is not None:
+                indices = nearest_symbol_indices(ch_symbols, cfg.points).astype(np.intp)
+                ch_bits = dm.decode(indices)
+            else:
+                ch_bits = cfg.demap(ch_symbols)
         elif bits is not None:
             ch_bits = np.asarray(bits, dtype=np.uint8)
-            if ch_bits.shape != (self.n_symbols * k,):
+            if ch_bits.shape != (n_bits,):
                 raise ValueError(
-                    f"`bits` must have shape ({self.n_symbols * k},), "
-                    f"got {ch_bits.shape}"
+                    f"`bits` must have shape ({n_bits},), got {ch_bits.shape}"
                 )
-            ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
+            if dm is not None:
+                indices = dm.encode(ch_bits)
+                ch_symbols = cfg.points[indices].astype(np.complex128)
+            else:
+                ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
         else:
-            ch_bits = rng.integers(0, 2, size=self.n_symbols * k, dtype=np.uint8)
-            ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
+            ch_bits = rng.integers(0, 2, size=n_bits, dtype=np.uint8)
+            if dm is not None:
+                indices = dm.encode(ch_bits)
+                ch_symbols = cfg.points[indices].astype(np.complex128)
+            else:
+                ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
 
         if self.pilots is not None:
+            k = cfg.bits_per_symbol
             pilot_idx = self.pilots.pilot_indices(self.n_symbols)
             ch_symbols = ch_symbols.copy()
             ch_symbols[pilot_idx] = self.pilots.symbol
@@ -372,14 +430,14 @@ class WDMTransmitter(Transmitter):
             raise ValueError("pass at most one of `bits` or `symbols`, not both")
 
         n_ch = self.wdm.n_channels
-        k = self._resolved_constellation().bits_per_symbol
+        bps = self._bits_per_stream()
         n_pol = 2 if self.polarization == "dual" else 1
 
         # Validate deterministic-input shapes.
         if bits is not None:
             b = np.asarray(bits, dtype=np.uint8)
             expected = (
-                (2, n_ch, self.n_symbols * k) if n_pol == 2 else (n_ch, self.n_symbols * k)
+                (2, n_ch, bps) if n_pol == 2 else (n_ch, bps)
             )
             if b.shape != expected:
                 raise ValueError(
