@@ -22,7 +22,7 @@ import numpy.typing as npt
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
-from hpcom.modulation import bits_per_symbol, bits_to_symbols, symbols_to_bits
+from hpcom.modulation import ConstellationConfig, bits_per_symbol
 from hpcom.pilots import PilotConfig
 from hpcom.wdm import WDMConfig
 
@@ -106,11 +106,16 @@ class Transmitter:
     For WDM (multiple carriers), use :class:`WDMTransmitter`. For pilot
     insertion, pass a :class:`~hpcom.pilots.PilotConfig`. For PDM (X/Y), set
     ``polarization="dual"`` — bits/symbols/field gain a leading axis of size 2.
+
+    Constellation is specified by either ``modulation_order`` (Gray-coded
+    square QAM) or ``constellation`` (a :class:`ConstellationConfig`, for
+    geometric or probabilistic shaping). Exactly one must be set.
     """
 
-    modulation_order: int
     symbol_rate_hz: float
     n_symbols: int
+    modulation_order: int | None = None
+    constellation: ConstellationConfig | None = None
     samples_per_symbol: int = 16
     roll_off: float = 0.1
     pulse_span_symbols: int = 64
@@ -127,12 +132,33 @@ class Transmitter:
             raise ValueError(
                 f"samples_per_symbol must be >= 2 (Nyquist), got {self.samples_per_symbol}"
             )
-        bits_per_symbol(self.modulation_order)
+
+        if (self.modulation_order is None) == (self.constellation is None):
+            raise ValueError(
+                "exactly one of `modulation_order` or `constellation` must be set"
+            )
+        if self.modulation_order is not None:
+            resolved = ConstellationConfig.from_square_qam(self.modulation_order)
+        else:
+            assert self.constellation is not None  # for mypy
+            resolved = self.constellation
+        # Cached resolved constellation; frozen-dataclass bypass.
+        object.__setattr__(self, "_constellation", resolved)
 
         if self.polarization not in ("single", "dual"):
             raise ValueError(
                 f"polarization must be 'single' or 'dual', got {self.polarization!r}"
             )
+
+    @property
+    def effective_modulation_order(self) -> int:
+        """Constellation size — always defined, even when ``modulation_order`` is None."""
+        return self._resolved_constellation().modulation_order
+
+    def _resolved_constellation(self) -> ConstellationConfig:
+        """The internal :class:`ConstellationConfig` (built from ``modulation_order``
+        or passed in directly)."""
+        return self._constellation  # type: ignore[attr-defined,no-any-return]
 
     @property
     def dt_s(self) -> float:
@@ -175,7 +201,7 @@ class Transmitter:
             )
 
         # Dual-pol single-carrier.
-        k = bits_per_symbol(self.modulation_order)
+        k = self._resolved_constellation().bits_per_symbol
         if bits is not None:
             b2 = np.asarray(bits, dtype=np.uint8)
             if b2.shape != (2, self.n_symbols * k):
@@ -232,7 +258,7 @@ class Transmitter:
             symbols=symbols,
             bits=bits,
             samples_per_symbol=self.samples_per_symbol,
-            modulation_order=self.modulation_order,
+            modulation_order=self.effective_modulation_order,
             roll_off=self.roll_off,
             pulse_span_symbols=self.pulse_span_symbols,
             n_symbols=self.n_symbols,
@@ -253,7 +279,8 @@ class Transmitter:
         Subclasses orchestrate multiple calls to this method to build their
         composite output (e.g. one call per WDM channel × polarisation).
         """
-        k = bits_per_symbol(self.modulation_order)
+        cfg = self._resolved_constellation()
+        k = cfg.bits_per_symbol
         if symbols is not None:
             ch_symbols = np.asarray(symbols, dtype=np.complex128)
             if ch_symbols.shape != (self.n_symbols,):
@@ -261,7 +288,7 @@ class Transmitter:
                     f"`symbols` must have shape ({self.n_symbols},), "
                     f"got {ch_symbols.shape}"
                 )
-            ch_bits = symbols_to_bits(ch_symbols, self.modulation_order)
+            ch_bits = cfg.demap(ch_symbols)
         elif bits is not None:
             ch_bits = np.asarray(bits, dtype=np.uint8)
             if ch_bits.shape != (self.n_symbols * k,):
@@ -269,14 +296,10 @@ class Transmitter:
                     f"`bits` must have shape ({self.n_symbols * k},), "
                     f"got {ch_bits.shape}"
                 )
-            ch_symbols = np.asarray(
-                bits_to_symbols(ch_bits, self.modulation_order), dtype=np.complex128
-            )
+            ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
         else:
             ch_bits = rng.integers(0, 2, size=self.n_symbols * k, dtype=np.uint8)
-            ch_symbols = np.asarray(
-                bits_to_symbols(ch_bits, self.modulation_order), dtype=np.complex128
-            )
+            ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
 
         if self.pilots is not None:
             pilot_idx = self.pilots.pilot_indices(self.n_symbols)
@@ -349,7 +372,7 @@ class WDMTransmitter(Transmitter):
             raise ValueError("pass at most one of `bits` or `symbols`, not both")
 
         n_ch = self.wdm.n_channels
-        k = bits_per_symbol(self.modulation_order)
+        k = self._resolved_constellation().bits_per_symbol
         n_pol = 2 if self.polarization == "dual" else 1
 
         # Validate deterministic-input shapes.

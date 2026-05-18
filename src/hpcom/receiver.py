@@ -20,7 +20,7 @@ import numpy.typing as npt
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
-from hpcom.modulation import bits_per_symbol, nearest_symbol_indices, square_qam, symbols_to_bits
+from hpcom.modulation import ConstellationConfig, bits_per_symbol, nearest_symbol_indices
 from hpcom.pilots import PilotConfig
 from hpcom.transmitter import Polarization
 from hpcom.wdm import WDMConfig
@@ -83,7 +83,8 @@ class Receiver:
     gain/loss as BER (required for any meaningful AWGN BER curve).
     """
 
-    modulation_order: int
+    modulation_order: int | None = None
+    constellation: ConstellationConfig | None = None
     samples_per_symbol: int = 16
     roll_off: float = 0.1
     pulse_span_symbols: int = 64
@@ -109,6 +110,24 @@ class Receiver:
             raise ValueError(
                 f"polarization must be 'single' or 'dual', got {self.polarization!r}"
             )
+        if (self.modulation_order is None) == (self.constellation is None):
+            raise ValueError(
+                "exactly one of `modulation_order` or `constellation` must be set"
+            )
+        if self.modulation_order is not None:
+            resolved = ConstellationConfig.from_square_qam(self.modulation_order)
+        else:
+            assert self.constellation is not None  # for mypy
+            resolved = self.constellation
+        object.__setattr__(self, "_constellation", resolved)
+
+    @property
+    def effective_modulation_order(self) -> int:
+        """Constellation size — always defined, even when ``modulation_order`` is None."""
+        return self._resolved_constellation().modulation_order
+
+    def _resolved_constellation(self) -> ConstellationConfig:
+        return self._constellation  # type: ignore[attr-defined,no-any-return]
 
     def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
         """Demodulate a received field.
@@ -142,7 +161,7 @@ class Receiver:
             symbols=np.stack([p.symbols for p in per_pol], axis=0),
             bits=np.stack([p.bits for p in per_pol], axis=0),
             decisions=np.stack([p.decisions for p in per_pol], axis=0),
-            modulation_order=self.modulation_order,
+            modulation_order=self.effective_modulation_order,
             polarization="dual",
             pilots=self.pilots,
             pilot_symbols=pilot_syms,
@@ -176,9 +195,9 @@ class Receiver:
             if avg_power > 0:
                 symbols_rx = symbols_rx / np.sqrt(avg_power)
 
-        constellation, _ = square_qam(self.modulation_order)
-        decisions = nearest_symbol_indices(symbols_rx, constellation)
-        bits = symbols_to_bits(symbols_rx, self.modulation_order)
+        cfg = self._resolved_constellation()
+        decisions = nearest_symbol_indices(symbols_rx, cfg.points)
+        bits = cfg.demap(symbols_rx)
 
         pilot_symbols: ComplexArray | None = None
         if self.pilots is not None:
@@ -189,7 +208,7 @@ class Receiver:
             symbols=symbols_rx,
             bits=bits,
             decisions=decisions,
-            modulation_order=self.modulation_order,
+            modulation_order=self.effective_modulation_order,
             polarization="single",
             pilots=self.pilots,
             pilot_symbols=pilot_symbols,
