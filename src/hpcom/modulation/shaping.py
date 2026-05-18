@@ -203,4 +203,64 @@ def _default_bit_labels(m: int, k: int) -> npt.NDArray[np.uint8]:
     return out
 
 
-__all__ = ["ConstellationConfig", "bits_per_symbol"]
+def apsk(
+    ring_sizes: tuple[int, ...] | list[int],
+    ring_radii: tuple[float, ...] | list[float],
+    ring_phases: tuple[float, ...] | list[float] | None = None,
+) -> ConstellationConfig:
+    """Amplitude-phase shift keying constellation: concentric rings.
+
+    Each ring carries ``ring_sizes[i]`` equally-spaced points at radius
+    ``ring_radii[i]``, optionally rotated by ``ring_phases[i]`` (radians).
+    Total constellation size ``M = sum(ring_sizes)`` must be a power of 2.
+
+    Points are laid out ring-by-ring starting from the innermost. Within
+    each ring, points are emitted at angles ``ring_phases[i] + 2π k / M_i``
+    for ``k = 0..M_i-1``. Bit labels are assigned by default index order
+    (MSB-first binary) — pass a custom ``bit_labels`` via
+    :meth:`ConstellationConfig.from_points` if Gray labelling matters for
+    your BER target.
+
+    Examples
+    --------
+    Canonical DVB-S2 16-APSK (4 inner + 12 outer):
+
+    >>> cfg = apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85))
+    >>> cfg.modulation_order
+    16
+    """
+    if len(ring_sizes) != len(ring_radii):
+        raise ValueError(
+            f"ring_sizes and ring_radii must have the same length, "
+            f"got {len(ring_sizes)} and {len(ring_radii)}"
+        )
+    if ring_phases is None:
+        ring_phases = [0.0] * len(ring_sizes)
+    elif len(ring_phases) != len(ring_sizes):
+        raise ValueError(
+            f"ring_phases must have length {len(ring_sizes)}, "
+            f"got {len(ring_phases)}"
+        )
+    if any(n < 1 for n in ring_sizes):
+        raise ValueError(f"all ring_sizes must be >= 1, got {ring_sizes}")
+    if any(r <= 0 for r in ring_radii):
+        raise ValueError(f"all ring_radii must be > 0, got {ring_radii}")
+
+    total = int(sum(ring_sizes))
+    if not _is_power_of_two(total):
+        raise ValueError(
+            f"sum(ring_sizes) must be a power of 2, got {total} "
+            f"(ring_sizes={ring_sizes})"
+        )
+
+    points_list: list[complex] = []
+    for n_ring, radius, phase in zip(ring_sizes, ring_radii, ring_phases, strict=True):
+        angles = phase + 2.0 * np.pi * np.arange(n_ring) / n_ring
+        ring = radius * np.exp(1j * angles)
+        points_list.extend(ring.tolist())
+
+    points = np.array(points_list, dtype=np.complex128)
+    return ConstellationConfig.from_points(points)
+
+
+__all__ = ["ConstellationConfig", "apsk", "bits_per_symbol"]

@@ -11,10 +11,11 @@ from hpcom.modulation.mapping import (
     nearest_symbol_indices,
     symbols_to_bits,
 )
-from hpcom.modulation.shaping import ConstellationConfig
+from hpcom.modulation.shaping import ConstellationConfig, apsk
 
 __all__ = [
     "ConstellationConfig",
+    "apsk",
     "bits_per_symbol",
     "bits_to_symbols",
     "nearest_symbol_indices",
