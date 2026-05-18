@@ -1,9 +1,24 @@
-import matplotlib.pyplot as plt
-import numpy as np
+"""Legacy OFDM smoke script — kept for reference only.
+
+This file is an interactive plt.show() demo, not a real pytest case (no
+``def test_*``). Phase 5 of hpcom v1 will introduce proper OFDM Tx/Rx unit
+tests under ``tests/unit/`` and parity tests under ``tests/numerical/``;
+this file will be deleted at that point.
+"""
+
+import pytest
+
+pytest.skip(
+    "Legacy OFDM script — replaced by Phase 5 OFDM v1 tests (see docs/spec/hpcom-v1-tasks.md).",
+    allow_module_level=True,
+)
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 
 
-from hpcom.signal import create_ofdm_parameters, generate_ofdm_signal, decode_ofdm_signal, dbm_to_mw
-from hpcom.metrics import get_average_power, get_energy
+from hpcom.signal import create_ofdm_parameters, generate_ofdm_signal, decode_ofdm_signal, dbm_to_mw  # noqa: E402
+from hpcom.metrics import get_average_power, get_energy  # noqa: E402
 
 # create parameters
 ofdm = create_ofdm_parameters(n_carriers=128, p_ave_dbm=1, n_symbols=2, m_order=16,

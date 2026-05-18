@@ -214,6 +214,78 @@ Source plan: [`hpcom-v1-plan.md`](./hpcom-v1-plan.md). Tasks are ordered by depe
   - Files: `.github/workflows/release.yml`.
   - **🛑 USER CHECKPOINT before first real `vX.Y.Z` tag:** full pre-release walkthrough.
 
+## M11 — Phase 4: Constellation shaping
+
+Geometric and probabilistic shaping. Per user directive 2026-05-17, this is
+the next active milestone after M10. Tasks are pure-NumPy, framework-free,
+and keep the `Transmitter`/`Receiver` API stable by routing through a new
+`ConstellationConfig` object that can substitute for `modulation_order`.
+
+- [ ] **T11.1 — `ConstellationConfig` dataclass**
+  - Acceptance: `hpcom.modulation.ConstellationConfig(points, bit_labels, probabilities=None)` validates power-of-2 size, `bit_labels` shape `(M, log₂ M)` with one-to-one bit→symbol coverage, unit-mean-power normalisation, and optional probability vector summing to 1. Factories `from_square_qam(M)` and `from_points(points, bit_labels=None)` (auto-Gray for arbitrary points via nearest-neighbour labelling).
+  - Verify: round-trip `bits_to_symbols / symbols_to_bits` matches the existing `square_qam` path bit-for-bit when constructed via `from_square_qam`.
+  - Files: `src/hpcom/modulation/{__init__.py, shaping.py}`, `tests/unit/test_constellation_config.py`.
+
+- [ ] **T11.2 — Wire `ConstellationConfig` into `Transmitter`/`Receiver`**
+  - Acceptance: `Transmitter(..., constellation=ConstellationConfig(...))` accepted as alternative to `modulation_order`; if both given, raise. Receiver uses the same config for demap (`symbols_to_bits` reads bit_labels from config when present).
+  - Verify: noiseless B2B with a custom (but still square-QAM-equivalent) `ConstellationConfig` recovers bits → BER == 0.
+  - Files: `src/hpcom/transmitter.py`, `src/hpcom/receiver.py`, `tests/unit/test_transmitter_constellation_config.py`.
+
+- [ ] **T11.3 — Geometric shaping: non-square constellations**
+  - Acceptance: factories for APSK (concentric rings) and one 16-point geometrically-shaped constellation. Each returns a valid `ConstellationConfig`.
+  - Verify: round-trip B2B BER == 0 noiseless; constellation mean power == 1.0 within 1e-12; minimum-distance ≥ documented threshold.
+  - Files: `src/hpcom/modulation/shaping.py` (extend), `tests/unit/test_geometric_shaping.py`.
+
+- [ ] **T11.4 — Probabilistic shaping: Maxwell–Boltzmann + simple DM**
+  - Acceptance: `maxwell_boltzmann(constellation, nu)` returns a probability vector minimising `E[|s|²]` at fixed entropy. A minimal distribution matcher — shell-mapping lookup for v1, *not* CCDM — maps uniform bits → symbol indices following the target distribution. Decoder inverts the lookup.
+  - Verify: empirical symbol distribution from the DM matches target within KL-divergence < 1e-3 over ≥ 2¹⁶ symbols; round-trip noiseless recovers input bits.
+  - Files: `src/hpcom/modulation/shaping.py` (extend), `src/hpcom/modulation/dm.py`, `tests/unit/test_probabilistic_shaping.py`.
+
+- [ ] **T11.5 — Numerical shaping-gain test (AWGN)**
+  - Acceptance: 64-QAM shaped vs unshaped over AWGN at matched entropy; measured SNR-gap-to-Shannon for shaped is smaller by ≥ 0.5 dB where the gain is expected (~3 bit/s/Hz region).
+  - Verify: `tests/numerical/test_shaping_gain.py` green within documented tolerance.
+  - Files: `tests/numerical/test_shaping_gain.py`.
+  - **🛑 USER CHECKPOINT after T11.5:** review numbers + decide whether to extend to CCDM or stay with shell mapping for v1.
+
+## M12 — Phase 5: OFDM Tx/Rx
+
+Minimal OFDM transmitter/receiver, reusing the `Transmitter`/`Receiver`
+base via subclassing (same pattern as `WDMTransmitter`). Single-pol first;
+dual-pol if straightforward after the single-pol API is fixed.
+
+- [ ] **T12.1 — `OFDMConfig` dataclass**
+  - Acceptance: `OFDMConfig(n_subcarriers, cp_len, n_guard, pilot_subcarrier_indices=())` with validation (power-of-2 `n_subcarriers`, `0 ≤ n_guard < n_subcarriers/2`, disjoint pilot/data indices).
+  - Verify: malformed configs raise; valid configs round-trip via dataclass replace.
+  - Files: `src/hpcom/ofdm.py`, `tests/unit/test_ofdm_config.py`.
+
+- [ ] **T12.2 — `OFDMTransmitter(Transmitter)`**
+  - Acceptance: required kw-only `ofdm: OFDMConfig`. Generates IFFT-based OFDM symbols with cyclic prefix, guard bands, optional pilot subcarriers (taken from `pilots: PilotConfig`). Returns `(field, dt_s, symbols)`. Single-pol first.
+  - Verify: output length = `n_symbols * (n_subcarriers + cp_len)`; power matches `p_ave` within 1e-10; constellation on data subcarriers is the configured QAM (or `ConstellationConfig`).
+  - Files: `src/hpcom/ofdm.py` (extend), `tests/unit/test_ofdm_transmitter.py`.
+
+- [ ] **T12.3 — `OFDMReceiver(Receiver)`**
+  - Acceptance: removes CP, FFT, extracts data subcarriers, demaps with the configured constellation. Pilot-based one-tap channel equalisation when pilots are present.
+  - Verify: noiseless B2B `OFDMTransmitter → OFDMReceiver` recovers bits at BER == 0 for QPSK/16-QAM/64-QAM.
+  - Files: `src/hpcom/ofdm.py` (extend), `tests/unit/test_ofdm_receiver.py`.
+
+- [ ] **T12.4 — OFDM AWGN BER curve**
+  - Acceptance: measured AWGN BER over a swept SNR matches the per-subcarrier theoretical QAM-AWGN curve within 0.5 dB at BER=1e-3.
+  - Verify: `tests/numerical/test_ofdm_awgn.py` green at three SNR points.
+  - Files: `tests/numerical/test_ofdm_awgn.py`.
+  - **🛑 USER CHECKPOINT after T12.4:** decide on dual-pol OFDM scope and whether to add OFDM × WDM composition.
+
+## M13 — Phase 6: OptiCommPy gap analysis
+
+Survey-driven. Implementation tasks added after the survey.
+
+- [ ] **T13.1 — OptiCommPy API survey**
+  - Acceptance: `docs/spec/opticomm_gap.md` lists every public function/class in OptiCommPy, classifies each as {already in hpcom, planned, intentionally omitted, candidate for adoption}, with a one-line rationale.
+  - Verify: list is exhaustive (cross-check against `dir(opticommpy)` from a clean install); candidates ranked by user value.
+  - Files: `docs/spec/opticomm_gap.md`.
+  - **🛑 USER CHECKPOINT after T13.1:** pick which candidates make it into v1.
+
+- [ ] **T13.2 — Implement adopted candidates** *(spawned per T13.1 outcome)*
+
 ## Summary
 
-41 tasks across 11 milestones. 5 user checkpoints (after T2.3, T3.3, T7.4, T8.5, before T10.4). Critical path: T0.1 → T0.2 → T1.1 → T2.* → T3.* → T4.1 → T5.2 → T5.3 → T7.* → T8.* → T10.*. M6, M9 docs skeleton, and parts of M5 can run in parallel after M3.
+41 → 53 tasks across 13 milestones. 7 user checkpoints (after T2.3, T3.3, T7.4, T8.5, before T10.4, after T11.5, T12.4, T13.1). Critical path through M0–M10 unchanged; M11–M13 chain sequentially after M10. T11.1–11.2 must complete before T11.3–11.5; M12 reuses M11 for shaped-OFDM but otherwise depends only on M5/M7.

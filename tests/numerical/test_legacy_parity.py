@@ -16,9 +16,11 @@ The two implementations differ at several layers (see memory entry
    conjugate-of-v1 relationship holds with a tight bound on the imaginary
    part of the residual.
 
-The legacy code has a numpy-incompat bug in
-``_legacy.modulation.get_constellation`` (used by ``create_wdm_parameters``);
-we build the legacy WDM dict by hand and bypass it.
+We build the legacy WDM dict by hand (see ``_legacy_wdm_dict`` below) rather
+than going through ``create_wdm_parameters``. This keeps the parity tests
+independent of the legacy config-builder surface and lets us state every
+field that the parity claim depends on (``scale_coef``, ``p_ave``,
+``modulation_type``, …) directly in the test.
 """
 
 from __future__ import annotations
@@ -57,8 +59,12 @@ def _legacy_wdm_dict(
     n_channels: int = 1,
     channel_spacing: float = 50e9,
 ) -> dict:
-    """Manually construct the legacy wdm config dict, bypassing the buggy
-    ``create_wdm_parameters`` / ``get_scale_coef_constellation`` chain."""
+    """Manually construct the legacy wdm config dict.
+
+    Equivalent to ``create_wdm_parameters`` but spelled out field-by-field so
+    every quantity the parity claim depends on (scale_coef, p_ave,
+    modulation_type, …) is visible inline.
+    """
     return {
         "n_channels": n_channels,
         "channel_spacing": channel_spacing,
