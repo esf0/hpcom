@@ -188,7 +188,7 @@ def get_constellation(mod_type):
     points = np.zeros(n_points, dtype=complex)
     for i in range(n_points):
         data = "{0:b}".format(int(i))
-        points[i] = get_constellation_point(data, mod_type)
+        points[i] = get_constellation_point(data, mod_type)[0]
 
     return points
 

@@ -9,9 +9,9 @@ from datetime import datetime
 # from prettytable import PrettyTable
 # from scipy.fft import fftshift, ifftshift, fft, ifft
 
-import hpcom
-from hpcom.signal import create_wdm_parameters, generate_wdm, get_points_wdm, receiver_wdm, nonlinear_shift, rrcosfilter
-from hpcom.channel import create_channel_parameters
+from hpcom._legacy.signal import create_wdm_parameters, generate_wdm, get_points_wdm, receiver_wdm, nonlinear_shift, \
+    rrcosfilter, filter_shaper
+from hpcom._legacy.channel import create_channel_parameters
 
 from ssfm_gpu.propagation import propagate_schrodinger, dispersion_compensation
 
@@ -41,7 +41,7 @@ signal_x, wdm_info = generate_wdm(wdm)
 points_x_orig = wdm_info['points_x'][0]
 ft_filter_values = wdm_info['ft_filter_values_x'][0] / wdm['upsampling']  # [0] index for only one WDM channel
 
-points_x = get_points_wdm(hpcom.signal.filter_shaper(signal_x, ft_filter_values)[::wdm['downsampling_rate']], wdm) # downsample
+points_x = get_points_wdm(filter_shaper(signal_x, ft_filter_values)[::wdm['downsampling_rate']], wdm) # downsample
 shift_factor_x = np.dot(np.transpose(np.conjugate(points_x_orig)), points_x_orig) / np.dot(np.transpose(np.conjugate(points_x_orig)), points_x)
 print(shift_factor_x, np.absolute(shift_factor_x))
 print('Difference:', np.max(np.absolute(points_x_orig-points_x)))

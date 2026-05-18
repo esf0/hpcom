@@ -231,34 +231,32 @@ def generate_wdm(wdm, bits=None, points=None, ft_filter_values=None):
     dt = 1. / sample_freq
     dw = wdm['channel_spacing']
 
-    bits_x = []
-    bits_y = []
-    points_x = []
-    points_y = []
-    ft_filter_values_x = []
-    ft_filter_values_y = []
+    bits_x, bits_y = [], []
+    points_x, points_y = [], []
+    ft_filter_values_x, ft_filter_values_y = [], []
 
     if points is not None:
         points_x = points[0]
-        points_y = points[1]
+        if wdm['n_polarisations'] == 2:
+            points_y = points[1]
     elif bits is not None:
         bits_x = bits[0]
-        bits_y = bits[1]
+        if wdm['n_polarisations'] == 2:
+            bits_y = bits[1]
 
     if wdm['n_polarisations'] == 2:
         wdm_process = wdm.copy()
-        wdm_process['p_ave'] = wdm_process['p_ave'] / 2
+        wdm_process['p_ave'] = wdm_process['p_ave'] / 2.0
     else:
         wdm_process = wdm
 
     for wdm_index in range(wdm['n_channels']):
 
-        if ft_filter_values is None:
-            ft_filter_values_to_x = None
-            ft_filter_values_to_y = None
-        else:
+        ft_filter_values_to_x, ft_filter_values_to_y = None, None
+        if ft_filter_values is not None:
             ft_filter_values_to_x = ft_filter_values[0][wdm_index]
-            ft_filter_values_to_y = ft_filter_values[1][wdm_index]
+            if wdm['n_polarisations'] == 2:
+                ft_filter_values_to_y = ft_filter_values[1][wdm_index]
 
         w_channel = 2. * np.pi * dw * (wdm_index - (wdm['n_channels'] - 1) // 2)
 
@@ -274,10 +272,9 @@ def generate_wdm(wdm, bits=None, points=None, ft_filter_values=None):
                                                             ft_filter_values=ft_filter_values_to_x)
 
             if wdm_index == 0:
-                signal = signal_temp
-                np_signal = len(signal)
-                t = np.array([dt * (k - np_signal / 2) for k in range(np_signal)])
-                signal *= np.exp(1.0j * w_channel * t)
+                np_signal = len(signal_temp)
+                t = dt * (np.arange(np_signal) - np_signal / 2.0)
+                signal = signal_temp * np.exp(1.0j * w_channel * t)
             else:
                 signal += signal_temp * np.exp(1.0j * w_channel * t)
 
@@ -307,13 +304,10 @@ def generate_wdm(wdm, bits=None, points=None, ft_filter_values=None):
                                                                 ft_filter_values=ft_filter_values_to_y)
 
             if wdm_index == 0:
-                signal_x = signal_x_temp
-                signal_y = signal_y_temp
-                np_signal = len(signal_x)
-                t = np.array([dt * (k - np_signal / 2) for k in range(np_signal)])
-
-                signal_x *= np.exp(1.0j * w_channel * t)
-                signal_y *= np.exp(1.0j * w_channel * t)
+                np_signal = len(signal_x_temp)
+                t = dt * (np.arange(np_signal) - np_signal / 2.0)
+                signal_x = signal_x_temp * np.exp(1.0j * w_channel * t)
+                signal_y = signal_y_temp * np.exp(1.0j * w_channel * t)
             else:
                 signal_x += signal_x_temp * np.exp(1.0j * w_channel * t)
                 signal_y += signal_y_temp * np.exp(1.0j * w_channel * t)
