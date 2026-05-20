@@ -31,7 +31,7 @@ import pytest
 from hpcom._legacy.signal import generate_wdm_base
 from hpcom.modulation import bits_to_symbols
 from hpcom.modulation.constellations import square_qam
-from hpcom.transmitter import Transmitter
+from hpcom.transmitter import SingleCarrierTransmitter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,7 +160,7 @@ def test_legacy_field_is_real_scaled_conj_of_v1_field(m_order: int):
     legacy_signal, _ = generate_wdm_base(wdm, bits=bits_str, seed=0)
     legacy_field = np.asarray(legacy_signal, dtype=np.complex128)
 
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=m_order, symbol_rate_hz=rs, n_symbols=n_sym,
         samples_per_symbol=sps, roll_off=rolloff, pulse_span_symbols=32,
     )
@@ -206,7 +206,7 @@ def test_legacy_field_qpsk_known_power_scale():
     bits_str = "".join(str(int(b)) for b in bits_arr)
     legacy_signal, _ = generate_wdm_base(wdm, bits=bits_str, seed=0)
     legacy_field = np.asarray(legacy_signal, dtype=np.complex128)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4, symbol_rate_hz=10e9, n_symbols=n_sym,
         samples_per_symbol=sps, roll_off=0.1, pulse_span_symbols=32,
     )
@@ -229,8 +229,7 @@ def test_legacy_qpsk_3channel_wdm_conjugate_relation_holds():
     output, demuxed per channel, still relates to legacy single-channel output
     by the same conjugate transform on each channel.
     """
-    from hpcom.transmitter import WDMTransmitter
-    from hpcom.wdm import WDMConfig
+    from hpcom.wdm import WDMConfig, WDMTransmitter
 
     n_sym = 256
     sps = 16

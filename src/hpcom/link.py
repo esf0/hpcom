@@ -9,17 +9,16 @@ by implementing the same ``apply()`` contract — no edits to ``Link``.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from hpcom._typing import ComplexArray, LinkComponent
 from hpcom.amplifier import Amplifier
 from hpcom.fiber import Fiber
 
 
-@dataclass(frozen=True)
-class Link:
+class Link(BaseModel):
     """An ordered chain of optical link components.
 
     The chain is applied left-to-right by :meth:`propagate`. ``strict`` mode
@@ -27,10 +26,13 @@ class Link:
     (the conventional EDFA-compensated SSMF link).
     """
 
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     elements: tuple[LinkComponent, ...]
     strict: bool = False
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate(self) -> Link:
         if not self.elements:
             raise ValueError("Link must have at least one element")
         for i, el in enumerate(self.elements):
@@ -47,6 +49,7 @@ class Link:
                         f"strict Link expects element {i} to be {expected.__name__}, "
                         f"got {type(el).__name__}"
                     )
+        return self
 
     @classmethod
     def from_spans(
@@ -64,7 +67,7 @@ class Link:
         for _ in range(n_spans):
             elements.append(fiber)
             elements.append(amplifier)
-        return cls(tuple(elements), strict=strict)
+        return cls(elements=tuple(elements), strict=strict)
 
     @property
     def n_spans(self) -> int:
@@ -92,5 +95,5 @@ class Link:
             out = el.apply(out, dt_s, rng=rng)
         return out
 
-    def __iter__(self) -> Iterator[LinkComponent]:  # pragma: no cover — convenience
+    def __iter__(self) -> Iterator[LinkComponent]:  # type: ignore[override]  # pragma: no cover — convenience
         return iter(self.elements)

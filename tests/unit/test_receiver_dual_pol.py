@@ -12,13 +12,13 @@ import pytest
 
 from hpcom.modulation import bits_per_symbol
 from hpcom.pilots import PilotConfig
-from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.receiver import Receiver, SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter, Transmitter
 from hpcom.wdm import WDMConfig
 
 
 def _b2b_pair(*, order: int = 4, n: int = 512) -> tuple[Transmitter, Receiver]:
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=order,
         symbol_rate_hz=10e9,
         n_symbols=n,
@@ -27,7 +27,7 @@ def _b2b_pair(*, order: int = 4, n: int = 512) -> tuple[Transmitter, Receiver]:
         seed=0,
         polarization="dual",
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=order,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -72,20 +72,20 @@ def test_dual_pol_streams_are_independent_at_receiver():
 
 
 def test_dual_pol_receiver_rejects_1d_input():
-    rx = Receiver(modulation_order=4, polarization="dual")
+    rx = SingleCarrierReceiver(modulation_order=4, polarization="dual")
     with pytest.raises(ValueError, match="dual-pol receiver expects 2-D field"):
         rx.receive(np.zeros(64, dtype=np.complex128))
 
 
 def test_single_pol_receiver_rejects_2d_input():
-    rx = Receiver(modulation_order=4, polarization="single")
+    rx = SingleCarrierReceiver(modulation_order=4, polarization="single")
     with pytest.raises(ValueError, match="single-pol receiver expects 1-D field"):
         rx.receive(np.zeros((2, 64), dtype=np.complex128))
 
 
 def test_dual_pol_pilot_symbols_per_pol():
     cfg = PilotConfig(period=8, symbol=1 + 0j)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=512,
@@ -95,7 +95,7 @@ def test_dual_pol_pilot_symbols_per_pol():
         polarization="dual",
         pilots=cfg,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -114,7 +114,7 @@ def test_dual_pol_pilot_symbols_per_pol():
 
 def test_dual_pol_data_bits_strips_pilots_per_pol():
     cfg = PilotConfig(period=4, symbol=1 + 0j)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=64,
@@ -124,7 +124,7 @@ def test_dual_pol_data_bits_strips_pilots_per_pol():
         polarization="dual",
         pilots=cfg,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -142,7 +142,7 @@ def test_dual_pol_data_bits_strips_pilots_per_pol():
 
 def test_dual_pol_plus_wdm_uses_wdm_receiver():
     """Dual-pol × WDM demux is supported via WDMReceiver."""
-    from hpcom.receiver import WDMReceiver
+    from hpcom.wdm import WDMReceiver
 
     rx = WDMReceiver(
         modulation_order=4,
@@ -156,7 +156,7 @@ def test_dual_pol_plus_wdm_uses_wdm_receiver():
 
 def test_dual_pol_invalid_polarization_rejected():
     with pytest.raises(ValueError, match="polarization"):
-        Receiver(modulation_order=4, polarization="triple")  # type: ignore[arg-type]
+        SingleCarrierReceiver(modulation_order=4, polarization="triple")  # type: ignore[arg-type]
 
 
 def test_dual_pol_received_signal_has_polarization_field():
@@ -164,8 +164,8 @@ def test_dual_pol_received_signal_has_polarization_field():
     received = rx.receive(tx.generate().field)
     assert received.polarization == "dual"
 
-    tx_s = Transmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8, seed=0)
-    rx_s = Receiver(modulation_order=4, samples_per_symbol=tx_s.samples_per_symbol,
+    tx_s = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8, seed=0)
+    rx_s = SingleCarrierReceiver(modulation_order=4, samples_per_symbol=tx_s.samples_per_symbol,
                     roll_off=tx_s.roll_off, pulse_span_symbols=tx_s.pulse_span_symbols)
     received_s = rx_s.receive(tx_s.generate().field)
     assert received_s.polarization == "single"

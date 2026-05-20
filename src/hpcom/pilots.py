@@ -22,25 +22,18 @@ Two BER conventions are both supported, controlled by
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass(frozen=True)
-class PilotConfig:
+class PilotConfig(BaseModel):
     """Uniform pilot schedule: every ``period``-th symbol is a reference."""
 
-    period: int
-    symbol: complex = 1.0 + 0.0j
+    model_config = ConfigDict(frozen=True)
 
-    def __post_init__(self) -> None:
-        if self.period < 2:
-            raise ValueError(
-                f"PilotConfig.period must be >= 2 (otherwise nothing is data), "
-                f"got {self.period}"
-            )
+    period: int = Field(ge=2, description="Pilot insertion period; must be >= 2.")
+    symbol: complex = 1.0 + 0.0j
 
     def pilot_indices(self, n_symbols: int) -> npt.NDArray[np.intp]:
         """Symbol-grid positions where a pilot is transmitted."""

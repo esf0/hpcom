@@ -16,8 +16,8 @@ import pytest
 from hpcom._pulse import root_raised_cosine
 from hpcom.modulation import bits_per_symbol, symbols_to_bits
 from hpcom.pilots import PilotConfig
-from hpcom.transmitter import Transmitter, WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.transmitter import Transmitter
+from hpcom.wdm import WDMConfig, WDMTransmitter
 
 
 def _matched_demap(field_1d, tx) -> np.ndarray:
@@ -179,8 +179,9 @@ def test_dual_pol_wdm_b2b_per_channel_per_pol_recovers_bits():
 
 
 def test_wdm_transmitter_requires_wdm_field():
-    """`wdm` is kw-only required — constructing without raises."""
-    with pytest.raises(TypeError):
+    """`wdm` is required — constructing without raises ValidationError."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="wdm"):
         WDMTransmitter(  # type: ignore[call-arg]
             modulation_order=4, symbol_rate_hz=10e9, n_symbols=16,
             samples_per_symbol=16,

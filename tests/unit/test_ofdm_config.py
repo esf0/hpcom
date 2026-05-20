@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
-
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from hpcom.ofdm import OFDMConfig
 
@@ -104,15 +103,46 @@ def test_samples_per_ofdm_symbol_includes_cp():
 # Frozen / replaceable
 # ---------------------------------------------------------------------------
 
-def test_dataclass_is_frozen():
+def test_model_is_frozen():
     cfg = OFDMConfig(n_subcarriers=64)
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(ValidationError, match="frozen"):
         cfg.n_subcarriers = 128
 
 
-def test_replace_preserves_invariants():
+def test_model_copy_preserves_invariants():
     cfg = OFDMConfig(n_subcarriers=64, cp_len=16, n_guard=4)
-    cfg2 = dataclasses.replace(cfg, cp_len=8)
+    cfg2 = cfg.model_copy(update={"cp_len": 8})
     assert cfg2.n_subcarriers == 64
     assert cfg2.cp_len == 8
     assert cfg2.n_guard == 4
+
+
+# ---------------------------------------------------------------------------
+# Boundary / degenerate cases
+# ---------------------------------------------------------------------------
+
+def test_minimum_n_subcarriers_four_with_guard():
+    """N=4 is the minimum valid size. n_guard=1 leaves 2 data subcarriers."""
+    cfg = OFDMConfig(n_subcarriers=4, n_guard=1)
+    assert cfg.n_data == 2
+    assert cfg.guard_subcarrier_indices().tolist() == [1, 2]
+    np.testing.assert_array_equal(cfg.data_subcarrier_indices(), np.array([0, 3], dtype=np.intp))
+
+
+def test_n_data_zero_when_all_non_guard_are_pilots():
+    """Pilot-only OFDM symbol: n_data == 0 is valid (all active subcarriers are pilots).
+
+    This can arise when designing synchronisation symbols where every usable
+    subcarrier carries a known reference. The config must be constructable and
+    data_subcarrier_indices() must return an empty array.
+    """
+    # N=8, n_guard=2 leaves indices 0,1,2,5,6,7 as non-guard (6 slots).
+    # Assign all 6 as pilots → n_data = 0.
+    cfg = OFDMConfig(
+        n_subcarriers=8,
+        n_guard=1,
+        pilot_subcarrier_indices=(0, 1, 2, 5, 6, 7),
+    )
+    assert cfg.n_data == 0
+    assert cfg.data_subcarrier_indices().size == 0
+    assert cfg.n_pilots == 6

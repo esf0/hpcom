@@ -1,24 +1,23 @@
-"""Optical transmitter: random bits → pulse-shaped complex baseband field.
+"""Optical transmitters: abstract base + concrete subclasses per signal shape.
 
-The base :class:`Transmitter` is a single-carrier QAM transmitter, optionally
-polarisation-multiplexed (``polarization="single"|"dual"``). Subclasses
-specialise the signal-shape axis:
+This module owns the abstract :class:`Transmitter` and :class:`TransmittedSignal`
+bases, plus the concrete :class:`SingleCarrierTransmitter` /
+:class:`SingleCarrierSignal` pair (RRC-shaped QAM). The WDM and OFDM variants
+live in :mod:`hpcom.wdm` and :mod:`hpcom.ofdm` respectively — each module owns
+the config, the transmitter, and the signal class for its signal shape.
 
-* :class:`WDMTransmitter` — wavelength-division multiplexing: N independent
-  carriers frequency-shifted onto a uniform grid and summed.
-* (future) ``OFDMTransmitter`` — orthogonal-frequency-division multiplexing.
-
-Pilots (:class:`hpcom.pilots.PilotConfig`) are configured on the base class
-and apply identically to every stream (per polarisation, per channel for WDM).
+Polarisation, pilots, and probabilistic shaping (``dm``) are universal fields
+on the abstract base because they compose orthogonally with every signal shape.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from abc import abstractmethod
 from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
@@ -26,48 +25,67 @@ from hpcom.modulation import (
     ConstantCompositionDM,
     ConstellationConfig,
     bits_per_symbol,
-    nearest_symbol_indices,
 )
 from hpcom.pilots import PilotConfig
-from hpcom.wdm import WDMConfig
 
 Polarization = Literal["single", "dual"]
 
 
-@dataclass(frozen=True)
-class TransmittedSignal:
-    """Output of :meth:`Transmitter.generate`.
+# ---------------------------------------------------------------------------
+# TransmittedSignal: ABC + SingleCarrierSignal
+# ---------------------------------------------------------------------------
 
-    Shape conventions for ``field`` / ``bits`` / ``symbols``:
 
-    * Single-pol, single-carrier: ``field=(n_samples,)``,
-      ``bits=(n_symbols*k,)``, ``symbols=(n_symbols,)``.
-    * Single-pol, WDM:            ``field=(n_samples,)`` composite,
-      ``bits=(n_channels, n_symbols*k)``,
-      ``symbols=(n_channels, n_symbols)``.
-    * Dual-pol, single-carrier:   ``field=(2, n_samples)``,
-      ``bits=(2, n_symbols*k)``, ``symbols=(2, n_symbols)``.
-    * Dual-pol, WDM:              ``field=(2, n_samples)`` composite,
-      ``bits=(2, n_channels, n_symbols*k)``,
-      ``symbols=(2, n_channels, n_symbols)``.
+class TransmittedSignal(BaseModel):
+    """Abstract base for transmitter output.
+
+    Every transmitter returns a subclass of this carrying:
+
+    * ``field`` — the complex baseband output; shape depends on polarisation.
+    * ``dt_s`` — sample period in seconds.
+    * ``symbols`` — the QAM symbols that were modulated.
+    * ``bits`` — the bit stream (per stream / polarisation / WDM channel).
+    * ``n_symbols`` — the *generation count* used by the transmitter. Its
+      physical meaning varies by signal shape (number of QAM symbols for
+      single-carrier; number of OFDM frames for OFDM). Each concrete signal
+      type's docstring states what ``n_symbols`` means for it.
+    * ``polarization`` and ``pilots`` — universal, shape-agnostic flags.
+
+    Signal-shape-specific metadata (RRC parameters for SC/WDM, OFDM
+    parameters for OFDM, per-channel views for WDM, per-frame views for
+    OFDM) lives on subclasses.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    field: ComplexArray
+    dt_s: float
+    symbols: ComplexArray
+    bits: npt.NDArray[np.uint8]
+    n_symbols: int
+    polarization: Polarization = "single"
+    pilots: PilotConfig | None = None
+
+
+class SingleCarrierSignal(TransmittedSignal):
+    """Single-carrier RRC-shaped QAM signal output.
+
+    Shape conventions:
+
+    * Single-pol: ``field=(n_samples,)``, ``bits=(n_symbols*k,)``,
+      ``symbols=(n_symbols,)``.
+    * Dual-pol:   ``field=(2, n_samples)``, ``bits=(2, n_symbols*k)``,
+      ``symbols=(2, n_symbols)``.
 
     When ``pilots`` is set, ``symbols`` at pilot positions equal the configured
     pilot value, and the corresponding ``bits`` are zero-filled. Use
     :meth:`data_bits` / :meth:`data_symbols` for the pilot-stripped views.
     """
 
-    field: ComplexArray
-    dt_s: float
-    symbols: ComplexArray
-    bits: npt.NDArray[np.uint8]
     samples_per_symbol: int
     modulation_order: int
     roll_off: float
     pulse_span_symbols: int
-    n_symbols: int
-    polarization: Polarization = "single"
-    wdm: WDMConfig | None = None
-    pilots: PilotConfig | None = None
 
     @property
     def pilot_indices(self) -> npt.NDArray[np.intp]:
@@ -90,7 +108,7 @@ class TransmittedSignal:
         return self.symbols[..., self.data_indices]
 
     def data_bits(self) -> npt.NDArray[np.uint8]:
-        """Bits at data positions only — Option α convention.
+        """Bits at data positions only.
 
         Preserves the leading dims of :attr:`bits` (pol, WDM channel) and
         shrinks the trailing bit axis by the pilot fraction.
@@ -104,48 +122,46 @@ class TransmittedSignal:
         return selected.reshape(*self.bits.shape[:-1], -1)
 
 
-@dataclass(frozen=True)
-class Transmitter:
-    """Single-carrier QAM optical transmitter (optionally dual-polarisation).
+# ---------------------------------------------------------------------------
+# Transmitter: ABC + SingleCarrierTransmitter
+# ---------------------------------------------------------------------------
 
-    For WDM (multiple carriers), use :class:`WDMTransmitter`. For pilot
-    insertion, pass a :class:`~hpcom.pilots.PilotConfig`. For PDM (X/Y), set
-    ``polarization="dual"`` — bits/symbols/field gain a leading axis of size 2.
 
-    Constellation is specified by either ``modulation_order`` (Gray-coded
+class Transmitter(BaseModel):
+    """Abstract optical transmitter.
+
+    Concrete subclasses (:class:`SingleCarrierTransmitter`,
+    :class:`~hpcom.wdm.WDMTransmitter`, :class:`~hpcom.ofdm.OFDMTransmitter`)
+    implement :meth:`generate`. The base owns the universal fields and the
+    shared validation: constellation/modulation_order exclusivity, DM
+    block-alignment, polarisation, RNG seed.
+
+    Constellation specification: either ``modulation_order`` (Gray-coded
     square QAM) or ``constellation`` (a :class:`ConstellationConfig`, for
     geometric or probabilistic shaping). Exactly one must be set.
 
     Probabilistic shaping is enabled by setting ``dm`` (a distribution
     matcher whose ``target_pmf`` matches ``constellation.probabilities``).
     With ``dm`` active, the bit-stream length per polarisation/channel is
-    ``(n_symbols / dm.block_length) * dm.bits_per_block`` rather than the
-    usual ``n_symbols * log₂ M``, and ``n_symbols`` must be a multiple of
-    ``dm.block_length``. Pilots and ``dm`` are mutually exclusive.
+    ``(n_data_symbols / dm.block_length) * dm.bits_per_block`` rather than
+    the usual ``n_data_symbols * log₂ M``, where ``n_data_symbols`` is what
+    :meth:`_data_symbols_per_stream` returns (subclass-specific). Pilots
+    and ``dm`` are mutually exclusive.
     """
 
-    symbol_rate_hz: float
-    n_symbols: int
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    symbol_rate_hz: float = Field(gt=0)
+    n_symbols: int = Field(ge=1)
     modulation_order: int | None = None
     constellation: ConstellationConfig | None = None
     dm: ConstantCompositionDM | None = None
-    samples_per_symbol: int = 16
-    roll_off: float = 0.1
-    pulse_span_symbols: int = 64
     seed: int | None = None
     polarization: Polarization = "single"
     pilots: PilotConfig | None = None
 
-    def __post_init__(self) -> None:
-        if self.n_symbols < 1:
-            raise ValueError(f"n_symbols must be >= 1, got {self.n_symbols}")
-        if self.symbol_rate_hz <= 0:
-            raise ValueError(f"symbol_rate_hz must be > 0, got {self.symbol_rate_hz}")
-        if self.samples_per_symbol < 2:
-            raise ValueError(
-                f"samples_per_symbol must be >= 2 (Nyquist), got {self.samples_per_symbol}"
-            )
-
+    @model_validator(mode="after")
+    def _validate_base(self) -> Transmitter:
         if (self.modulation_order is None) == (self.constellation is None):
             raise ValueError(
                 "exactly one of `modulation_order` or `constellation` must be set"
@@ -155,13 +171,8 @@ class Transmitter:
         else:
             assert self.constellation is not None  # for mypy
             resolved = self.constellation
-        # Cached resolved constellation; frozen-dataclass bypass.
-        object.__setattr__(self, "_constellation", resolved)
-
-        if self.polarization not in ("single", "dual"):
-            raise ValueError(
-                f"polarization must be 'single' or 'dual', got {self.polarization!r}"
-            )
+        # Cached resolved constellation; bypass frozen for internal caching.
+        self.__dict__["_constellation"] = resolved
 
         if self.dm is not None:
             if self.pilots is not None:
@@ -179,11 +190,30 @@ class Transmitter:
                 raise ValueError(
                     "dm.target_pmf must match constellation.probabilities elementwise"
                 )
-            if self.n_symbols % self.dm.block_length != 0:
+            n_data_syms = self._data_symbols_per_stream()
+            if n_data_syms % self.dm.block_length != 0:
                 raise ValueError(
-                    f"n_symbols ({self.n_symbols}) must be a multiple of "
+                    f"data-symbols-per-stream ({n_data_syms}) must be a multiple of "
                     f"dm.block_length ({self.dm.block_length})"
                 )
+        return self
+
+    @abstractmethod
+    def generate(
+        self,
+        *,
+        rng: np.random.Generator | None = None,
+        bits: npt.NDArray[np.uint8] | None = None,
+        symbols: ComplexArray | None = None,
+    ) -> TransmittedSignal:
+        """Generate a transmitted signal. Concrete subclasses implement this."""
+
+    @property
+    @abstractmethod
+    def dt_s(self) -> float:
+        """Sample period of the generated field in seconds."""
+
+    # ---- shared accessors ------------------------------------------------
 
     @property
     def effective_modulation_order(self) -> int:
@@ -191,19 +221,52 @@ class Transmitter:
         return self._resolved_constellation().modulation_order
 
     def _resolved_constellation(self) -> ConstellationConfig:
-        """The internal :class:`ConstellationConfig` (built from ``modulation_order``
-        or passed in directly)."""
-        return self._constellation  # type: ignore[attr-defined,no-any-return]
+        """The internal :class:`ConstellationConfig` (built from
+        ``modulation_order`` or passed in directly)."""
+        return self.__dict__["_constellation"]  # type: ignore[no-any-return]
+
+    def _data_symbols_per_stream(self) -> int:
+        """Number of QAM data symbols emitted per polarisation/channel stream.
+
+        For single-carrier this equals :attr:`n_symbols`. Subclasses with a
+        different symbol/frame structure (e.g. OFDM, where one ``n_symbols``
+        increment = one OFDM frame = ``ofdm.n_data`` QAM symbols) override
+        this so the DM block-alignment check and bit-stream sizing land on
+        the actual QAM symbol count.
+        """
+        return self.n_symbols
 
     def _bits_per_stream(self) -> int:
         """Length of the bit-stream input expected per polarisation/channel.
 
-        Without DM: ``n_symbols * k``. With DM:
-        ``(n_symbols / block_length) * bits_per_block``.
+        Without DM: ``n_data_symbols * k``. With DM:
+        ``(n_data_symbols / block_length) * bits_per_block``.
         """
+        n_data_syms = self._data_symbols_per_stream()
         if self.dm is not None:
-            return (self.n_symbols // self.dm.block_length) * self.dm.bits_per_block
-        return self.n_symbols * self._resolved_constellation().bits_per_symbol
+            return (n_data_syms // self.dm.block_length) * self.dm.bits_per_block
+        return n_data_syms * self._resolved_constellation().bits_per_symbol
+
+
+# ---------------------------------------------------------------------------
+# SingleCarrierTransmitter
+# ---------------------------------------------------------------------------
+
+
+class SingleCarrierTransmitter(Transmitter):
+    """Single-carrier QAM optical transmitter (optionally dual-polarisation).
+
+    Produces one RRC-pulse-shaped baseband stream per polarisation. For WDM
+    (multiple carriers), use :class:`~hpcom.wdm.WDMTransmitter`. For OFDM,
+    use :class:`~hpcom.ofdm.OFDMTransmitter`.
+
+    Setting ``polarization="dual"`` gives bits/symbols/field a leading axis
+    of size 2; the two polarisations are seeded independently.
+    """
+
+    samples_per_symbol: int = Field(default=16, ge=2)
+    roll_off: float = Field(default=0.1, ge=0.0, le=1.0)
+    pulse_span_symbols: int = Field(default=64, ge=0)
 
     @property
     def dt_s(self) -> float:
@@ -216,14 +279,14 @@ class Transmitter:
         rng: np.random.Generator | None = None,
         bits: npt.NDArray[np.uint8] | None = None,
         symbols: ComplexArray | None = None,
-    ) -> TransmittedSignal:
-        """Generate a transmitted signal.
+    ) -> SingleCarrierSignal:
+        """Generate a single-carrier transmitted signal.
 
         ``rng`` overrides the configured ``seed`` (useful when a parent
         Simulation threads reproducibility across stages).
 
-        For deterministic inputs (testing, replay, custom shaping) pass either
-        ``bits`` or ``symbols``. Shapes for single-carrier:
+        For deterministic inputs (testing, replay) pass either ``bits`` or
+        ``symbols``. Shapes:
 
         - single-pol: ``bits=(n_symbols*k,)``, ``symbols=(n_symbols,)``.
         - dual-pol:  ``bits=(2, n_symbols*k)``, ``symbols=(2, n_symbols)``.
@@ -241,8 +304,7 @@ class Transmitter:
                 symbols=_as_1d(symbols, "symbols") if symbols is not None else None,
             )
             return self._make_signal(
-                field=field, symbols=ch_syms, bits=ch_bits,
-                polarization="single", wdm=None,
+                field=field, symbols=ch_syms, bits=ch_bits, polarization="single"
             )
 
         # Dual-pol single-carrier.
@@ -283,7 +345,6 @@ class Transmitter:
             symbols=np.stack(per_pol_syms, axis=0),
             bits=np.stack(per_pol_bits, axis=0),
             polarization="dual",
-            wdm=None,
         )
 
     def _make_signal(
@@ -293,10 +354,9 @@ class Transmitter:
         symbols: ComplexArray,
         bits: npt.NDArray[np.uint8],
         polarization: Polarization,
-        wdm: WDMConfig | None,
-    ) -> TransmittedSignal:
-        """Bundle a ``TransmittedSignal`` with this Tx's metadata."""
-        return TransmittedSignal(
+    ) -> SingleCarrierSignal:
+        """Bundle a ``SingleCarrierSignal`` with this Tx's metadata."""
+        return SingleCarrierSignal(
             field=field,
             dt_s=self.dt_s,
             symbols=symbols,
@@ -307,7 +367,6 @@ class Transmitter:
             pulse_span_symbols=self.pulse_span_symbols,
             n_symbols=self.n_symbols,
             polarization=polarization,
-            wdm=wdm,
             pilots=self.pilots,
         )
 
@@ -320,9 +379,11 @@ class Transmitter:
     ) -> tuple[npt.NDArray[np.uint8], ComplexArray, ComplexArray]:
         """Generate ``(bits, symbols, baseband-field)`` for one 1-D stream.
 
-        Subclasses orchestrate multiple calls to this method to build their
-        composite output (e.g. one call per WDM channel × polarisation).
+        WDM subclasses orchestrate multiple calls to this method (one per
+        channel × polarisation) to build their composite output.
         """
+        from hpcom.modulation import nearest_symbol_indices  # local to avoid cycle
+
         cfg = self._resolved_constellation()
         dm = self.dm
         n_bits = self._bits_per_stream()
@@ -379,136 +440,9 @@ class Transmitter:
         return ch_bits, ch_symbols, field
 
 
-@dataclass(frozen=True)
-class WDMTransmitter(Transmitter):
-    """Wavelength-division-multiplexed transmitter.
-
-    Generates ``wdm.n_channels`` independent QAM streams (per polarisation),
-    frequency-shifts each onto the configured grid, and sums them into a
-    composite wideband field. With ``polarization="dual"``, each polarisation
-    independently carries the full N-channel composite; X and Y streams are
-    independent (PDM-WDM).
-    """
-
-    wdm: WDMConfig = field(kw_only=True)
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        # Wideband Nyquist: sample rate must cover the outer channel edges.
-        # Per-channel one-sided bandwidth is Rs · (1 + roll_off) / 2.
-        sample_rate_hz = self.symbol_rate_hz * self.samples_per_symbol
-        outer_center = abs(self.wdm.channel_frequencies_hz()[-1])
-        needed = 2.0 * (
-            outer_center + self.symbol_rate_hz * (1.0 + self.roll_off) / 2.0
-        )
-        if sample_rate_hz < needed:
-            raise ValueError(
-                f"WDM wideband sample rate ({sample_rate_hz:.3e} Hz) is below "
-                f"the Nyquist requirement ({needed:.3e} Hz) for "
-                f"{self.wdm.n_channels} channels at {self.wdm.spacing_hz:.3e} Hz "
-                f"spacing with roll-off {self.roll_off}. Increase "
-                f"samples_per_symbol (or reduce spacing/channel count)."
-            )
-
-    def generate(
-        self,
-        *,
-        rng: np.random.Generator | None = None,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
-    ) -> TransmittedSignal:
-        """Generate the WDM composite field.
-
-        Deterministic-input shapes (single carrier per polarisation per channel):
-
-        - single-pol: ``bits=(n_channels, n_symbols*k)``,
-          ``symbols=(n_channels, n_symbols)``.
-        - dual-pol:   ``bits=(2, n_channels, n_symbols*k)``,
-          ``symbols=(2, n_channels, n_symbols)``.
-        """
-        if bits is not None and symbols is not None:
-            raise ValueError("pass at most one of `bits` or `symbols`, not both")
-
-        n_ch = self.wdm.n_channels
-        bps = self._bits_per_stream()
-        n_pol = 2 if self.polarization == "dual" else 1
-
-        # Validate deterministic-input shapes.
-        if bits is not None:
-            b = np.asarray(bits, dtype=np.uint8)
-            expected = (
-                (2, n_ch, bps) if n_pol == 2 else (n_ch, bps)
-            )
-            if b.shape != expected:
-                raise ValueError(
-                    f"`bits` must have shape {expected}, got {b.shape}"
-                )
-        if symbols is not None:
-            s = np.asarray(symbols, dtype=np.complex128)
-            expected_s = (
-                (2, n_ch, self.n_symbols) if n_pol == 2 else (n_ch, self.n_symbols)
-            )
-            if s.shape != expected_s:
-                raise ValueError(
-                    f"`symbols` must have shape {expected_s}, got {s.shape}"
-                )
-
-        # Seed tree: root → per-pol → per-channel. Identical to single-carrier
-        # dual-pol when n_ch=1.
-        seed_seq = _seed_seq_from(rng, self.seed)
-        pol_seqs = seed_seq.spawn(n_pol) if n_pol == 2 else [seed_seq]
-
-        n_samples = self.n_symbols * self.samples_per_symbol
-        t = np.arange(n_samples) * self.dt_s
-        freqs = self.wdm.channel_frequencies_hz()
-
-        per_pol_field: list[ComplexArray] = []
-        per_pol_bits: list[npt.NDArray[np.uint8]] = []
-        per_pol_syms: list[ComplexArray] = []
-
-        for pol_idx, pol_seq in enumerate(pol_seqs):
-            ch_sub_seqs = pol_seq.spawn(n_ch)
-            composite = np.zeros(n_samples, dtype=np.complex128)
-            this_pol_bits: list[npt.NDArray[np.uint8]] = []
-            this_pol_syms: list[ComplexArray] = []
-            for ch_idx, (f_ch, sub_seq) in enumerate(
-                zip(freqs, ch_sub_seqs, strict=True)
-            ):
-                ch_rng = np.random.default_rng(sub_seq)
-                if bits is not None:
-                    b_in = bits[pol_idx, ch_idx] if n_pol == 2 else bits[ch_idx]
-                else:
-                    b_in = None
-                if symbols is not None:
-                    s_in = symbols[pol_idx, ch_idx] if n_pol == 2 else symbols[ch_idx]
-                else:
-                    s_in = None
-                ch_bits, ch_syms, field_ch = self._generate_one_channel(
-                    ch_rng, bits=b_in, symbols=s_in
-                )
-                this_pol_bits.append(ch_bits)
-                this_pol_syms.append(ch_syms)
-                composite += field_ch * np.exp(2j * np.pi * float(f_ch) * t)
-            per_pol_field.append(composite)
-            per_pol_bits.append(np.stack(this_pol_bits, axis=0))
-            per_pol_syms.append(np.stack(this_pol_syms, axis=0))
-
-        if n_pol == 1:
-            return self._make_signal(
-                field=per_pol_field[0],
-                symbols=per_pol_syms[0],
-                bits=per_pol_bits[0],
-                polarization="single",
-                wdm=self.wdm,
-            )
-
-        return self._make_signal(
-            field=np.stack(per_pol_field, axis=0),
-            symbols=np.stack(per_pol_syms, axis=0),
-            bits=np.stack(per_pol_bits, axis=0),
-            polarization="dual",
-            wdm=self.wdm,
-        )
+# ---------------------------------------------------------------------------
+# Internal helpers (used by SC and WDM/OFDM subclasses living in other modules)
+# ---------------------------------------------------------------------------
 
 
 def _as_1d(arr: np.ndarray, name: str) -> np.ndarray:

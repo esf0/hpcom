@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict
 
 from hpcom._typing import ComplexArray
 
 
-@dataclass(frozen=True)
-class Metrics:
+class Metrics(BaseModel):
     """Per-simulation quality summary."""
+
+    model_config = ConfigDict(frozen=True)
 
     ber: float
     evm_rms: float

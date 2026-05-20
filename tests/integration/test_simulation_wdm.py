@@ -17,10 +17,10 @@ import pytest
 from hpcom.amplifier import EDFA
 from hpcom.fiber import Fiber
 from hpcom.link import Link
-from hpcom.receiver import Receiver, WDMReceiver
+from hpcom.receiver import SingleCarrierReceiver
 from hpcom.simulation import Simulation
-from hpcom.transmitter import Transmitter, WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.transmitter import SingleCarrierTransmitter
+from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
 
 
 def _passthrough_link() -> Link:
@@ -47,11 +47,11 @@ def _b2b_dual_pol_passthrough_link() -> Link:
 
 def test_single_pol_single_carrier_simulation_ber_zero():
     """Regression: the pre-refactor pipeline still produces BER=0 in B2B."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4, symbol_rate_hz=10e9, n_symbols=512,
         samples_per_symbol=8, pulse_span_symbols=32, seed=0,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols,
     )
@@ -85,12 +85,12 @@ def test_single_pol_wdm_simulation_per_channel_ber_zero(ch: int):
 
 def test_dual_pol_single_carrier_simulation_aggregates_per_pol_ber_zero():
     """Dual-pol B2B: BER aggregated over both polarisations equals 0."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4, symbol_rate_hz=10e9, n_symbols=512,
         samples_per_symbol=8, pulse_span_symbols=32, seed=0,
         polarization="dual",
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols,
         polarization="dual",
@@ -128,11 +128,11 @@ def test_dual_pol_wdm_simulation_per_channel_ber_zero(ch: int):
 
 
 def test_simulation_rejects_mismatched_polarization():
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4, symbol_rate_hz=1e9, n_symbols=64,
         samples_per_symbol=4, polarization="dual",
     )
-    rx = Receiver(modulation_order=4, samples_per_symbol=4, polarization="single")
+    rx = SingleCarrierReceiver(modulation_order=4, samples_per_symbol=4, polarization="single")
     with pytest.raises(ValueError, match="polarization must match"):
         Simulation(transmitter=tx, link=_passthrough_link(), receiver=rx)
 
@@ -157,7 +157,7 @@ def test_simulation_rejects_wdm_tx_with_single_carrier_rx():
         modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
         samples_per_symbol=32, wdm=cfg,
     )
-    rx = Receiver(modulation_order=4, samples_per_symbol=32)  # not WDMReceiver
+    rx = SingleCarrierReceiver(modulation_order=4, samples_per_symbol=32)  # not WDMReceiver
     with pytest.raises(ValueError, match="WDM Tx requires WDM Rx"):
         Simulation(transmitter=tx, link=_passthrough_link(), receiver=rx)
 

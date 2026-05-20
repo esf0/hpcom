@@ -16,9 +16,9 @@ import pytest
 
 from hpcom.modulation import bits_per_symbol
 from hpcom.pilots import PilotConfig
-from hpcom.receiver import Receiver, WDMReceiver
-from hpcom.transmitter import Transmitter, WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
+from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
 
 
 def test_pilot_config_rejects_period_below_two():
@@ -43,7 +43,7 @@ def test_pilot_indices_and_counts():
 def test_tx_inserts_configured_pilot_at_expected_positions():
     pilot_val = complex(0.7, -0.4)
     cfg = PilotConfig(period=8, symbol=pilot_val)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=64,
@@ -67,7 +67,7 @@ def test_rx_extracts_pilot_amplitudes_in_b2b():
     (within finite-RRC leakage tolerance)."""
     pilot_val = complex(1.0, 0.0)
     cfg = PilotConfig(period=10, symbol=pilot_val)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=500,
@@ -78,7 +78,7 @@ def test_rx_extracts_pilot_amplitudes_in_b2b():
     )
     sent = tx.generate()
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -96,7 +96,7 @@ def test_rx_extracts_pilot_amplitudes_in_b2b():
 def test_option_alpha_data_bits_round_trip():
     """Option α: TransmittedSignal.data_bits() round-trips through Rx.data_bits()."""
     cfg = PilotConfig(period=8, symbol=1 + 0j)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=10e9,
         n_symbols=512,
@@ -106,7 +106,7 @@ def test_option_alpha_data_bits_round_trip():
         pilots=cfg,
     )
     sent = tx.generate()
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=16,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -138,7 +138,7 @@ def test_option_beta_full_bits_carry_pilot_zeros():
     """Option β: full bits array round-trips structurally (pilot slots are
     zero on Tx; receiver hard-decisions them but caller can mask externally)."""
     cfg = PilotConfig(period=8, symbol=1 + 0j)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=256,
@@ -148,7 +148,7 @@ def test_option_beta_full_bits_carry_pilot_zeros():
         pilots=cfg,
     )
     sent = tx.generate()
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -215,10 +215,10 @@ def test_pilots_in_wdm_per_channel_recovery():
 
 def test_no_pilots_data_bits_returns_full_bits():
     """When pilots is None, data_bits() should be the same array as bits."""
-    tx = Transmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8, seed=0)
+    tx = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8, seed=0)
     sent = tx.generate()
     assert sent.data_bits() is sent.bits
-    rx = Receiver(modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
+    rx = SingleCarrierReceiver(modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
                   roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols)
     received = rx.receive(sent.field)
     assert received.data_bits() is received.bits

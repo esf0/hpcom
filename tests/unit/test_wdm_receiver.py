@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from hpcom.modulation import bits_per_symbol
 from hpcom.pilots import PilotConfig
-from hpcom.receiver import Receiver, WDMReceiver
-from hpcom.transmitter import WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.receiver import Receiver
+from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
 
 
 def test_wdm_receiver_inherits_from_receiver():
@@ -42,7 +42,7 @@ def test_wdm_receiver_rejects_out_of_range_channel():
 
 
 def test_wdm_receiver_requires_wdm_field():
-    with pytest.raises(TypeError):
+    with pytest.raises((TypeError, ValidationError)):
         WDMReceiver(modulation_order=4)  # type: ignore[call-arg]
 
 
@@ -123,7 +123,7 @@ def test_dual_pol_wdm_pilot_recovery_per_pol():
 
 def test_wdm_receiver_single_pol_matches_old_behavior():
     """Single-pol WDMReceiver gives 1-D outputs (same shape as legacy
-    Receiver(wdm=…) before the refactor)."""
+    SingleCarrierReceiver(wdm=…) before the refactor)."""
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
         modulation_order=4,

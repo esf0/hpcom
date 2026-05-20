@@ -3,8 +3,19 @@
 The v1 public API::
 
     from hpcom import (
-        Transmitter, Fiber, EDFA, Amplifier, Receiver,
-        Link, Simulation, Result,
+        # Abstract bases
+        Transmitter, Receiver, TransmittedSignal, ReceivedSymbols,
+        # Single-carrier concrete classes
+        SingleCarrierTransmitter, SingleCarrierReceiver,
+        SingleCarrierSignal, SingleCarrierReceivedSymbols,
+        # WDM
+        WDMConfig, WDMTransmitter, WDMReceiver,
+        WDMSignal, WDMReceivedSymbols,
+        # OFDM
+        OFDMTransmitter, OFDMReceiver, OFDMSignal, OFDMReceivedSymbols,
+        # Infrastructure
+        Fiber, EDFA, Amplifier, Link,
+        Simulation, Result, Metrics,
     )
 
 See ``docs/spec/hpcom-v1.md`` for the design and ``examples/`` for runnable
@@ -22,10 +33,28 @@ from hpcom.amplifier import EDFA, Amplifier
 from hpcom.fiber import Fiber
 from hpcom.link import Link
 from hpcom.metrics import Metrics
-from hpcom.receiver import Receiver
+from hpcom.ofdm import OFDMReceivedSymbols, OFDMReceiver, OFDMSignal, OFDMTransmitter
+from hpcom.receiver import (
+    ReceivedSymbols,
+    Receiver,
+    SingleCarrierReceivedSymbols,
+    SingleCarrierReceiver,
+)
 from hpcom.result import Result, SimulationMetadata
 from hpcom.simulation import Simulation
-from hpcom.transmitter import TransmittedSignal, Transmitter
+from hpcom.transmitter import (
+    SingleCarrierSignal,
+    SingleCarrierTransmitter,
+    TransmittedSignal,
+    Transmitter,
+)
+from hpcom.wdm import (
+    WDMConfig,
+    WDMReceivedSymbols,
+    WDMReceiver,
+    WDMSignal,
+    WDMTransmitter,
+)
 
 from . import _legacy
 
@@ -58,12 +87,26 @@ __all__ = [
     "Fiber",
     "Link",
     "Metrics",
+    "OFDMReceivedSymbols",
+    "OFDMReceiver",
+    "OFDMSignal",
+    "OFDMTransmitter",
+    "ReceivedSymbols",
     "Receiver",
     "Result",
     "Simulation",
     "SimulationMetadata",
+    "SingleCarrierReceivedSymbols",
+    "SingleCarrierReceiver",
+    "SingleCarrierSignal",
+    "SingleCarrierTransmitter",
     "TransmittedSignal",
     "Transmitter",
+    "WDMConfig",
+    "WDMReceivedSymbols",
+    "WDMReceiver",
+    "WDMSignal",
+    "WDMTransmitter",
     "__version__",
 ]
 

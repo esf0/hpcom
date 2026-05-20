@@ -24,8 +24,8 @@ import pytest
 from scipy.special import erfc
 
 from hpcom.modulation import bits_per_symbol
-from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
 
 
 def _q(x: np.ndarray | float) -> np.ndarray | float:
@@ -39,7 +39,7 @@ def _theoretical_ber_qam(snr_linear: float, m: int) -> float:
 
 def _run_b2b_with_awgn(modulation_order: int, snr_db: float, n_symbols: int, seed: int) -> float:
     sps = 8
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=modulation_order,
         symbol_rate_hz=32e9,
         n_symbols=n_symbols,
@@ -61,7 +61,7 @@ def _run_b2b_with_awgn(modulation_order: int, snr_db: float, n_symbols: int, see
     noise *= np.sqrt(sigma2_field / 2.0)
     rx_field = sent.field + noise
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=modulation_order,
         samples_per_symbol=sps,
         roll_off=tx.roll_off,

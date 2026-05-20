@@ -13,7 +13,7 @@ Run::
 
 from __future__ import annotations
 
-from hpcom import EDFA, Fiber, Link, Receiver, Simulation, Transmitter
+from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierReceiver, SingleCarrierTransmitter
 
 
 def main() -> None:
@@ -23,7 +23,7 @@ def main() -> None:
     edfa = EDFA(gain_db=fiber.alpha_db_per_km * span_km, noise_figure_db=5.0)
     link = Link.from_spans(n_spans=n_spans, fiber=fiber, amplifier=edfa)
 
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=32e9,
         n_symbols=4096,
@@ -32,7 +32,7 @@ def main() -> None:
         pulse_span_symbols=16,
         seed=0,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=tx.modulation_order,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,

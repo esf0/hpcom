@@ -1,22 +1,27 @@
-"""Optical receiver: matched filter + downsample + symbol demap.
+"""Optical receiver hierarchy: matched filter + downsample + symbol demap.
 
-Mirrors the Transmitter's three composable feature axes:
+Mirrors :mod:`hpcom.transmitter`:
 
-* **Polarisation** — base :class:`Receiver` accepts 1-D for single-pol or
-  ``(2, N)`` for dual-pol; each polarisation is demodulated independently.
-* **WDM** — :class:`WDMReceiver` downshifts the selected channel to baseband
-  before delegating to the base demap pipeline.
-* **Pilots** — when configured, post-matched-filter samples at pilot positions
-  are returned as :attr:`ReceivedSymbols.pilot_symbols`.
+* :class:`Receiver` and :class:`ReceivedSymbols` are abstract bases that fix
+  the cross-carrier vocabulary (modulation order, polarisation, pilots) — they
+  carry no signal-shape-specific machinery.
+* :class:`SingleCarrierReceiver` is the concrete RRC matched-filter
+  implementation; :class:`SingleCarrierReceivedSymbols` is its output.
+* :class:`hpcom.wdm.WDMReceiver` extends :class:`SingleCarrierReceiver` to
+  downshift the selected channel before delegating to the single-carrier
+  pipeline.
+* :class:`hpcom.ofdm.OFDMReceiver` (deferred) will subclass :class:`Receiver`
+  directly — no RRC.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from abc import abstractmethod
 from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from hpcom._pulse import root_raised_cosine
 from hpcom._typing import ComplexArray
@@ -28,21 +33,16 @@ from hpcom.modulation import (
 )
 from hpcom.pilots import PilotConfig
 from hpcom.transmitter import Polarization
-from hpcom.wdm import WDMConfig
 
 #: How (or whether) to rescale received-symbol amplitudes before hard decision.
 EqualizerMode = Literal["none", "unit_power"]
 
 
-@dataclass(frozen=True)
-class ReceivedSymbols:
-    """Output of :meth:`Receiver.receive`.
+class ReceivedSymbols(BaseModel):
+    """Abstract output of :meth:`Receiver.receive` — concrete subclasses live
+    next to their receiver implementations."""
 
-    When ``pilots`` is set, ``pilot_symbols`` is the post-matched-filter
-    complex amplitudes at the pilot positions (no estimation applied) and the
-    bits at pilot positions in ``bits`` are zero-equivalent under hard-decision
-    demap; use :meth:`data_bits` for the pilot-stripped view.
-    """
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     symbols: ComplexArray
     bits: npt.NDArray[np.uint8]
@@ -53,7 +53,7 @@ class ReceivedSymbols:
     pilot_symbols: ComplexArray | None = None
 
     def data_bits(self) -> npt.NDArray[np.uint8]:
-        """Bits at data positions only — Option α convention.
+        """Bits at data positions only (Option α — pilots stripped).
 
         Preserves the leading dims of :attr:`bits` (e.g. polarisation axis).
         """
@@ -74,48 +74,40 @@ class ReceivedSymbols:
         return self.symbols[..., self.pilots.data_indices(n_symbols)]
 
 
-@dataclass(frozen=True)
-class Receiver:
-    """Single-carrier QAM receiver (optionally dual-polarisation).
+class SingleCarrierReceivedSymbols(ReceivedSymbols):
+    """Output of :class:`SingleCarrierReceiver` — no extra fields, distinct
+    type for downstream isinstance checks."""
 
-    Applies the matched RRC filter, downsamples at the symbol rate, optionally
-    equalises amplitude, then hard-decodes to nearest constellation point.
 
-    For WDM (multi-carrier) demux use :class:`WDMReceiver`. ``equalize`` is
-    explicit by design — ``"unit_power"`` rescales the post-downsample symbols
-    so their measured average power equals 1, convenient for noiseless
-    benchmarks but masks gain/loss errors; ``"none"`` (default) surfaces
-    gain/loss as BER (required for any meaningful AWGN BER curve).
+class Receiver(BaseModel):
+    """Abstract receiver base — defines the cross-carrier vocabulary every
+    concrete receiver must expose.
+
+    Concrete subclasses (:class:`SingleCarrierReceiver`,
+    :class:`hpcom.wdm.WDMReceiver`, :class:`hpcom.ofdm.OFDMReceiver`) implement
+    :meth:`receive` for their specific signal shape.
     """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     modulation_order: int | None = None
     constellation: ConstellationConfig | None = None
     dm: ConstantCompositionDM | None = None
     samples_per_symbol: int = 16
-    roll_off: float = 0.1
-    pulse_span_symbols: int = 64
-    equalize: EqualizerMode = "none"
-    cd_compensation_s2: float = 0.0
-    """Accumulated dispersion ``β₂ · L_total`` (in s²) to undo before the
-    matched filter. Set to ``fiber.beta2_s2_per_m * fiber.length_km * 1e3 * n_spans``
-    to remove the chromatic dispersion of an EDFA-compensated link. Leave at
-    ``0.0`` for back-to-back / dispersion-free scenarios."""
     polarization: Polarization = "single"
-    """Match the Transmitter's polarisation: ``"dual"`` expects a ``(2, N)``
-    field input and returns 2-D bits/symbols."""
     pilots: PilotConfig | None = None
-    """If set, post-matched-filter samples at pilot positions are returned as
-    :attr:`ReceivedSymbols.pilot_symbols` and stripped from :meth:`data_bits`."""
 
-    def __post_init__(self) -> None:
-        if self.equalize not in ("none", "unit_power"):
+    @field_validator("polarization", mode="before")
+    @classmethod
+    def _check_polarization(cls, v: object) -> object:
+        if v not in ("single", "dual"):
             raise ValueError(
-                f"equalize must be 'none' or 'unit_power', got {self.equalize!r}"
+                f"polarization must be 'single' or 'dual', got {v!r}"
             )
-        if self.polarization not in ("single", "dual"):
-            raise ValueError(
-                f"polarization must be 'single' or 'dual', got {self.polarization!r}"
-            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_base(self) -> Receiver:
         if (self.modulation_order is None) == (self.constellation is None):
             raise ValueError(
                 "exactly one of `modulation_order` or `constellation` must be set"
@@ -123,9 +115,10 @@ class Receiver:
         if self.modulation_order is not None:
             resolved = ConstellationConfig.from_square_qam(self.modulation_order)
         else:
-            assert self.constellation is not None  # for mypy
+            assert self.constellation is not None
             resolved = self.constellation
-        object.__setattr__(self, "_constellation", resolved)
+        # Cache resolved constellation on the instance — bypass frozen.
+        self.__dict__["_constellation"] = resolved
 
         if self.dm is not None:
             if self.pilots is not None:
@@ -142,6 +135,7 @@ class Receiver:
                 raise ValueError(
                     "dm.target_pmf must match constellation.probabilities elementwise"
                 )
+        return self
 
     @property
     def effective_modulation_order(self) -> int:
@@ -149,9 +143,49 @@ class Receiver:
         return self._resolved_constellation().modulation_order
 
     def _resolved_constellation(self) -> ConstellationConfig:
-        return self._constellation  # type: ignore[attr-defined,no-any-return]
+        return self.__dict__["_constellation"]  # type: ignore[no-any-return]
 
-    def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
+    @abstractmethod
+    def receive(
+        self, field: ComplexArray, dt_s: float | None = None
+    ) -> ReceivedSymbols:
+        """Demodulate a received field. Subclasses define the pipeline."""
+        raise NotImplementedError
+
+
+class SingleCarrierReceiver(Receiver):
+    """Single-carrier QAM receiver (optionally dual-polarisation).
+
+    Applies the matched RRC filter, downsamples at the symbol rate, optionally
+    equalises amplitude, then hard-decodes to nearest constellation point.
+
+    ``equalize`` is explicit: ``"unit_power"`` rescales post-downsample symbols
+    so their measured average power equals 1 (handy for noiseless benchmarks
+    but masks gain/loss errors); ``"none"`` (default) surfaces gain/loss as BER
+    (required for any meaningful AWGN BER curve).
+    """
+
+    roll_off: float = 0.1
+    pulse_span_symbols: int = 64
+    equalize: EqualizerMode = "none"
+    cd_compensation_s2: float = 0.0
+    """Accumulated dispersion ``β₂ · L_total`` (in s²) to undo before the
+    matched filter. Set to ``fiber.beta2_s2_per_m * fiber.length_km * 1e3 * n_spans``
+    to remove the chromatic dispersion of an EDFA-compensated link. Leave at
+    ``0.0`` for back-to-back / dispersion-free scenarios."""
+
+    @field_validator("equalize", mode="before")
+    @classmethod
+    def _check_equalize(cls, v: object) -> object:
+        if v not in ("none", "unit_power"):
+            raise ValueError(
+                f"equalize must be 'none' or 'unit_power', got {v!r}"
+            )
+        return v
+
+    def receive(
+        self, field: ComplexArray, dt_s: float | None = None
+    ) -> SingleCarrierReceivedSymbols:
         """Demodulate a received field.
 
         For ``polarization="single"`` the input is 1-D ``(n_samples,)``; for
@@ -179,7 +213,7 @@ class Receiver:
             )
         else:
             pilot_syms = None
-        return ReceivedSymbols(
+        return SingleCarrierReceivedSymbols(
             symbols=np.stack([p.symbols for p in per_pol], axis=0),
             bits=np.stack([p.bits for p in per_pol], axis=0),
             decisions=np.stack([p.decisions for p in per_pol], axis=0),
@@ -193,7 +227,7 @@ class Receiver:
         self,
         field: ComplexArray,
         dt_s: float | None,
-    ) -> ReceivedSymbols:
+    ) -> SingleCarrierReceivedSymbols:
         """Single 1-D demodulation pipeline."""
         if self.cd_compensation_s2 != 0.0:
             if dt_s is None:
@@ -220,9 +254,13 @@ class Receiver:
         cfg = self._resolved_constellation()
         decisions = nearest_symbol_indices(symbols_rx, cfg.points)
         if self.dm is not None:
-            n_blocks = decisions.size // self.dm.block_length
-            usable = n_blocks * self.dm.block_length
-            bits = self.dm.decode(decisions[:usable].astype(np.intp))
+            if decisions.size % self.dm.block_length != 0:
+                raise ValueError(
+                    f"received {decisions.size} symbols, which is not a multiple of "
+                    f"dm.block_length ({self.dm.block_length}); pass a field whose "
+                    "sample count is n_symbols * samples_per_symbol"
+                )
+            bits = self.dm.decode(decisions.astype(np.intp))
         else:
             bits = cfg.demap(symbols_rx)
 
@@ -231,7 +269,7 @@ class Receiver:
             n_sym = symbols_rx.shape[-1]
             pilot_symbols = symbols_rx[self.pilots.pilot_indices(n_sym)]
 
-        return ReceivedSymbols(
+        return SingleCarrierReceivedSymbols(
             symbols=symbols_rx,
             bits=bits,
             decisions=decisions,
@@ -254,38 +292,3 @@ class Receiver:
         spectrum = spectrum * np.exp(-1j * self.cd_compensation_s2 / 2.0 * omega**2)
         out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
         return out
-
-
-@dataclass(frozen=True)
-class WDMReceiver(Receiver):
-    """WDM-aware receiver: downshifts the selected channel to baseband, then
-    runs the base matched-filter pipeline.
-
-    Pair with :class:`hpcom.transmitter.WDMTransmitter`. Works for both
-    ``polarization="single"`` (1-D input) and ``"dual"`` (``(2, N)`` input).
-    The output carries the bits / symbols / decisions of the *single* demuxed
-    channel — to score all channels, instantiate one WDMReceiver per channel.
-    """
-
-    wdm: WDMConfig = field(kw_only=True)
-    wdm_channel: int = 0
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if not 0 <= self.wdm_channel < self.wdm.n_channels:
-            raise ValueError(
-                f"wdm_channel must be in [0, {self.wdm.n_channels}), "
-                f"got {self.wdm_channel}"
-            )
-
-    def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
-        if dt_s is None:
-            raise ValueError(
-                "dt_s is required for WDMReceiver (needed to downshift the "
-                "selected channel to baseband)"
-            )
-        f_ch = float(self.wdm.channel_frequencies_hz()[self.wdm_channel])
-        # Broadcast over a leading polarisation axis when present.
-        t = np.arange(field.shape[-1]) * dt_s
-        downshifted = field * np.exp(-2j * np.pi * f_ch * t)
-        return super().receive(downshifted, dt_s)

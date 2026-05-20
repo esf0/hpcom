@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
-
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from hpcom.modulation import (
     ConstellationConfig,
@@ -148,7 +147,7 @@ def test_from_points_with_probabilities_normalises_expected_power():
 # Frozen / immutable
 # ---------------------------------------------------------------------------
 
-def test_dataclass_is_frozen():
+def test_model_is_frozen():
     cfg = ConstellationConfig.from_square_qam(4)
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(ValidationError, match="frozen"):
         cfg.points = np.zeros(4, dtype=np.complex128)

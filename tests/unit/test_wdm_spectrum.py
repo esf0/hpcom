@@ -14,9 +14,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hpcom.receiver import WDMReceiver
-from hpcom.transmitter import Transmitter, WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.transmitter import SingleCarrierTransmitter
+from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
 
 
 def _wdm_tx(*, n_channels: int = 3, **overrides: object) -> WDMTransmitter:
@@ -212,7 +211,7 @@ def test_wdm_tx_total_power_equals_sum_of_per_channel_powers():
     composite_power = float(np.mean(np.abs(sent.field) ** 2))
     # Expected: n_channels times per-channel mean power, since channels are
     # orthogonal in frequency and the composite is their sum.
-    single_tx = Transmitter(
+    single_tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=tx.symbol_rate_hz,
         n_symbols=tx.n_symbols,

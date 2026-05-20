@@ -7,10 +7,10 @@ Currently provides :class:`EDFA`. New amplifier types (Raman, semiconductor,
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from abc import abstractmethod
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field
 
 from hpcom._typing import ComplexArray
 
@@ -20,8 +20,7 @@ _C_LIGHT_M_PER_S = 299_792_458.0
 _H_PLANCK_J_S = 6.62607015e-34
 
 
-@dataclass(frozen=True)
-class Amplifier(ABC):
+class Amplifier(BaseModel):
     """Common base for optical amplifiers.
 
     Implementations should accept either a 1-D scalar field of shape ``(N,)``
@@ -29,6 +28,8 @@ class Amplifier(ABC):
     shape. Stochastic noise (if any) is injected via the ``rng`` argument so
     callers can pin reproducibility from above.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     @abstractmethod
     def amplify(
@@ -51,7 +52,6 @@ class Amplifier(ABC):
         return self.amplify(field, dt_s, rng=rng)
 
 
-@dataclass(frozen=True)
 class EDFA(Amplifier):
     """Erbium-doped fibre amplifier with ASE noise.
 
@@ -68,17 +68,9 @@ class EDFA(Amplifier):
     variance ``N₀ · f_s`` — i.e. ``N₀`` is per-pol, not split across pols.
     """
 
-    gain_db: float
-    noise_figure_db: float = 5.0
-    wavelength_m: float = 1550e-9
-
-    def __post_init__(self) -> None:
-        if self.gain_db < 0:
-            raise ValueError(f"gain_db must be >= 0, got {self.gain_db}")
-        if self.noise_figure_db < 0:
-            raise ValueError(f"noise_figure_db must be >= 0, got {self.noise_figure_db}")
-        if self.wavelength_m <= 0:
-            raise ValueError(f"wavelength_m must be > 0, got {self.wavelength_m}")
+    gain_db: float = Field(ge=0)
+    noise_figure_db: float = Field(default=5.0, ge=0)
+    wavelength_m: float = Field(default=1550e-9, gt=0)
 
     @property
     def gain_linear(self) -> float:

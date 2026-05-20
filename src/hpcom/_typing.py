@@ -66,3 +66,8 @@ class LinkComponent(Protocol):
         *,
         rng: np.random.Generator | None = None,
     ) -> ComplexArray: ...
+
+
+def _is_power_of_two(n: int) -> bool:
+    """Return True iff n is an integer power of two (n >= 2)."""
+    return n >= 2 and (n & (n - 1)) == 0

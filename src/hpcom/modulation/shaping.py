@@ -12,21 +12,17 @@ This module is pure NumPy; framework-specific code lives in
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import ClassVar
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from hpcom._typing import ComplexArray
+from hpcom._typing import ComplexArray, _is_power_of_two
 from hpcom.modulation.constellations import bits_per_symbol, square_qam
 from hpcom.modulation.mapping import _pack_bit_groups_msb_first, nearest_symbol_indices
 
 _POWER_TOL = 1e-9
-
-
-def _is_power_of_two(n: int) -> bool:
-    return n >= 2 and (n & (n - 1)) == 0
 
 
 def _expected_power(
@@ -39,8 +35,7 @@ def _expected_power(
     return float(np.dot(probabilities, sq))
 
 
-@dataclass(frozen=True)
-class ConstellationConfig:
+class ConstellationConfig(BaseModel):
     """Validated constellation: points, bit→symbol labels, optional priors.
 
     Invariants enforced at construction:
@@ -53,15 +48,35 @@ class ConstellationConfig:
       ``from_*`` factories; they normalise.)
     """
 
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     points: ComplexArray
     bit_labels: npt.NDArray[np.uint8]
     probabilities: npt.NDArray[np.float64] | None = None
 
     _SUPPORTED_QAM_ORDERS: ClassVar[tuple[int, ...]] = (4, 16, 64, 256, 1024)
 
-    def __post_init__(self) -> None:
-        points = np.asarray(self.points, dtype=np.complex128)
-        bit_labels = np.asarray(self.bit_labels, dtype=np.uint8)
+    @field_validator("points", mode="before")
+    @classmethod
+    def _coerce_points(cls, v: object) -> np.ndarray:
+        return np.asarray(v, dtype=np.complex128)
+
+    @field_validator("bit_labels", mode="before")
+    @classmethod
+    def _coerce_bit_labels(cls, v: object) -> np.ndarray:
+        return np.asarray(v, dtype=np.uint8)
+
+    @field_validator("probabilities", mode="before")
+    @classmethod
+    def _coerce_probabilities(cls, v: object) -> np.ndarray | None:
+        if v is None:
+            return None
+        return np.asarray(v, dtype=np.float64)
+
+    @model_validator(mode="after")
+    def _validate(self) -> ConstellationConfig:
+        points = self.points
+        bit_labels = self.bit_labels
 
         m = points.shape[0]
         if points.ndim != 1 or not _is_power_of_two(m):
@@ -83,7 +98,6 @@ class ConstellationConfig:
 
         probabilities = self.probabilities
         if probabilities is not None:
-            probabilities = np.asarray(probabilities, dtype=np.float64)
             if probabilities.shape != (m,):
                 raise ValueError(
                     f"probabilities must have shape ({m},), got {probabilities.shape}"
@@ -101,11 +115,7 @@ class ConstellationConfig:
                 f"expected symbol power must be 1.0 (got {power:.6e}); use "
                 "ConstellationConfig.from_points to auto-normalise"
             )
-
-        # Frozen dataclass: bypass via object.__setattr__ for the canonicalised arrays.
-        object.__setattr__(self, "points", points)
-        object.__setattr__(self, "bit_labels", bit_labels)
-        object.__setattr__(self, "probabilities", probabilities)
+        return self
 
     # ---- properties ------------------------------------------------------
 
@@ -216,10 +226,13 @@ def apsk(
 
     Points are laid out ring-by-ring starting from the innermost. Within
     each ring, points are emitted at angles ``ring_phases[i] + 2π k / M_i``
-    for ``k = 0..M_i-1``. Bit labels are assigned by default index order
-    (MSB-first binary) — pass a custom ``bit_labels`` via
-    :meth:`ConstellationConfig.from_points` if Gray labelling matters for
-    your BER target.
+    for ``k = 0..M_i-1``.
+
+    .. warning::
+        Bit labels use MSB-first binary indexing (label[i] = binary(i)),
+        **not** Gray coding. BER simulations over AWGN will be suboptimal
+        without custom Gray labels. Pass explicit ``bit_labels`` to
+        :meth:`ConstellationConfig.from_points` when BER accuracy matters.
 
     Examples
     --------

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from hpcom import EDFA, Fiber, Link, Receiver, Result, Simulation, Transmitter
+from hpcom import EDFA, Fiber, Link, Result, Simulation
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
 
 
 @pytest.mark.slow
@@ -20,7 +22,7 @@ def test_short_ssmf_edfa_chain_runs_and_decodes_correctly():
     edfa = EDFA(gain_db=fiber.alpha_db_per_km * span_km, noise_figure_db=5.0)
     link = Link.from_spans(n_spans=n_spans, fiber=fiber, amplifier=edfa)
 
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=32e9,
         n_symbols=2048,
@@ -29,7 +31,7 @@ def test_short_ssmf_edfa_chain_runs_and_decodes_correctly():
         pulse_span_symbols=16,
         seed=0,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=16,
         samples_per_symbol=4,
         roll_off=0.1,
@@ -47,9 +49,9 @@ def test_short_ssmf_edfa_chain_runs_and_decodes_correctly():
 
 
 def test_simulation_rejects_mismatched_modulation_order():
-    tx = Transmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=4)
-    rx = Receiver(modulation_order=64, samples_per_symbol=4)
+    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=4)
+    rx = SingleCarrierReceiver(modulation_order=64, samples_per_symbol=4)
     fiber = Fiber.ssmf(10.0, backend="numpy-linear")
-    link = Link((fiber,))
+    link = Link(elements=(fiber,))
     with pytest.raises(ValueError, match="modulation_order"):
         Simulation(transmitter=tx, link=link, receiver=rx)

@@ -14,12 +14,12 @@ from __future__ import annotations
 import numpy as np
 
 from hpcom.modulation import bits_per_symbol
-from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
 
 
 def main() -> None:
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=32e9,
         n_symbols=8192,
@@ -28,7 +28,7 @@ def main() -> None:
         pulse_span_symbols=32,
         seed=0,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=16,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,

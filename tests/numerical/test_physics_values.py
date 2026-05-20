@@ -15,10 +15,10 @@ import pytest
 from hpcom.amplifier import EDFA
 from hpcom.fiber import Fiber
 from hpcom.link import Link
-from hpcom.receiver import Receiver
+from hpcom.receiver import SingleCarrierReceiver
 from hpcom.simulation import Simulation
-from hpcom.transmitter import Transmitter, WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.transmitter import SingleCarrierTransmitter
+from hpcom.wdm import WDMConfig, WDMTransmitter
 
 
 # ---------------------------------------------------------------------------
@@ -41,11 +41,11 @@ def _passthrough_link() -> Link:
 @pytest.mark.parametrize("dbm", [-10.0, -3.0, 0.0, 3.0])
 def test_simulation_launch_power_dbm_yields_target_power(dbm: float):
     """`launch_power_dbm=X` → received_field mean power = 10^(X/10) mW exactly."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16, symbol_rate_hz=10e9, n_symbols=4096,
         samples_per_symbol=8, pulse_span_symbols=32, seed=0,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=16, samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols,
     )
@@ -61,11 +61,11 @@ def test_simulation_launch_power_dbm_yields_target_power(dbm: float):
 
 def test_launch_power_dbm_none_leaves_field_unscaled():
     """Default behaviour: no rescale; field power = constellation unit / sps."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4, symbol_rate_hz=10e9, n_symbols=4096,
         samples_per_symbol=8, pulse_span_symbols=32, seed=0,
     )
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols,
     )
@@ -191,7 +191,7 @@ def test_wdm_channel_centers_match_grid_to_subbin_precision():
 # ---------------------------------------------------------------------------
 def test_dual_pol_total_power_equals_sum_of_per_pol_powers():
     """Trivial sanity: |E_x|² + |E_y|² across all samples = total intensity."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16, symbol_rate_hz=10e9, n_symbols=4096,
         samples_per_symbol=8, pulse_span_symbols=32, seed=0,
         polarization="dual",
@@ -206,7 +206,7 @@ def test_dual_pol_total_power_equals_sum_of_per_pol_powers():
 
 def test_dual_pol_per_pol_power_equal_for_uniform_qam():
     """Identical bit-rate / constellation on X and Y → equal average power."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16, symbol_rate_hz=10e9, n_symbols=16384,
         samples_per_symbol=4, pulse_span_symbols=32, seed=0,
         polarization="dual",
@@ -237,7 +237,7 @@ def test_wdm_composite_power_equals_n_times_single_channel(n_ch: int):
     composite_p = float(np.mean(np.abs(sent.field) ** 2))
 
     # Reference: same-config single-channel Tx (no WDM).
-    single = Transmitter(
+    single = SingleCarrierTransmitter(
         modulation_order=16, symbol_rate_hz=10e9, n_symbols=tx.n_symbols,
         samples_per_symbol=tx.samples_per_symbol,
         pulse_span_symbols=tx.pulse_span_symbols, seed=0,
@@ -250,7 +250,7 @@ def test_wdm_composite_power_equals_n_times_single_channel(n_ch: int):
 # CD compensation
 # ---------------------------------------------------------------------------
 def test_cd_compensation_undoes_linear_fiber_exactly():
-    """Receiver(cd_compensation_s2=β₂·L) applied after a lossless gamma=0 fiber
+    """SingleCarrierReceiver(cd_compensation_s2=β₂·L) applied after a lossless gamma=0 fiber
     must recover the input pulse to numerical precision."""
     rng = np.random.default_rng(0)
     n = 2048
@@ -263,7 +263,7 @@ def test_cd_compensation_undoes_linear_fiber_exactly():
     )
     out = fiber.propagate(sig, dt_s=dt_s)
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4, samples_per_symbol=2,
         cd_compensation_s2=fiber.beta2_s2_per_m * fiber.length_km * 1e3,
     )

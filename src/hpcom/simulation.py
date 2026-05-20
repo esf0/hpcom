@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from hpcom._typing import ComplexArray
 from hpcom.link import Link
 from hpcom.metrics import Metrics, bit_error_rate, evm_rms
 from hpcom.modulation import bits_per_symbol, bits_to_symbols
-from hpcom.receiver import Receiver, WDMReceiver
+from hpcom.receiver import Receiver
 from hpcom.result import Result, SimulationMetadata
-from hpcom.transmitter import TransmittedSignal, Transmitter, WDMTransmitter
+from hpcom.transmitter import SingleCarrierTransmitter, TransmittedSignal, Transmitter
+from hpcom.wdm import WDMReceiver, WDMTransmitter
 
 
-@dataclass(frozen=True)
-class Simulation:
+class Simulation(BaseModel):
     """One Tx → Link → Rx pipeline, runnable to a :class:`hpcom.result.Result`.
 
     Supports the full Tx/Rx matrix today:
@@ -36,6 +36,8 @@ class Simulation:
     explicit ``Transmitter.seed`` takes precedence for the transmitter only.
     """
 
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     transmitter: Transmitter
     link: Link
     receiver: Receiver
@@ -44,13 +46,15 @@ class Simulation:
     """Average launch power per polarization, in dBm. ``None`` (default) leaves
     the transmitter's native power untouched."""
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate(self) -> Simulation:
         if self.transmitter.modulation_order != self.receiver.modulation_order:
             raise ValueError(
                 "transmitter and receiver modulation_order must match: "
                 f"{self.transmitter.modulation_order} vs {self.receiver.modulation_order}"
             )
-        if self.transmitter.samples_per_symbol != self.receiver.samples_per_symbol:
+        tx = self._sc_transmitter()
+        if tx.samples_per_symbol != self.receiver.samples_per_symbol:
             raise ValueError(
                 "transmitter and receiver samples_per_symbol must match"
             )
@@ -78,13 +82,14 @@ class Simulation:
                 )
 
         # Need at least one symbol in the steady-state region after edge skip.
-        skip = self.transmitter.pulse_span_symbols
+        skip = tx.pulse_span_symbols
         if self.transmitter.n_symbols <= 2 * skip:
             raise ValueError(
                 f"n_symbols ({self.transmitter.n_symbols}) must exceed "
                 f"2 · pulse_span_symbols ({2 * skip}) so metrics have a "
                 "transient-free region to score."
             )
+        return self
 
     def run(self) -> Result:
         t0 = time.perf_counter()
@@ -118,9 +123,10 @@ class Simulation:
         # polarisation and is preserved through scoring.
         ref_bits, _ref_symbols = self._reference_streams(sent)
 
-        skip = self.transmitter.pulse_span_symbols
+        tx = self._sc_transmitter()
+        skip = tx.pulse_span_symbols
         end = -skip if skip else None
-        bps = bits_per_symbol(self.transmitter.modulation_order)
+        bps = bits_per_symbol(self.transmitter.effective_modulation_order)
 
         # Trim pulse-edge transients along the symbol-time axis (the last axis
         # of bits, viewed as (..., n_symbols, bps)). Works for 1-D and 2-D.
@@ -133,7 +139,7 @@ class Simulation:
         decision_bits = (received.bits.reshape(*received.bits.shape[:-1], -1, bps)
                          [..., skip:end, :]
                          .reshape(*received.bits.shape[:-1], -1))
-        ref_for_evm = bits_to_symbols(decision_bits.ravel(), self.receiver.modulation_order)
+        ref_for_evm = bits_to_symbols(decision_bits.ravel(), self.receiver.effective_modulation_order)
         evm = evm_rms(rx_syms.ravel(), ref_for_evm)
 
         metrics = Metrics(ber=ber, evm_rms=evm, n_bits=n_bits, n_bit_errors=n_errors)
@@ -173,12 +179,28 @@ class Simulation:
                 symbols = symbols[ch]
         return bits, symbols
 
+    def _sc_transmitter(self) -> SingleCarrierTransmitter:
+        """Return the transmitter narrowed to SingleCarrierTransmitter.
+
+        Simulation currently requires SC-specific attributes
+        (``samples_per_symbol``, ``pulse_span_symbols``).  WDMTransmitter
+        also satisfies this because it inherits from SingleCarrierTransmitter.
+        """
+        tx = self.transmitter
+        if not isinstance(tx, SingleCarrierTransmitter):
+            raise TypeError(
+                f"Simulation currently requires a SingleCarrierTransmitter "
+                f"(or WDMTransmitter), got {type(tx).__name__}"
+            )
+        return tx
+
     def _metadata_config(self) -> dict[str, object]:
+        tx = self._sc_transmitter()
         cfg: dict[str, object] = {
             "n_symbols": self.transmitter.n_symbols,
             "modulation_order": self.transmitter.modulation_order,
             "symbol_rate_hz": self.transmitter.symbol_rate_hz,
-            "samples_per_symbol": self.transmitter.samples_per_symbol,
+            "samples_per_symbol": tx.samples_per_symbol,
             "n_spans": self.link.n_spans,
             "polarization": self.transmitter.polarization,
         }

@@ -56,8 +56,9 @@ def test_propagate_preserves_shape_and_dtype_via_numpy_backend():
     assert out.dtype == field.dtype
 
 
-def test_frozen_dataclass_rejects_mutation():
+def test_frozen_model_rejects_mutation():
     fiber = Fiber.ssmf(80.0)
-    # dataclasses raises FrozenInstanceError, which subclasses AttributeError.
-    with pytest.raises(AttributeError):
+    # pydantic frozen=True raises ValidationError on attempted setattr.
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="frozen"):
         fiber.length_km = 100.0  # type: ignore[misc]

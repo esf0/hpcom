@@ -5,13 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
 
 
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
 def test_noiseless_b2b_recovers_all_symbols(order: int):
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=order,
         symbol_rate_hz=32e9,
         n_symbols=4096,
@@ -22,7 +22,7 @@ def test_noiseless_b2b_recovers_all_symbols(order: int):
     )
     sent = tx.generate()
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=order,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -41,7 +41,7 @@ def test_noiseless_b2b_recovers_all_symbols(order: int):
 
 
 def test_dt_s_consistent_with_symbol_rate():
-    tx = Transmitter(modulation_order=16, symbol_rate_hz=10e9, n_symbols=10, samples_per_symbol=4)
+    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=10e9, n_symbols=10, samples_per_symbol=4)
     assert tx.dt_s == pytest.approx(1.0 / (10e9 * 4))
     sig = tx.generate()
     assert sig.field.shape == (10 * 4,)
@@ -50,10 +50,10 @@ def test_dt_s_consistent_with_symbol_rate():
 
 def test_invalid_samples_per_symbol_rejected():
     with pytest.raises(ValueError, match="samples_per_symbol"):
-        Transmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=1)
+        SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=1)
 
 
 def test_seed_makes_generation_deterministic():
-    tx_a = Transmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
-    tx_b = Transmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
+    tx_a = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
+    tx_b = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
     np.testing.assert_array_equal(tx_a.generate().bits, tx_b.generate().bits)

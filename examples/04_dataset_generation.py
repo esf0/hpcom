@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from hpcom import EDFA, Fiber, Link, Receiver, Simulation, Transmitter
+from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierReceiver, SingleCarrierTransmitter
 
 
 def main(out_dir: str = "_dataset", n_realizations: int = 4) -> None:
@@ -28,7 +28,7 @@ def main(out_dir: str = "_dataset", n_realizations: int = 4) -> None:
     edfa = EDFA(gain_db=fiber.alpha_db_per_km * fiber.length_km, noise_figure_db=5.0)
     link = Link.from_spans(n_spans=3, fiber=fiber, amplifier=edfa)
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=16,
         samples_per_symbol=4,
         roll_off=0.1,
@@ -38,7 +38,7 @@ def main(out_dir: str = "_dataset", n_realizations: int = 4) -> None:
     )
 
     for seed in range(n_realizations):
-        tx = Transmitter(
+        tx = SingleCarrierTransmitter(
             modulation_order=16,
             symbol_rate_hz=32e9,
             n_symbols=4096,

@@ -14,16 +14,16 @@ import numpy as np
 import pytest
 
 from hpcom.modulation import ConstellationConfig
-from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
 
 # ---------------------------------------------------------------------------
 # Mutual exclusion
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("cls,kwargs", [
-    (Transmitter, {"symbol_rate_hz": 32e9, "n_symbols": 256}),
-    (Receiver, {}),
+    (SingleCarrierTransmitter, {"symbol_rate_hz": 32e9, "n_symbols": 256}),
+    (SingleCarrierReceiver, {}),
 ])
 def test_both_modulation_order_and_constellation_raises(cls, kwargs):
     cfg = ConstellationConfig.from_square_qam(16)
@@ -32,8 +32,8 @@ def test_both_modulation_order_and_constellation_raises(cls, kwargs):
 
 
 @pytest.mark.parametrize("cls,kwargs", [
-    (Transmitter, {"symbol_rate_hz": 32e9, "n_symbols": 256}),
-    (Receiver, {}),
+    (SingleCarrierTransmitter, {"symbol_rate_hz": 32e9, "n_symbols": 256}),
+    (SingleCarrierReceiver, {}),
 ])
 def test_neither_modulation_order_nor_constellation_raises(cls, kwargs):
     with pytest.raises(ValueError, match="exactly one"):
@@ -51,8 +51,8 @@ def test_constellation_config_b2b_matches_modulation_order(m):
     common = dict(symbol_rate_hz=32e9, n_symbols=512, samples_per_symbol=8,
                   pulse_span_symbols=16, seed=42)
 
-    tx_int = Transmitter(modulation_order=m, **common)
-    tx_cfg = Transmitter(constellation=cfg, **common)
+    tx_int = SingleCarrierTransmitter(modulation_order=m, **common)
+    tx_cfg = SingleCarrierTransmitter(constellation=cfg, **common)
 
     sig_int = tx_int.generate()
     sig_cfg = tx_cfg.generate()
@@ -78,9 +78,9 @@ def _trim_rrc_edges(bits: np.ndarray, k: int, span: int) -> np.ndarray:
 def test_b2b_noiseless_recovers_bits_via_constellation_config(m):
     cfg = ConstellationConfig.from_square_qam(m)
     span = 16
-    tx = Transmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=1024,
+    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=1024,
                      samples_per_symbol=8, pulse_span_symbols=span, seed=7)
-    rx = Receiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
+    rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
     received = rx.receive(sent.field)
@@ -97,9 +97,9 @@ def test_b2b_with_8psk_constellation():
     raw_points = np.exp(2j * np.pi * np.arange(8) / 8)
     cfg = ConstellationConfig.from_points(raw_points)
     span = 16
-    tx = Transmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=512,
+    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=512,
                      samples_per_symbol=8, pulse_span_symbols=span, seed=11)
-    rx = Receiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
+    rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
     received = rx.receive(sent.field)
@@ -114,10 +114,10 @@ def test_b2b_with_8psk_constellation():
 def test_b2b_dual_pol_with_constellation_config():
     cfg = ConstellationConfig.from_square_qam(16)
     span = 16
-    tx = Transmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=512,
+    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=512,
                      samples_per_symbol=8, pulse_span_symbols=span,
                      polarization="dual", seed=3)
-    rx = Receiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span,
+    rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span,
                   polarization="dual")
 
     sent = tx.generate()
@@ -135,11 +135,11 @@ def test_b2b_dual_pol_with_constellation_config():
 # ---------------------------------------------------------------------------
 
 def test_effective_modulation_order_via_int():
-    tx = Transmitter(modulation_order=64, symbol_rate_hz=32e9, n_symbols=64)
+    tx = SingleCarrierTransmitter(modulation_order=64, symbol_rate_hz=32e9, n_symbols=64)
     assert tx.effective_modulation_order == 64
 
 
 def test_effective_modulation_order_via_constellation():
     cfg = ConstellationConfig.from_points(np.exp(2j * np.pi * np.arange(8) / 8))
-    tx = Transmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=64)
+    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=64)
     assert tx.effective_modulation_order == 8

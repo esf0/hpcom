@@ -57,41 +57,91 @@ def test_mb_negative_nu_raises():
         maxwell_boltzmann(constellation, nu=-0.1)
 
 
+def test_mb_equi_energy_is_always_uniform():
+    """M-B PMF must equal uniform for any equi-energy constellation (e.g. PSK).
+
+    For PSK all |s_i|² = r² (constant), so exp(-ν|s_i|²) = exp(-νr²) for
+    every i, and the softmax normalises to 1/M regardless of ν. This is a
+    physically important identity: shaping has no effect on equi-energy
+    constellations — the distribution is always uniform.
+    """
+    points = np.exp(2j * np.pi * np.arange(8) / 8)  # 8-PSK: all |s|=1
+    for nu in [0.0, 0.5, 2.0, 10.0]:
+        p = maxwell_boltzmann(points, nu=nu)
+        np.testing.assert_allclose(
+            p, np.full(8, 1.0 / 8), atol=1e-12,
+            err_msg=f"failed for nu={nu}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # ConstantCompositionDM — construction
 # ---------------------------------------------------------------------------
 
 def test_dm_rejects_non_normalised_pmf():
     with pytest.raises(ValueError, match="sum to 1"):
-        ConstantCompositionDM(np.array([0.5, 0.3]), block_length=16)
+        ConstantCompositionDM(target_pmf=np.array([0.5, 0.3]), block_length=16)
 
 
 def test_dm_rejects_negative_pmf():
     with pytest.raises(ValueError, match="non-negative"):
-        ConstantCompositionDM(np.array([1.2, -0.2]), block_length=16)
+        ConstantCompositionDM(target_pmf=np.array([1.2, -0.2]), block_length=16)
 
 
 def test_dm_rejects_block_smaller_than_m():
     pmf = np.full(16, 1.0 / 16)
     with pytest.raises(ValueError, match="block_length"):
-        ConstantCompositionDM(pmf, block_length=8)
+        ConstantCompositionDM(target_pmf=pmf, block_length=8)
 
 
 def test_dm_composition_sums_to_block_length():
     constellation = np.exp(2j * np.pi * np.arange(8) / 8)  # 8-PSK
     pmf = maxwell_boltzmann(constellation, nu=0.4)
-    dm = ConstantCompositionDM(pmf, block_length=32)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
     assert dm.composition.sum() == 32
 
 
 def test_dm_bits_per_block_matches_floor_log2_multinomial():
     constellation = np.exp(2j * np.pi * np.arange(8) / 8)  # 8-PSK
     pmf = maxwell_boltzmann(constellation, nu=0.4)
-    dm = ConstantCompositionDM(pmf, block_length=32)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
     expected = math.factorial(32)
     for c in dm.composition:
         expected //= math.factorial(int(c))
     assert dm.bits_per_block == math.floor(math.log2(expected))
+
+
+def test_dm_rate_bounded_by_entropy():
+    """Information rate in bits/symbol must be positive and ≤ H(target_pmf).
+
+    The rate is ⌊log₂ C⌋ / N where C = N! / Π nᵢ!. Since C ≤ (M/N)^N · N!
+    and H(p) = -Σ pᵢ log₂ pᵢ, the rate is always bounded by the source
+    entropy — the DM cannot emit more information than the target PMF carries.
+    """
+    constellation, _ = square_qam(16)
+    pmf = maxwell_boltzmann(constellation, nu=0.4)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=64)
+    h = float(-np.sum(pmf * np.log2(pmf + 1e-300)))
+    assert dm.rate_bits_per_symbol > 0
+    assert dm.rate_bits_per_symbol <= h + 1e-9  # add epsilon for floating-point
+
+
+def test_dm_unrank_out_of_range_raises():
+    """_unrank_multiset must raise ValueError for rank >= total permutations."""
+    from hpcom.modulation.dm import _unrank_multiset
+    # composition [2, 2] → total = 4!/(2!2!) = 6 valid ranks (0..5)
+    with pytest.raises(ValueError, match="out of range"):
+        _unrank_multiset(6, [2, 2])
+    with pytest.raises(ValueError, match="out of range"):
+        _unrank_multiset(-1, [2, 2])
+
+
+def test_dm_rank_out_of_range_sym_raises():
+    """_rank_multiset must raise ValueError for a symbol index out of composition range."""
+    from hpcom.modulation.dm import _rank_multiset
+    # composition has 3 symbols (indices 0, 1, 2); index 3 is invalid
+    with pytest.raises(ValueError, match="out of range"):
+        _rank_multiset([0, 3, 2], [2, 2, 2])
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +151,7 @@ def test_dm_bits_per_block_matches_floor_log2_multinomial():
 def test_dm_round_trip_uniform_block():
     """Uniform PMF over 8 symbols, block_length=16."""
     pmf = np.full(8, 1.0 / 8)
-    dm = ConstantCompositionDM(pmf, block_length=16)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=16)
 
     rng = np.random.default_rng(0)
     bits = rng.integers(0, 2, size=dm.bits_per_block * 32, dtype=np.uint8)
@@ -117,7 +167,7 @@ def test_dm_round_trip_maxwell_boltzmann():
     """Shaped PMF (Maxwell-Boltzmann ν=0.4), block_length=24, 8-APSK constellation."""
     constellation = np.exp(2j * np.pi * np.arange(8) / 8)  # 8-PSK
     pmf = maxwell_boltzmann(constellation, nu=0.4)
-    dm = ConstantCompositionDM(pmf, block_length=24)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=24)
 
     rng = np.random.default_rng(1)
     bits = rng.integers(0, 2, size=dm.bits_per_block * 64, dtype=np.uint8)
@@ -136,7 +186,7 @@ def test_dm_empirical_pmf_equals_composition():
     """By construction, the emitted distribution is exactly composition / N."""
     constellation, _ = square_qam(16)
     target = maxwell_boltzmann(constellation, nu=0.2)
-    dm = ConstantCompositionDM(target, block_length=64)
+    dm = ConstantCompositionDM(target_pmf=target, block_length=64)
 
     rng = np.random.default_rng(2)
     n_blocks = 32
@@ -159,7 +209,7 @@ def test_dm_empirical_pmf_kl_to_target_below_1e_3():
     """
     constellation = np.exp(2j * np.pi * np.arange(8) / 8)  # 8-PSK
     target = maxwell_boltzmann(constellation, nu=0.5)
-    dm = ConstantCompositionDM(target, block_length=128)
+    dm = ConstantCompositionDM(target_pmf=target, block_length=128)
 
     empirical = dm.empirical_pmf
     # KL(empirical || target). Mask zeros in empirical to avoid 0·log(0/x).
@@ -178,7 +228,7 @@ def test_dm_pipeline_with_constellation_config():
     constellation = np.exp(2j * np.pi * np.arange(8) / 8)  # 8-PSK
     pmf = maxwell_boltzmann(constellation, nu=0.4)
     cfg = ConstellationConfig.from_points(constellation, probabilities=pmf)
-    dm = ConstantCompositionDM(pmf, block_length=32)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
 
     rng = np.random.default_rng(3)
     bits = rng.integers(0, 2, size=dm.bits_per_block * 16, dtype=np.uint8)

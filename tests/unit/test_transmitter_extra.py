@@ -12,8 +12,8 @@ import pytest
 
 from hpcom.modulation import bits_per_symbol, bits_to_symbols
 from hpcom.modulation.constellations import square_qam
-from hpcom.receiver import Receiver
-from hpcom.transmitter import Transmitter
+from hpcom.receiver import SingleCarrierReceiver
+from hpcom.transmitter import SingleCarrierTransmitter
 
 
 @pytest.mark.parametrize("order", [4, 16, 64])
@@ -25,7 +25,7 @@ def test_fed_bits_round_trip_exactly(order: int):
     rng = np.random.default_rng(42)
     bits = rng.integers(0, 2, size=n * k, dtype=np.uint8)
 
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=order,
         symbol_rate_hz=10e9,
         n_symbols=n,
@@ -36,7 +36,7 @@ def test_fed_bits_round_trip_exactly(order: int):
     sent = tx.generate(bits=bits)
     np.testing.assert_array_equal(sent.bits, bits)
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=order,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -59,7 +59,7 @@ def test_fed_symbols_round_trip_exactly(order: int):
     rng = np.random.default_rng(7)
     symbols = constellation[rng.integers(0, order, size=n)]
 
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=order,
         symbol_rate_hz=10e9,
         n_symbols=n,
@@ -69,7 +69,7 @@ def test_fed_symbols_round_trip_exactly(order: int):
     sent = tx.generate(symbols=symbols)
     np.testing.assert_allclose(sent.symbols, symbols, atol=1e-12)
 
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=order,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -93,7 +93,7 @@ def test_constant_symbol_produces_cw_carrier():
     n = 256
     constant = complex(0.5, -0.3)
     symbols = np.full(n, constant, dtype=np.complex128)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=n,
@@ -101,7 +101,7 @@ def test_constant_symbol_produces_cw_carrier():
         pulse_span_symbols=64,  # longer span → less coherent leakage
     )
     sent = tx.generate(symbols=symbols)
-    rx = Receiver(
+    rx = SingleCarrierReceiver(
         modulation_order=4,
         samples_per_symbol=tx.samples_per_symbol,
         roll_off=tx.roll_off,
@@ -127,7 +127,7 @@ def test_average_field_power_close_to_constellation_mean(order: int):
     drops by sps.)
     """
     n = 4096
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=order,
         symbol_rate_hz=10e9,
         n_symbols=n,
@@ -146,7 +146,7 @@ def test_field_spectrum_is_band_limited_to_rs_times_one_plus_rolloff():
     that >99% of the field energy lives within that band."""
     rs = 10e9
     rolloff = 0.1
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=rs,
         n_symbols=8192,
@@ -171,19 +171,19 @@ def test_field_spectrum_is_band_limited_to_rs_times_one_plus_rolloff():
 
 
 def test_generate_rejects_both_bits_and_symbols():
-    tx = Transmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8)
+    tx = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8)
     with pytest.raises(ValueError, match="at most one"):
         tx.generate(bits=np.zeros(16, dtype=np.uint8), symbols=np.ones(8, dtype=np.complex128))
 
 
 def test_generate_rejects_wrong_shape_bits():
-    tx = Transmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=10)
+    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=10)
     with pytest.raises(ValueError, match=r"`bits` must have shape"):
         tx.generate(bits=np.zeros(7, dtype=np.uint8))  # not a multiple
 
 
 def test_generate_rejects_wrong_shape_symbols():
-    tx = Transmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=10)
+    tx = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=10)
     with pytest.raises(ValueError, match=r"`symbols` must have shape"):
         tx.generate(symbols=np.zeros(11, dtype=np.complex128))
 
@@ -197,7 +197,7 @@ def test_symbols_input_demaps_off_grid_to_nearest_bits():
     # Pick the first 8 constellation points, perturb each by a tiny noise.
     clean = constellation[:8]
     noisy = clean + 1e-3 * (np.random.default_rng(0).standard_normal(8) + 1j * np.random.default_rng(1).standard_normal(8))
-    tx = Transmitter(modulation_order=order, symbol_rate_hz=1e9, n_symbols=8)
+    tx = SingleCarrierTransmitter(modulation_order=order, symbol_rate_hz=1e9, n_symbols=8)
     sent_clean = tx.generate(symbols=clean)
     sent_noisy = tx.generate(symbols=noisy)
     # Demapped bits must match (noise is below the decision region radius).

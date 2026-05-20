@@ -12,6 +12,10 @@ This is the standard textbook predecessor to CCDM (Schulte & Böcherer,
 than arithmetic coding, which keeps the implementation small and obvious at
 the cost of a few bits of rate (block-end overhead). Suitable for v1
 shaping-gain experiments; a real CCDM would replace this transparently.
+
+TODO(v2): vectorise _unrank_multiset/_rank_multiset with numpy; the current
+Python loops are O(N × M) per block and will become a bottleneck for large
+block lengths (N ≳ 256) or high-throughput simulations.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from functools import lru_cache
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from hpcom._typing import ComplexArray
 
@@ -102,6 +107,9 @@ def _unrank_multiset(rank: int, composition: list[int]) -> list[int]:
     """
     comp = list(composition)
     n_left = sum(comp)
+    total = _multinomial_with_counts(n_left, tuple(comp))
+    if not (0 <= rank < total):
+        raise ValueError(f"rank {rank} is out of range [0, {total})")
     result: list[int] = []
     while n_left > 0:
         for j in range(len(comp)):
@@ -120,6 +128,10 @@ def _unrank_multiset(rank: int, composition: list[int]) -> list[int]:
 
 def _rank_multiset(perm: list[int], composition: list[int]) -> int:
     """Inverse of :func:`_unrank_multiset`."""
+    m = len(composition)
+    for sym in perm:
+        if sym < 0 or sym >= m:
+            raise ValueError(f"symbol index {sym} is out of range [0, {m})")
     comp = list(composition)
     n_left = sum(comp)
     rank = 0
@@ -162,7 +174,7 @@ def _int_to_bits(value: int, k: int) -> npt.NDArray[np.uint8]:
 # CC-DM
 # ---------------------------------------------------------------------------
 
-class ConstantCompositionDM:
+class ConstantCompositionDM(BaseModel):
     """Bijective bit↔symbol-index encoder with a fixed per-block composition.
 
     Constructed from a target PMF and a block length ``N``. The composition
@@ -179,37 +191,61 @@ class ConstantCompositionDM:
     ``composition / N`` exactly, independent of the input bits.
     """
 
-    def __init__(
-        self,
-        target_pmf: npt.NDArray[np.float64] | list[float] | tuple[float, ...],
-        block_length: int,
-    ) -> None:
-        pmf = np.asarray(target_pmf, dtype=np.float64)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    target_pmf: npt.NDArray[np.float64]
+    block_length: int
+    # Derived fields, populated in model_validator. Defaults are sentinels
+    # only — they are always overwritten before the model is returned.
+    composition: npt.NDArray[np.int64] = None  # type: ignore[assignment]
+    bits_per_block: int = 0
+
+    @field_validator("target_pmf", mode="before")
+    @classmethod
+    def _coerce_pmf(cls, v: object) -> np.ndarray:
+        return np.asarray(v, dtype=np.float64)
+
+    @model_validator(mode="after")
+    def _validate_and_compute(self) -> ConstantCompositionDM:
+        pmf = self.target_pmf
         if pmf.ndim != 1 or pmf.size < 2:
-            raise ValueError(f"target_pmf must be 1-D with ≥2 entries, got shape {pmf.shape}")
+            raise ValueError(
+                f"target_pmf must be 1-D with ≥2 entries, got shape {pmf.shape}"
+            )
         if not np.isclose(pmf.sum(), 1.0, atol=1e-12):
             raise ValueError(f"target_pmf must sum to 1, got {pmf.sum():.6e}")
         if (pmf < 0).any():
             raise ValueError("target_pmf entries must be non-negative")
-        if block_length < pmf.size:
+        if self.block_length < pmf.size:
             raise ValueError(
-                f"block_length ({block_length}) must be ≥ number of symbols "
+                f"block_length ({self.block_length}) must be ≥ number of symbols "
                 f"({pmf.size}) to support a non-trivial composition"
             )
 
-        self.target_pmf = pmf
-        self.block_length = int(block_length)
-        self.composition = _composition_from_pmf(pmf, self.block_length)
+        composition = _composition_from_pmf(pmf, self.block_length)
         total = _multinomial_with_counts(
-            self.block_length, tuple(int(c) for c in self.composition)
+            self.block_length, tuple(int(c) for c in composition)
         )
         if total < 2:
             raise ValueError(
                 "block has a single permutation (composition is degenerate); "
                 "increase block_length or use a less peaked PMF"
             )
-        self.bits_per_block = math.floor(math.log2(total))
-        self._composition_list = self.composition.tolist()
+        # Assign derived state through __dict__ — model_validator runs before
+        # pydantic enforces frozen on setattr.
+        self.__dict__["composition"] = composition
+        self.__dict__["bits_per_block"] = math.floor(math.log2(total))
+        return self
+
+    @property
+    def _composition_list(self) -> list[int]:
+        """Python-list copy of composition (cached at first access)."""
+        # Memoise via __dict__ since the model is frozen.
+        cached = self.__dict__.get("_composition_list_cache")
+        if cached is None:
+            cached = self.composition.tolist()
+            self.__dict__["_composition_list_cache"] = cached
+        return cached  # type: ignore[no-any-return]
 
     @property
     def empirical_pmf(self) -> npt.NDArray[np.float64]:

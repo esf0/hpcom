@@ -14,14 +14,14 @@ import pytest
 
 from hpcom.modulation import bits_per_symbol
 from hpcom.pilots import PilotConfig
-from hpcom.transmitter import Transmitter
+from hpcom.transmitter import SingleCarrierTransmitter
 from hpcom.wdm import WDMConfig
 
 
 def test_dual_pol_field_shape_and_independence():
     """Dual-pol output is (2, n_samples); X and Y bit streams differ for the
     same root seed (sub-RNGs are independent)."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=256,
@@ -49,8 +49,8 @@ def test_dual_pol_seed_deterministic():
         seed=42,
         polarization="dual",
     )
-    a = Transmitter(**kwargs).generate()
-    b = Transmitter(**kwargs).generate()
+    a = SingleCarrierTransmitter(**kwargs).generate()
+    b = SingleCarrierTransmitter(**kwargs).generate()
     np.testing.assert_array_equal(a.bits, b.bits)
     np.testing.assert_array_equal(a.field, b.field)
 
@@ -62,7 +62,7 @@ def test_dual_pol_b2b_each_pol_recovers_its_own_bits():
     from hpcom._pulse import root_raised_cosine
     from hpcom.modulation import symbols_to_bits
 
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=10e9,
         n_symbols=512,
@@ -102,7 +102,7 @@ def test_dual_pol_deterministic_bits_input():
         dtype=np.uint8,
     )
     assert bits.shape == (2, n * k)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=1e9,
         n_symbols=n,
@@ -117,7 +117,7 @@ def test_dual_pol_deterministic_symbols_input():
     symbols = np.zeros((2, n), dtype=np.complex128)
     symbols[0] = 1 + 0j
     symbols[1] = 0 + 1j
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=1e9,
         n_symbols=n,
@@ -131,7 +131,7 @@ def test_dual_pol_pilots_apply_to_both_pols():
     """Same PilotConfig applied to each polarisation: pilot positions carry the
     pilot value on BOTH X and Y."""
     cfg = PilotConfig(period=8, symbol=0.7 + 0.3j)
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=10e9,
         n_symbols=64,
@@ -150,7 +150,7 @@ def test_dual_pol_pilots_apply_to_both_pols():
 
 
 def test_dual_pol_rejects_wrong_input_shapes():
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=4,
         symbol_rate_hz=1e9,
         n_symbols=10,
@@ -165,7 +165,7 @@ def test_dual_pol_rejects_wrong_input_shapes():
 def test_dual_pol_plus_wdm_uses_wdm_transmitter():
     """Dual-pol × WDM is supported via WDMTransmitter. Verify it constructs
     and produces a (2, n_samples) field with (2, n_channels, …) bits."""
-    from hpcom.transmitter import WDMTransmitter
+    from hpcom.wdm import WDMTransmitter
 
     tx = WDMTransmitter(
         modulation_order=4,
@@ -189,7 +189,7 @@ def test_dual_pol_signal_average_power_is_split_evenly():
     """Without explicit power scaling, both pols emit roughly the same average
     power (unit-power constellation / sps). Real systems would scale by 1/√2
     per pol; that is a Simulation-level concern, not a Tx concern."""
-    tx = Transmitter(
+    tx = SingleCarrierTransmitter(
         modulation_order=16,
         symbol_rate_hz=10e9,
         n_symbols=4096,
@@ -206,7 +206,7 @@ def test_dual_pol_signal_average_power_is_split_evenly():
 
 def test_polarization_invalid_value_rejected():
     with pytest.raises(ValueError, match="polarization"):
-        Transmitter(
+        SingleCarrierTransmitter(
             modulation_order=4,
             symbol_rate_hz=1e9,
             n_symbols=4,

@@ -5,9 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hpcom.receiver import WDMReceiver
-from hpcom.transmitter import WDMTransmitter
-from hpcom.wdm import WDMConfig
+from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
 
 
 def test_wdm_config_rejects_lt_two_channels():
