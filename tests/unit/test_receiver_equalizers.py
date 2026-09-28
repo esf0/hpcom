@@ -169,3 +169,47 @@ def test_receiver_modulation_validation():
         SingleCarrierReceiver(modulation_order=12)
     with pytest.raises(ValidationError, match="square_qam supports"):
         SingleCarrierTransmitter(modulation_order=8, symbol_rate_hz=1e9, n_symbols=8)
+
+
+# ---- "auto" resolution ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("pilots", "with_reference", "expected"),
+    [
+        (False, False, "unit_power"),
+        (False, True, "data_aided"),
+        (True, False, "pilot"),
+        (True, True, "pilot"),  # a real receiver's own pilots beat the genie
+    ],
+)
+def test_auto_equaliser_resolution(pilots, with_reference, expected):
+    tx, rx = sc_pair(n_symbols=512, seed=0, pilots=PilotConfig(period=8) if pilots else None)
+    assert rx.equalize == "auto"
+    sent = tx.generate()
+    out = rx.receive(sent.field * GAIN, sent.dt_s, reference=sent if with_reference else None)
+    assert out.equalizer == expected
+    if expected != "unit_power":
+        np.testing.assert_array_equal(out.bits, sent.bits)
+
+
+@pytest.mark.parametrize(("pilots", "expected"), [((4, 20, 44, 60), "pilot"), ((), "data_aided")])
+def test_auto_equaliser_resolution_for_ofdm(pilots, expected):
+    from hpcom import OFDMReceiver
+
+    cfg = OFDMConfig(n_subcarriers=64, cp_len=8, n_guard=2, pilot_subcarrier_indices=pilots)
+    tx = OFDMTransmitter(
+        modulation_order=16, subcarrier_spacing_hz=1e9, n_frames=8, ofdm=cfg, seed=0
+    )
+    sent = tx.generate()
+    out = OFDMReceiver(modulation_order=16, ofdm=cfg).receive(
+        sent.field * GAIN, sent.dt_s, reference=sent
+    )
+    assert out.equalizer == expected
+    np.testing.assert_array_equal(out.bits, sent.bits)
+
+
+def test_explicit_modes_are_reported_unchanged(scenario):
+    tx, sent, field = scenario
+    for mode in ("none", "unit_power", "pilot", "data_aided"):
+        assert _rx(tx, equalize=mode).receive(field, sent.dt_s, reference=sent).equalizer == mode

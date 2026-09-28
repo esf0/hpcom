@@ -225,6 +225,9 @@ class OFDMReceiver(Receiver):
     After (optional) CD compensation, every frame's cyclic prefix is dropped,
     the ``L·N``-point FFT taken and the subcarriers extracted. ``equalize``:
 
+    * ``"auto"`` (default) — ``"pilot"`` when the frame has pilot
+      subcarriers, otherwise as for the other receivers (``"data_aided"``
+      with a reference, else ``"unit_power"``).
     * ``"pilot"`` — one-tap per-subcarrier equaliser: the channel is measured
       on the pilot subcarriers of each frame and linearly interpolated (real
       and imaginary parts, in frequency order; held constant beyond the
@@ -275,14 +278,17 @@ class OFDMReceiver(Receiver):
         pilots = spectrum[..., cfg.fft_bins(cfg.pilot_subcarrier_indices)] if cfg.n_pilots else None
         reference_data = self.reference(reference)[1] if reference is not None else None
 
-        if self.equalize == "pilot":
+        mode = self._resolve_equalizer(cfg.n_pilots > 0, reference_data is not None)
+        if mode == "pilot":
             assert pilots is not None
             h = self._interpolate_channel(pilots / cfg.pilot_symbol)
             mean_gain: npt.NDArray[np.complex128] = np.asarray(
                 np.mean(h, axis=(-2, -1)), dtype=np.complex128
             )
             out = self._detect(
-                (data / h).reshape(*lead, -1), gain=np.ones(lead, dtype=np.complex128)
+                (data / h).reshape(*lead, -1),
+                gain=np.ones(lead, dtype=np.complex128),
+                equalizer="pilot",
             )
             out["gain"] = mean_gain
             out["pilot_symbols"] = (pilots / mean_gain[..., None, None]).reshape(*lead, -1)
@@ -291,6 +297,7 @@ class OFDMReceiver(Receiver):
                 data.reshape(*lead, -1),
                 raw_pilots=None if pilots is None else pilots.reshape(*lead, -1),
                 reference_data=reference_data,
+                equalizer=mode,
             )
         return OFDMReceivedSymbols(receiver=self, **out)
 

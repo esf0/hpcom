@@ -335,6 +335,9 @@ Receivers and equalisation
    :math:`y_k = r_k/g`:
 
    ============== =================================================================
+   ``auto``       (default) ``pilot`` if the receiver has pilots, else ``data_aided``
+                  if the transmitted signal is supplied — ``Simulation`` always
+                  supplies it — else ``unit_power``
    ``none``       :math:`g = 1` (raw samples, in √W)
    ``unit_power`` :math:`g = \sqrt{\langle|r|^2\rangle/E_s}` — blind amplitude only;
                   biased at low SNR (it normalises signal *plus* noise)
@@ -344,8 +347,8 @@ Receivers and equalisation
                   nonlinear) phase rotation, pre-v1 ``nonlinear_shift``
    ============== =================================================================
 
-   ``ReceivedSymbols.gain`` reports :math:`g`; its phase is the mean phase
-   rotation of the link.
+   ``ReceivedSymbols.gain`` reports :math:`g` — its phase is the mean phase
+   rotation of the link — and ``ReceivedSymbols.equalizer`` the mode used.
 4. **Decision**: nearest constellation point (minimum Euclidean distance),
    then its bit label, or distribution-matcher decoding. A DM block whose
    decisions are not a valid codeword cannot be inverted; its bits are set to

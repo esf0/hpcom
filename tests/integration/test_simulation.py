@@ -279,23 +279,23 @@ def test_result_summary_is_json_serialisable():
 
 
 @pytest.mark.slow
-def test_mean_nonlinear_phase_rotation_is_removed_by_the_data_aided_equaliser(nonlinear_backend):
+def test_default_receiver_removes_the_mean_nonlinear_phase_rotation(nonlinear_backend):
     """Regression: at +2 dBm over 10×80 km the SPM phase rotation (~50°) must not be
-    mistaken for noise. Data-aided equalisation (pre-v1 ``nonlinear_shift``) recovers
-    the link; blind amplitude normalisation cannot."""
+    mistaken for noise. Simulation's default receiver ("auto" → data-aided, as pre-v1
+    ``nonlinear_shift``) removes it; blind amplitude normalisation cannot."""
     fiber = Fiber.ssmf(80.0, n_steps=80, backend=nonlinear_backend)
     link = Link.from_spans(10, fiber, EDFA(gain_db=16.0, noise_figure_db=4.5))
-    tx, rx = sc_pair(
-        n_symbols=4096,
-        launch_power_per_channel_dbm=2.0,
-        rx_kwargs={"cd_compensation_s2": link.total_dispersion_s2},
+    tx, _ = sc_pair(n_symbols=4096, launch_power_per_channel_dbm=2.0)
+    rx = SingleCarrierReceiver(
+        modulation_order=16, samples_per_symbol=4, cd_compensation_s2=link.total_dispersion_s2
     )
-    blind = Simulation(transmitter=tx, link=link, receiver=rx, seed=0).run()
-    aided = Simulation(
-        transmitter=tx, link=link, receiver=rx.replace(equalize="data_aided"), seed=0
+    default = Simulation(transmitter=tx, link=link, receiver=rx, seed=0).run()
+    blind = Simulation(
+        transmitter=tx, link=link, receiver=rx.replace(equalize="unit_power"), seed=0
     ).run()
-    assert aided.metrics.ber < 1e-2 < blind.metrics.ber
-    assert np.degrees(np.angle(aided.received.gain)) > 20
+    assert default.received.equalizer == "data_aided"
+    assert default.metrics.ber < 1e-2 < blind.metrics.ber
+    assert np.degrees(np.angle(default.received.gain)) > 20
 
 
 def test_duck_typed_link_components_run_and_are_recorded_by_repr():

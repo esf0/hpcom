@@ -20,6 +20,11 @@ Processing chain of every receiver:
 3. **Equalisation** by one complex gain ``g`` per stream (polarisation ×
    channel), ``y = raw / g``, chosen by ``equalize``:
 
+   ``"auto"`` (default)
+       ``"pilot"`` if the receiver has pilots, else ``"data_aided"`` if the
+       transmitted signal is supplied (as :class:`~hpcom.simulation.Simulation`
+       always does), else ``"unit_power"``. The mode actually used is
+       reported in :attr:`ReceivedSymbols.equalizer`.
    ``"none"``
        ``g = 1`` — raw samples (in √W, including launch power and link gain).
    ``"unit_power"``
@@ -65,8 +70,10 @@ from hpcom.transmitter import (
     Transmitter,
 )
 
-#: Per-stream complex-gain equaliser applied before decisions.
-EqualizerMode = Literal["none", "unit_power", "pilot", "data_aided"]
+#: An equaliser that is actually applied (``"auto"`` resolves to one of these).
+ResolvedEqualizer = Literal["none", "unit_power", "pilot", "data_aided"]
+#: Per-stream complex-gain equaliser selection (see the module docstring).
+EqualizerMode = Literal["auto", "none", "unit_power", "pilot", "data_aided"]
 
 
 class Detection(TypedDict):
@@ -76,6 +83,7 @@ class Detection(TypedDict):
     decisions: npt.NDArray[np.intp]
     bits: npt.NDArray[np.uint8]
     gain: npt.NDArray[np.complex128]
+    equalizer: ResolvedEqualizer
     pilot_symbols: npt.NDArray[np.complex128] | None
     dm_block_valid: npt.NDArray[np.bool_] | None
 
@@ -85,6 +93,7 @@ __all__ = [
     "PulseShapedReceiver",
     "ReceivedSymbols",
     "Receiver",
+    "ResolvedEqualizer",
     "SingleCarrierReceivedSymbols",
     "SingleCarrierReceiver",
 ]
@@ -113,8 +122,10 @@ class ReceivedSymbols(HpcomModel):
         Decoded information bits, ``(*streams, n_bits)``.
     gain
         Complex gain removed per stream (``symbols = raw / gain``), ``(*streams,)``.
-        With ``equalize="data_aided"`` its phase is the mean (e.g. nonlinear)
-        phase rotation of the link.
+        With a pilot or data-aided equaliser its phase is the mean (e.g.
+        nonlinear) phase rotation of the link.
+    equalizer
+        The equaliser that was applied (``"auto"`` resolved).
     pilot_symbols
         Equalised received pilots, ``(*streams, n_pilots)``, when pilots exist.
     dm_block_valid
@@ -127,6 +138,7 @@ class ReceivedSymbols(HpcomModel):
     decisions: IndexArrayView
     bits: UInt8ArrayView
     gain: ComplexArrayView
+    equalizer: ResolvedEqualizer
     pilot_symbols: ComplexArrayView | None = None
     dm_block_valid: BoolArrayView | None = None
 
@@ -152,8 +164,8 @@ class Receiver(ModulationSpec, ABC):
     polarization
         Must match the transmitter.
     equalize
-        Per-stream complex-gain equaliser: ``"none"``, ``"unit_power"``
-        (default), ``"pilot"``, or ``"data_aided"``.
+        Per-stream complex-gain equaliser: ``"auto"`` (default), ``"none"``,
+        ``"unit_power"``, ``"pilot"`` or ``"data_aided"`` (module docstring).
     cd_compensation_s2
         Accumulated ``Σ β₂L`` (s²) to remove; ``link.total_dispersion_s2``.
     cd_compensation_s3
@@ -161,7 +173,7 @@ class Receiver(ModulationSpec, ABC):
     """
 
     polarization: Polarization = "single"
-    equalize: EqualizerMode = "unit_power"
+    equalize: EqualizerMode = "auto"
     cd_compensation_s2: float = 0.0
     cd_compensation_s3: float = 0.0
 
@@ -175,8 +187,8 @@ class Receiver(ModulationSpec, ABC):
     ) -> ReceivedSymbols:
         """Demodulate ``field`` (sample period ``dt_s``).
 
-        ``reference`` (the transmitted signal) is used only by
-        ``equalize="data_aided"``.
+        ``reference`` (the transmitted signal) is used only by the data-aided
+        equaliser (``equalize="data_aided"``, or ``"auto"`` without pilots).
         """
 
     @abstractmethod
@@ -236,14 +248,19 @@ class Receiver(ModulationSpec, ABC):
         pilot_values: npt.NDArray[np.complex128] | None = None,
         reference_data: npt.NDArray[np.complex128] | None = None,
         gain: npt.NDArray[np.complex128] | None = None,
+        equalizer: ResolvedEqualizer | None = None,
     ) -> Detection:
         """Equalise, decide and decode ``(*streams, n)`` symbol-rate samples.
 
-        ``gain`` overrides the estimate of :attr:`equalize` (used by receivers
-        that equalise per subcarrier themselves).
+        ``gain`` (with the ``equalizer`` that produced it) overrides the
+        estimate — used by receivers that equalise per subcarrier themselves.
         """
+        has_pilots = (
+            raw_pilots is not None and pilot_values is not None and raw_pilots.shape[-1] > 0
+        )
+        mode = equalizer or self._resolve_equalizer(has_pilots, reference_data is not None)
         if gain is None:
-            gain = self._estimate_gain(raw_data, raw_pilots, pilot_values, reference_data)
+            gain = self._estimate_gain(mode, raw_data, raw_pilots, pilot_values, reference_data)
         data = raw_data / gain[..., None]
         pilots = None if raw_pilots is None else raw_pilots / gain[..., None]
         cfg = self.resolved_constellation
@@ -262,18 +279,27 @@ class Receiver(ModulationSpec, ABC):
             decisions=decisions,
             bits=bits.reshape(*lead, -1),
             gain=gain,
+            equalizer=mode,
             pilot_symbols=pilots,
             dm_block_valid=dm_valid,
         )
 
+    def _resolve_equalizer(self, has_pilots: bool, has_reference: bool) -> ResolvedEqualizer:
+        """The concrete equaliser for :attr:`equalize` (``"auto"`` resolution order in module docs)."""
+        if self.equalize != "auto":
+            return self.equalize
+        if has_pilots:
+            return "pilot"
+        return "data_aided" if has_reference else "unit_power"
+
     def _estimate_gain(
         self,
+        mode: ResolvedEqualizer,
         raw: npt.NDArray[np.complex128],
         raw_pilots: npt.NDArray[np.complex128] | None,
         pilot_values: npt.NDArray[np.complex128] | None,
         reference: npt.NDArray[np.complex128] | None,
     ) -> npt.NDArray[np.complex128]:
-        mode = self.equalize
         gain: npt.NDArray[np.complex128]
         if mode == "none":
             return np.ones(raw.shape[:-1], dtype=np.complex128)

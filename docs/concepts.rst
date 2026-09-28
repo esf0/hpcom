@@ -83,8 +83,11 @@ Receivers
 subset of ``channels``) and :class:`~hpcom.OFDMReceiver` mirror the
 transmitters. All compensate chromatic dispersion
 (``cd_compensation_s2``/``_s3``) and equalise one complex gain per stream
-(``equalize="none" | "unit_power" | "pilot" | "data_aided"``; see
-:doc:`physics`). ``receive(field, dt_s, reference=sent)`` returns
+(``equalize="auto" | "none" | "unit_power" | "pilot" | "data_aided"``; see
+:doc:`physics`). The default ``"auto"`` uses the receiver's pilots if it has
+any, otherwise the transmitted symbols when they are supplied (as in every
+``Simulation`` — the removal of the mean nonlinear phase rotation that
+pre-v1 hpcom always applied), otherwise blind amplitude normalisation. ``receive(field, dt_s, reference=sent)`` returns
 :class:`~hpcom.ReceivedSymbols`: equalised symbols, decisions, decoded bits
 and the removed gain per stream.
 

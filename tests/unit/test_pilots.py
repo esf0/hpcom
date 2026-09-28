@@ -90,9 +90,16 @@ def test_pilot_equaliser_removes_an_arbitrary_complex_gain(gain):
 def test_unit_power_equaliser_cannot_remove_a_phase_rotation():
     """Contrast with the pilot equaliser: blind amplitude normalisation leaves the phase."""
     cfg = PilotConfig(period=16)
-    tx, rx = sc_pair(modulation_order=16, n_symbols=1024, seed=2, pilots=cfg)
+    tx, rx = sc_pair(
+        modulation_order=16,
+        n_symbols=1024,
+        seed=2,
+        pilots=cfg,
+        rx_kwargs={"equalize": "unit_power"},
+    )
     sent = tx.generate()
     received = rx.receive(sent.field * np.exp(1j * 0.5), sent.dt_s)
+    assert received.equalizer == "unit_power"
     assert np.mean(received.bits != sent.bits) > 0.1
 
 
