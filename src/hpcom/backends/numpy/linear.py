@@ -13,6 +13,7 @@ import numpy as np
 
 from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
+    ALL_METHODS,
     Propagator,
     check_field_shape,
     linear_operator_exponent,
@@ -24,6 +25,7 @@ class LinearNumpyPropagator(Propagator):
     """Linear (dispersion + loss) propagation; the Kerr term is ignored."""
 
     name = "numpy-linear"
+    supported_methods = ALL_METHODS  # exact: the scheme and steps are irrelevant
 
     def propagate(
         self,

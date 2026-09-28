@@ -29,10 +29,11 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable
 
-from hpcom.backends.base import BackendUnavailableError, Propagator
+from hpcom.backends.base import BackendUnavailableError, CPUFallbackWarning, Propagator
 
 __all__ = [
     "BackendUnavailableError",
+    "CPUFallbackWarning",
     "Propagator",
     "available_propagators",
     "get_propagator",

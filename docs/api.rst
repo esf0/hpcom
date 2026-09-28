@@ -52,6 +52,9 @@ Link components
 .. automodule:: hpcom.link
    :members:
 
+.. automodule:: hpcom.numerics
+   :members:
+
 Simulation, results, metrics
 ----------------------------
 

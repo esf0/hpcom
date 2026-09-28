@@ -1,4 +1,4 @@
-"""Symmetric split-step Fourier propagation (scalar NLSE and Manakov) in NumPy.
+"""Split-step Fourier propagation (scalar NLSE and Manakov) in NumPy.
 
 This is hpcom's reference nonlinear propagator: dependency-free, deterministic,
 and the implementation other backends (TensorFlow, future JAX/Rust) are
@@ -16,9 +16,15 @@ with ``D(h) = IFFT · exp(h·L̂(ω)) · FFT`` and
 :func:`~hpcom.backends.base.effective_gamma_per_m`. For uniform steps every
 inner linear sub-step is ``D(h)`` and is computed once.
 
-``N`` does not change ``|A|``, so running the same steps in reverse order
-with ``h → −h`` is the exact inverse: backward propagation undoes forward
-propagation to rounding error. Derivation and order of accuracy:
+Every other ``fiber.scheme`` (Kerr position, effective Kerr length,
+filtered Kerr step, compositions) and step placement runs the general
+sub-step sequence of :func:`hpcom.backends.base.split_step_sequence`,
+``D(m_J) N(c_J) … N(c_1) D(m_0)``, optionally with low-pass filtered power
+in ``N``.
+
+``N`` does not change ``|A|``, so running the same sub-steps in reverse order
+with negated lengths is the exact inverse: backward propagation undoes
+forward propagation to rounding error. Derivation and order of accuracy:
 ``docs/numerics.rst``.
 """
 
@@ -28,19 +34,36 @@ import numpy as np
 
 from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
+    COMPOSITION_WEIGHTS,
     Propagator,
     check_field_shape,
     effective_gamma_per_m,
+    kerr_filter_response,
     linear_operator_exponent,
-    merged_linear_steps,
+    split_step_sequence,
     step_sizes_m,
+    uses_fast_path,
 )
+
+#: Precompute every distinct linear operator when there are at most this many.
+_MAX_CACHED_OPERATORS = 16
+
+
+def _kerr_power(a: np.ndarray, dual: bool, response: np.ndarray | None) -> np.ndarray:
+    """|A|² (Manakov: |A_x|²+|A_y|²), low-pass filtered when a Kerr filter is set."""
+    power: np.ndarray = a.real**2 + a.imag**2
+    if dual:
+        power = power.sum(axis=-2, keepdims=True)
+    if response is not None:
+        power = np.fft.ifft(np.fft.fft(power, axis=-1) * response, axis=-1).real
+    return power
 
 
 class NumpySSFMPropagator(Propagator):
-    """Scalar NLSE / Manakov symmetric SSFM (see module docstring)."""
+    """Scalar NLSE / Manakov split-step schemes (see module docstring)."""
 
     name = "numpy"
+    supported_methods = frozenset(COMPOSITION_WEIGHTS)
 
     def propagate(
         self,
@@ -51,29 +74,59 @@ class NumpySSFMPropagator(Propagator):
     ) -> ComplexArray:
         a = np.array(field, dtype=np.complex128)  # always a private copy
         check_field_shape(a, fiber)
-        sizes = step_sizes_m(fiber, direction)
+        sizes = step_sizes_m(fiber, direction)  # validates n_steps
         exponent = linear_operator_exponent(a.shape[-1], dt_s, fiber)
         gamma_eff = effective_gamma_per_m(fiber)
         dual = fiber.polarization == "dual"
-        uniform = fiber.step_distribution == "uniform"
-        if uniform:
-            d_full = np.exp(exponent * sizes[0])
-            d_half = np.exp(exponent * (sizes[0] / 2.0))
-        else:
-            merged = merged_linear_steps(sizes)
+        if uses_fast_path(fiber):
+            return self._uniform(a, exponent, sizes, gamma_eff, dual)
+        linear, kerr = split_step_sequence(fiber, direction)
+        response = kerr_filter_response(a.shape[-1], dt_s, fiber)
+        return self._sequence(a, exponent, linear, kerr, gamma_eff, dual, response)
 
-        spectrum = np.fft.fft(a, axis=-1) * (d_half if uniform else np.exp(exponent * merged[0]))
+    @staticmethod
+    def _uniform(
+        a: np.ndarray, exponent: np.ndarray, sizes: np.ndarray, gamma_eff: float, dual: bool
+    ) -> ComplexArray:
+        """``D(h/2) [N(h) D(h)]^{K−1} N(h) D(h/2)`` with one precomputed ``D(h)``."""
+        h = sizes[0]
+        d_full = np.exp(exponent * h)
+        d_half = np.exp(exponent * (h / 2.0))
+        spectrum = np.fft.fft(a, axis=-1) * d_half
         n_steps = sizes.size
         for step in range(n_steps):
             a = np.fft.ifft(spectrum, axis=-1)
-            power = a.real**2 + a.imag**2
-            if dual:
-                power = power.sum(axis=-2, keepdims=True)  # |A_x|² + |A_y|²
-            a *= np.exp(1j * (gamma_eff * sizes[step]) * power)
+            a *= np.exp(1j * (gamma_eff * h) * _kerr_power(a, dual, None))
             spectrum = np.fft.fft(a, axis=-1)
-            if uniform:
-                spectrum *= d_full if step < n_steps - 1 else d_half
-            else:
-                spectrum *= np.exp(exponent * merged[step + 1])
+            spectrum *= d_full if step < n_steps - 1 else d_half
+        out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
+        return out
+
+    @staticmethod
+    def _sequence(
+        a: np.ndarray,
+        exponent: np.ndarray,
+        linear: np.ndarray,
+        kerr: np.ndarray,
+        gamma_eff: float,
+        dual: bool,
+        response: np.ndarray | None,
+    ) -> ComplexArray:
+        """``D(m_J) N(c_J) … D(m_1) N(c_1) D(m_0)`` for any sub-step sequence."""
+        distinct = np.unique(linear)
+        cache = (
+            {float(m): np.exp(exponent * m) for m in distinct}
+            if distinct.size <= _MAX_CACHED_OPERATORS
+            else None
+        )
+
+        def operator(m: float) -> np.ndarray:
+            return cache[float(m)] if cache is not None else np.exp(exponent * m)
+
+        spectrum = np.fft.fft(a, axis=-1) * operator(linear[0])
+        for j, c in enumerate(kerr):
+            a = np.fft.ifft(spectrum, axis=-1)
+            a *= np.exp(1j * (gamma_eff * c) * _kerr_power(a, dual, response))
+            spectrum = np.fft.fft(a, axis=-1) * operator(linear[j + 1])
         out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
         return out

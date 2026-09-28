@@ -93,6 +93,98 @@ and TensorFlow agree to 1e-12 for every placement;
 the same scheme, agrees to 1e-14.]
 
 
+Scheme options
+--------------
+
+``Fiber.scheme`` (:class:`hpcom.numerics.Scheme`; a method name is accepted
+as shorthand) selects how each step is integrated. The default is the
+symmetric step :eq:`strang-step`. The options below all keep the split-step
+structure, so both backends run them through one kernel and backward
+propagation stays exact.
+
+Kerr-step position :math:`r`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``nonlinear_position`` :math:`= r \in [0,1]` puts the Kerr step of step
+:math:`k` at :math:`z_{k-1} + r h_k`:
+
+.. math::
+   :label: general-step
+
+   S_r(h) = D\big((1-r)h\big)\,N(c)\,D(rh),
+
+with :math:`c = h` unless the effective length (below) is used. Over a span
+the linear sub-steps merge into
+
+.. math::
+
+   m_0 = r h_1,\qquad m_k = (1-r)h_k + r h_{k+1},\qquad m_K = (1-r)h_K,
+
+and the span is :math:`D(m_K)N(c_K)\cdots N(c_1)D(m_0)`
+(:func:`hpcom.backends.base.split_step_sequence`). :math:`r = 1/2` is the
+symmetric step (second order); :math:`r = 0` is the asymmetric step
+:math:`D(h)N(h)` [Asif2011]_ and every :math:`r \ne 1/2` is **first order**:
+the BCH expansion of :eq:`general-step` keeps a term
+:math:`h^2(r-\tfrac12)[\hat L,\hat N]`.
+[``test_kerr_position_sets_the_order``: ratio 2.0 for :math:`r = 0, 0.3`,
+4.0 for :math:`r = 1/2`.]
+
+*DBP convention.* The DBP literature measures the position along the
+back-propagation direction, e.g. :math:`E(z+h) = e^{(1-r)h\hat D}e^{h\hat
+N}e^{rh\hat D}E(z)` [DuLowery2010]_, [Asif2011]_, which starts from the
+span *output*: their :math:`r_\mathrm{DBP} = 1 - r`.
+
+Effective Kerr length
+^^^^^^^^^^^^^^^^^^^^^
+
+With loss, the power at the Kerr point is :math:`P(z_{k-1})e^{-\alpha r h}`,
+while the exact SPM phase of the step (no dispersion) is
+:math:`\gamma P(z_{k-1}) L_\mathrm{eff}(h)`. ``kerr_length="effective"``
+uses the length that makes them equal:
+
+.. math::
+   :label: effective-length
+
+   c(h) = e^{\alpha r h}\,\frac{1 - e^{-\alpha h}}{\alpha}
+        = \frac{e^{\alpha r h} - e^{-\alpha(1-r)h}}{\alpha},
+   \qquad c = \frac{2}{\alpha}\sinh\frac{\alpha h}{2}\ \text{at } r = \tfrac12,
+
+with :math:`c = L_\mathrm{eff}(h)` at :math:`r = 0`. A loss-only span with
+self-phase modulation is then **exact in a single step**, whatever
+:math:`r` [``test_effective_kerr_length_makes_lossy_spm_exact_in_one_step``:
+1e-13; the step length is 26–198 % off]. At :math:`r = 1/2`,
+:math:`c = h + \alpha^2h^3/24 + O(h^5)` is odd in :math:`h`, so the step
+stays symmetric and second order, with a slightly smaller constant.
+
+Filtered Kerr step
+^^^^^^^^^^^^^^^^^^
+
+``kerr_filter_bandwidth_hz`` :math:`= f_c` replaces the power in the Kerr
+phase by a low-pass filtered one,
+
+.. math::
+
+   N_f(c)A = A\,\exp\!\big(i\gamma_\mathrm{eff}\,c\;\mathcal F^{-1}[H\,\mathcal F P]\big),
+   \qquad
+   H(f) = e^{-\frac{\ln 2}{2}(f/f_c)^2}\ \text{(gaussian)}\ \ \text{or}\ \
+   [\,|f| \le f_c\,]\ \text{(rectangular)},
+
+after the filtered back-propagation of [DuLowery2010]_ (the filter shape here
+is hpcom's choice). It is still a pure phase — energy is conserved and the
+step is exactly invertible [``test_filtered_kerr_step_is_a_pure_phase``] —
+but it no longer solves the NLSE as :math:`h \to 0`: a DBP tool, not a
+propagation scheme. Related: the enhanced SSFM of [Secondini2016]_ filters
+the intensity with optimised FIR taps.
+
+Backward propagation
+^^^^^^^^^^^^^^^^^^^^
+
+Backward, the same Kerr points are visited in reverse: the traversal uses
+position :math:`1-r` and negated lengths, i.e. the exact inverse
+:math:`S_r(h)^{-1} = D(-rh)\,N(-c)\,D(-(1-r)h)` — for every position, Kerr
+length and filter [``test_every_split_step_scheme_is_exactly_invertible``].
+
+
 Order of accuracy
 -----------------
 
@@ -133,7 +225,7 @@ Kerr phase over a step is :math:`\gamma P(z_{k-1}) L_\mathrm{eff}(h)`,
 
 is consistent with the :math:`O(h^3)` local error, but for one step per
 80 km span (:math:`\alpha h \approx 3.7`) the phase is 40 % low — relevant for
-coarse DBP (see *Planned schemes*).
+coarse DBP — the effective Kerr length removes it (see *Scheme options*).
 
 **Asymptotic vs. practical regime.** The :math:`O(K^{-2})` law holds once
 the steps are small against the dispersion and nonlinear lengths. At coarse
@@ -283,6 +375,34 @@ k = 1/3         18.3  27.5  43.3  55.5  69.4
 the optimum can differ; ``Simulation.evaluate`` compares placements on the
 same received field.
 
+Scheme options at coarse steps, same link (SNR in dB; :math:`r` in the
+fiber's coordinate, :math:`r = 0` at the span input)
+[``test_effective_kerr_length_near_the_span_input_fixes_one_step_dbp``,
+``test_effective_kerr_length_with_constant_local_error_steps``,
+``test_filtered_kerr_step_helps_only_at_very_coarse_steps``]:
+
+======================================== ====== ====== ====== ====== ====== ======
+steps/span, Kerr length                  r=0    r=0.1  r=0.2  r=0.3  r=0.5  r=1
+======================================== ====== ====== ====== ====== ====== ======
+1, step                                  4.4    9.3    13.9   17.4   18.3   16.7
+1, effective                             20.0   23.3   22.9   19.8   16.4   18.1
+2, step                                  12.3   15.4   18.8   22.5   24.1   18.2
+2, effective                             21.8   24.0   26.1   26.9   23.2   17.9
+4, step                                  20.3   22.9   26.1   30.5   37.6   22.5
+4, effective                             27.4   29.5   32.3   36.2   38.1   24.8
+======================================== ====== ====== ====== ====== ====== ======
+
+* The effective length turns one-step-per-span DBP from 18.3 into 23.3 dB,
+  with the Kerr step near the span input (:math:`r \approx 0.1`), where the
+  power — and so the nonlinearity — is concentrated.
+* Effective length with constant-local-error steps (:math:`k = 1/3`,
+  :math:`r = 1/2`): 27.2 dB at 2 steps/span and 46.6 dB at 4 (default 24.1
+  and 37.6).
+* A Gaussian intensity filter (effective length, :math:`r = 1/2`) helps only
+  at the coarsest settings: at 1 step/span 20.2 / 18.5 / 17.2 dB for
+  :math:`f_c` = 5 / 10 / 20 GHz (16.4 unfiltered); at 4 steps/span it costs
+  up to 15 dB (23.2 at 5 GHz vs 38.1).
+
 
 Backends and GPU policy
 -----------------------
@@ -303,6 +423,10 @@ Backends and GPU policy
      - ✓
      - ✓ (GPU)
      - exact, no steps
+   * - Kerr position, effective Kerr length, intensity filter
+     - ✓
+     - ✓ (GPU)
+     - exact, no steps
 
 Policy for new schemes: a scheme that can run on a GPU gets its GPU
 implementation (TensorFlow now, JAX planned) and must pass the conformance
@@ -316,12 +440,6 @@ Planned schemes
 
 Not implemented yet; listed with the literature they follow.
 
-* **Effective-length Kerr step** — replace :math:`h` in :math:`N(h)` by
-  :math:`2\sinh(\alpha h/2)/\alpha`, which makes the midpoint rule exact for
-  pure SPM with loss (still second order); matters for coarse DBP.
-* **Nonlinear-step position** :math:`r` within a step (asymmetric
-  :math:`r = 0`, symmetric :math:`r = 1/2`, optimised in between) and
-  **filtered DBP** (low-pass filtered power in the Kerr step) [DuLowery2010]_.
 * **Bandwidth-aware first step** :math:`h_1 = \Phi_\mathrm{FWM}/\big(|\beta_2|
   (2\pi B)^2\big)` with nonlinear-phase or constant-local-error updates
   [Musetti2018]_.
@@ -379,6 +497,10 @@ References
 .. [Muslu2005] G. M. Muslu, H. A. Erbay, "Higher-order split-step Fourier
    schemes for the generalized nonlinear Schrödinger equation," *Math.
    Comput. Simul.* 67(6), 581–595, 2005.
+
+.. [Secondini2016] M. Secondini, S. Rommel, G. Meloni, F. Fresi, E. Forestieri,
+   L. Potì, "Single-step digital backpropagation for nonlinearity
+   mitigation," *Photon. Netw. Commun.* 31, 493–502, 2016.
 
 .. [Shao2014] J. Shao, X. Liang, S. Kumar, "Comparison of split-step Fourier
    schemes for simulating fiber optic communication systems," *IEEE Photon.

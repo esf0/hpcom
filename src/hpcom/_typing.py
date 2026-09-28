@@ -26,6 +26,21 @@ Polarization: TypeAlias = Literal["single", "dual"]
 StepDistribution: TypeAlias = Literal["uniform", "logarithmic"]
 
 
+class SchemeLike(Protocol):
+    """Numerical scheme of a span as read by propagators (see :class:`hpcom.numerics.Scheme`)."""
+
+    @property
+    def method(self) -> str: ...
+    @property
+    def nonlinear_position(self) -> float: ...
+    @property
+    def kerr_length(self) -> str: ...
+    @property
+    def kerr_filter_bandwidth_hz(self) -> float | None: ...
+    @property
+    def kerr_filter_shape(self) -> str: ...
+
+
 @runtime_checkable
 class FiberLike(Protocol):
     """Minimal fiber interface a :class:`Propagator` depends on.
@@ -58,6 +73,8 @@ class FiberLike(Protocol):
     def step_distribution(self) -> StepDistribution: ...
     @property
     def step_log_factor(self) -> float: ...
+    @property
+    def scheme(self) -> SchemeLike: ...
     @property
     def polarization(self) -> Polarization: ...
 

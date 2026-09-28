@@ -26,6 +26,7 @@ from hpcom import (
     Fiber,
     Link,
     PilotConfig,
+    Scheme,
     Simulation,
     SingleCarrierTransmitter,
     WDMConfig,
@@ -197,6 +198,41 @@ def test_equal_nonlinear_phase_placement_over_concentrates_the_steps(sc_nonlinea
         for name, kw in (("uniform", {}), ("nlp", NLP), ("cle", CLE))
     }
     assert snr["nlp"] < snr["uniform"] < snr["cle"]
+
+
+EFFECTIVE = Scheme(kerr_length="effective")
+
+
+def test_effective_kerr_length_near_the_span_input_fixes_one_step_dbp(sc_nonlinear):
+    """One step per span: ≈ 18.3 dB (default) → ≈ 23.3 dB with the effective Kerr length at r = 0.1.
+
+    The effective length makes the lumped Kerr phase equal the span's SPM phase;
+    placing it near the input (high power) keeps its interaction with dispersion right.
+    """
+    default = _dbp_snr(sc_nonlinear, steps_per_span=1, samples_per_symbol=4)
+    tuned = _dbp_snr(
+        sc_nonlinear,
+        steps_per_span=1,
+        samples_per_symbol=4,
+        scheme=Scheme(nonlinear_position=0.1, kerr_length="effective"),
+    )
+    assert tuned > default + 3
+
+
+def test_effective_kerr_length_with_constant_local_error_steps(sc_nonlinear):
+    """4 steps/span: ≈ 37.6 dB (default) → ≈ 46.6 dB."""
+    default = _dbp_snr(sc_nonlinear, steps_per_span=4, samples_per_symbol=4)
+    tuned = _dbp_snr(sc_nonlinear, steps_per_span=4, samples_per_symbol=4, scheme=EFFECTIVE, **CLE)
+    assert tuned > default + 6
+
+
+def test_filtered_kerr_step_helps_only_at_very_coarse_steps(sc_nonlinear):
+    """5 GHz intensity filter: +3.7 dB at 1 step/span, −15 dB at 4 steps/span (after Du & Lowery)."""
+    filtered = Scheme(kerr_length="effective", kerr_filter_bandwidth_hz=5e9)
+    for steps, helps in ((1, True), (4, False)):
+        plain = _dbp_snr(sc_nonlinear, steps_per_span=steps, samples_per_symbol=4, scheme=EFFECTIVE)
+        filt = _dbp_snr(sc_nonlinear, steps_per_span=steps, samples_per_symbol=4, scheme=filtered)
+        assert (filt > plain + 2) if helps else (filt < plain - 5)
 
 
 def test_dbp_inverts_a_link_simulated_with_logarithmic_steps():

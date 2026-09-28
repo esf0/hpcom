@@ -14,6 +14,10 @@ class BackendUnavailableError(RuntimeError):
     """A registered backend cannot be used because its dependencies are missing."""
 
 
+class CPUFallbackWarning(RuntimeWarning):
+    """A span ran on the NumPy (CPU) backend because the requested one lacks its scheme."""
+
+
 class Propagator(ABC):
     """Backend-agnostic propagation of an optical field through one fiber span.
 
@@ -36,6 +40,11 @@ class Propagator(ABC):
 
     #: Stable identifier; conventionally equal to the registry name.
     name: str = ""
+
+    #: ``Scheme.method`` values this backend implements (with every Kerr-step
+    #: option and step placement). Others run on NumPy with a
+    #: :class:`CPUFallbackWarning`.
+    supported_methods: frozenset[str] = frozenset({"ssfm"})
 
     @abstractmethod
     def propagate(
@@ -140,6 +149,85 @@ def check_field_shape(field: np.ndarray, fiber: FiberLike) -> None:
         raise ValueError(f"unknown fiber polarization {fiber.polarization!r}")
 
 
+#: Sub-step weights of the symmetric compositions of the Strang step, per method.
+COMPOSITION_WEIGHTS: dict[str, tuple[float, ...]] = {"ssfm": (1.0,)}
+
+#: Every ``Scheme.method`` hpcom defines.
+ALL_METHODS: frozenset[str] = frozenset(COMPOSITION_WEIGHTS)
+
+
+def attenuation_per_m(fiber: FiberLike) -> float:
+    """Power attenuation α in 1/m (``P(z) = P(0)·e^{−αz}``)."""
+    return float(fiber.alpha_db_per_km * np.log(10.0) / 10.0 / 1e3)
+
+
+def uses_fast_path(fiber: FiberLike) -> bool:
+    """Uniform steps with the plain symmetric split step: one precomputed ``D(h)``."""
+    s = fiber.scheme
+    return (
+        fiber.step_distribution == "uniform"
+        and s.method == "ssfm"
+        and s.nonlinear_position == 0.5
+        and s.kerr_length == "step"
+        and s.kerr_filter_bandwidth_hz is None
+    )
+
+
+def split_step_sequence(
+    fiber: FiberLike, direction: Direction
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    r"""Signed linear and Kerr sub-step lengths of a span, in the order they are applied.
+
+    Returns ``(m, c)`` with ``m`` of length ``J+1`` and ``c`` of length ``J``:
+
+    .. math:: A_\text{out} = D(m_J)\,N(c_J)\cdots D(m_1)\,N(c_1)\,D(m_0)\,A_\text{in}.
+
+    Each step :math:`h` (split into sub-steps :math:`w_i h` for compositions)
+    becomes linear :math:`r h`, Kerr, linear :math:`(1-r)h`, with :math:`r`
+    the Kerr position in the fiber's coordinate — :math:`1-r` along the
+    traversal when going backward, so that backward is the exact inverse.
+    ``c`` is the step length, or the effective length
+    :math:`(e^{\alpha r|h|} - e^{-\alpha(1-r)|h|})/\alpha` with the sign of
+    :math:`h`. See ``docs/numerics.rst``.
+    """
+    scheme = fiber.scheme
+    if scheme.method not in COMPOSITION_WEIGHTS:
+        raise ValueError(f"{scheme.method!r} is not a split-step method")
+    sizes = step_sizes_m(fiber, direction)
+    weights = np.asarray(COMPOSITION_WEIGHTS[scheme.method], dtype=np.float64)
+    sub = (sizes[:, None] * weights[None, :]).ravel()
+    r = float(scheme.nonlinear_position)
+    r_trav = r if direction == "forward" else 1.0 - r
+    pre, post = r_trav * sub, (1.0 - r_trav) * sub
+    linear = np.empty(sub.size + 1)
+    linear[0], linear[-1] = pre[0], post[-1]
+    linear[1:-1] = post[:-1] + pre[1:]
+    alpha = attenuation_per_m(fiber)
+    if scheme.kerr_length == "step" or alpha == 0.0:
+        return linear, sub
+    mag = np.abs(sub)
+    kerr = np.sign(sub) * (np.exp(alpha * r * mag) - np.exp(-alpha * (1.0 - r) * mag)) / alpha
+    return linear, kerr
+
+
+def kerr_filter_response(
+    n_samples: int, dt_s: float, fiber: FiberLike
+) -> npt.NDArray[np.float64] | None:
+    """Real, even transfer function of the Kerr-step intensity filter (``None``: no filter)."""
+    scheme = fiber.scheme
+    fc = scheme.kerr_filter_bandwidth_hz
+    if fc is None:
+        return None
+    f = np.fft.fftfreq(n_samples, d=dt_s)
+    if scheme.kerr_filter_shape == "gaussian":
+        response: npt.NDArray[np.float64] = np.exp(-np.log(2.0) / 2.0 * (f / fc) ** 2)
+        return response
+    if scheme.kerr_filter_shape == "rectangular":
+        window: npt.NDArray[np.float64] = (np.abs(f) <= fc).astype(np.float64)
+        return window
+    raise ValueError(f"unknown kerr_filter_shape {scheme.kerr_filter_shape!r}")
+
+
 def linear_operator_exponent(
     n_samples: int, dt_s: float, fiber: FiberLike
 ) -> npt.NDArray[np.complex128]:
@@ -151,7 +239,7 @@ def linear_operator_exponent(
     term is sign-convention independent.
     """
     omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
-    alpha_per_m = fiber.alpha_db_per_km * np.log(10.0) / 10.0 / 1e3
+    alpha_per_m = attenuation_per_m(fiber)
     beta3 = fiber.beta3_s3_per_m
     exponent: npt.NDArray[np.complex128] = (
         -1j * fiber.beta1_s_per_m * omega

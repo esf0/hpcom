@@ -24,6 +24,17 @@ GOLDEN = Path(__file__).parents[1] / "numerical" / "_data" / "tf_parity_v0.npz"
 
 
 @dataclass(frozen=True)
+class StubScheme:
+    """Duck-typed :class:`~hpcom._typing.SchemeLike` (the default symmetric split step)."""
+
+    method: str = "ssfm"
+    nonlinear_position: float = 0.5
+    kerr_length: str = "step"
+    kerr_filter_bandwidth_hz: float | None = None
+    kerr_filter_shape: str = "gaussian"
+
+
+@dataclass(frozen=True)
 class StubFiber:
     """Duck-typed :class:`~hpcom._typing.FiberLike` (independent of :class:`hpcom.Fiber`)."""
 
@@ -36,6 +47,7 @@ class StubFiber:
     n_steps: int = 100
     step_distribution: str = "uniform"
     step_log_factor: float = 1.0
+    scheme: StubScheme = StubScheme()
     polarization: str = "single"
 
 
@@ -379,6 +391,131 @@ def test_logarithmic_steps_without_loss_are_uniform(nonlinear_backend):
         rtol=0,
         atol=1e-13 * np.max(np.abs(field)),
     )
+
+
+# ---------------------------------------------------------------------------
+# Split-step scheme options (Kerr position, Kerr length, intensity filter)
+# ---------------------------------------------------------------------------
+
+SCHEMES = {
+    "default": StubScheme(),
+    "effective": StubScheme(kerr_length="effective"),
+    "r0-step": StubScheme(nonlinear_position=0.0),
+    "r0.3-effective": StubScheme(nonlinear_position=0.3, kerr_length="effective"),
+    "filtered-gaussian": StubScheme(kerr_length="effective", kerr_filter_bandwidth_hz=20e9),
+    "filtered-rectangular": StubScheme(
+        kerr_filter_bandwidth_hz=20e9, kerr_filter_shape="rectangular"
+    ),
+}
+
+
+def _scheme_params():
+    return [pytest.param(sch, id=name) for name, sch in SCHEMES.items()]
+
+
+def _scheme_fiber(scheme: StubScheme, polarization: str = "dual") -> StubFiber:
+    return StubFiber(
+        length_km=80.0,
+        alpha_db_per_km=0.2,
+        beta3_s3_per_m=1.2e-40,
+        n_steps=13,
+        polarization=polarization,
+        scheme=scheme,
+        **PLACEMENTS["log-k1/3"],
+    )
+
+
+@pytest.mark.parametrize("scheme", _scheme_params())
+@pytest.mark.parametrize("polarization", ["single", "dual"])
+def test_every_split_step_scheme_is_exactly_invertible(nonlinear_backend, polarization, scheme):
+    fiber = _scheme_fiber(scheme, polarization)
+    shape = (1024,) if polarization == "single" else (2, 1024)
+    field = _random_field(shape, 5e-2)
+    prop = get_propagator(nonlinear_backend)
+    back = prop.propagate(
+        prop.propagate(field, fiber, dt_s=1e-12), fiber, dt_s=1e-12, direction="backward"
+    )
+    np.testing.assert_allclose(back, field, rtol=0, atol=1e-12 * np.max(np.abs(field)))
+
+
+@pytest.mark.parametrize("scheme", _scheme_params())
+def test_schemes_agree_with_numpy_reference(nonlinear_backend, scheme):
+    fiber = _scheme_fiber(scheme)
+    field = _random_field((2, 2048), 0.1)
+    ref = get_propagator("numpy").propagate(field, fiber, dt_s=1e-12)
+    out = get_propagator(nonlinear_backend).propagate(field, fiber, dt_s=1e-12)
+    np.testing.assert_allclose(out, ref, rtol=0, atol=1e-12 * np.max(np.abs(ref)))
+
+
+@pytest.mark.parametrize("polarization", ["single", "dual"])
+@pytest.mark.parametrize("r", [0.0, 0.3, 0.5, 1.0])
+def test_effective_kerr_length_makes_lossy_spm_exact_in_one_step(
+    nonlinear_backend, r, polarization
+):
+    """β₂ = 0: A(L) = A(0)·e^{−αL/2}·exp(iγ_eff P(0) L_eff) — one step, any Kerr position."""
+    fiber = StubFiber(
+        length_km=80.0,
+        alpha_db_per_km=0.2,
+        beta2_s2_per_m=0.0,
+        n_steps=1,
+        polarization=polarization,
+        scheme=StubScheme(nonlinear_position=r, kerr_length="effective"),
+    )
+    shape = (512,) if polarization == "single" else (2, 512)
+    field = _random_field(shape, 0.05)
+    alpha = 0.2 * np.log(10) / 10 / 1e3
+    l_eff = (1 - np.exp(-alpha * 80e3)) / alpha
+    power = np.abs(field) ** 2
+    gamma = 1.27e-3
+    if polarization == "dual":
+        power, gamma = power.sum(axis=0, keepdims=True), gamma * 8 / 9
+    expected = field * np.exp(-alpha * 80e3 / 2) * np.exp(1j * gamma * power * l_eff)
+    out = get_propagator(nonlinear_backend).propagate(field, fiber, dt_s=1e-12)
+    np.testing.assert_allclose(out, expected, rtol=0, atol=1e-13 * np.max(np.abs(expected)))
+
+
+@pytest.mark.parametrize(
+    ("scheme", "expected_ratio"),
+    [
+        pytest.param(StubScheme(kerr_length="effective"), 4.0, id="r0.5-effective-order2"),
+        pytest.param(StubScheme(nonlinear_position=0.0), 2.0, id="r0-order1"),
+        pytest.param(
+            StubScheme(nonlinear_position=0.3, kerr_length="effective"), 2.0, id="r0.3-order1"
+        ),
+    ],
+)
+def test_kerr_position_sets_the_order(nonlinear_backend, scheme, expected_ratio):
+    """Symmetric (r = 1/2) is second order with either Kerr length; any other r is first order."""
+    errors = _order_errors(nonlinear_backend, {"scheme": scheme}, (80, 160, 320))
+    ratios = [a / b for a, b in itertools.pairwise(errors)]
+    assert all(0.93 * expected_ratio < q < 1.15 * expected_ratio for q in ratios), ratios
+
+
+def test_wide_intensity_filter_is_no_filter(nonlinear_backend):
+    field = _random_field((2, 1024), 5e-2)
+    plain = _scheme_fiber(StubScheme(kerr_length="effective"))
+    wide = replace(plain, scheme=StubScheme(kerr_length="effective", kerr_filter_bandwidth_hz=1e18))
+    prop = get_propagator(nonlinear_backend)
+    np.testing.assert_allclose(
+        prop.propagate(field, wide, dt_s=1e-12),
+        prop.propagate(field, plain, dt_s=1e-12),
+        rtol=0,
+        atol=1e-13 * np.max(np.abs(field)),
+    )
+
+
+@pytest.mark.parametrize("shape", ["gaussian", "rectangular"])
+def test_filtered_kerr_step_is_a_pure_phase(nonlinear_backend, shape):
+    """Without loss the filtered Kerr step still conserves energy (it only rotates the phase)."""
+    fiber = StubFiber(
+        length_km=200.0,
+        n_steps=40,
+        polarization="dual",
+        scheme=StubScheme(kerr_filter_bandwidth_hz=10e9, kerr_filter_shape=shape),
+    )
+    field = _random_field((2, 2048), 3e-2)
+    out = get_propagator(nonlinear_backend).propagate(field, fiber, dt_s=1e-12)
+    np.testing.assert_allclose(np.sum(np.abs(out) ** 2), np.sum(np.abs(field) ** 2), rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------

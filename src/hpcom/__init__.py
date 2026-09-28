@@ -33,6 +33,7 @@ from hpcom.link import Link
 from hpcom.metrics import Metrics, StreamMetrics
 from hpcom.modulation import ConstantCompositionDM, ConstellationConfig
 from hpcom.noise import AdditiveNoise
+from hpcom.numerics import Scheme
 from hpcom.ofdm import (
     OFDMConfig,
     OFDMReceivedSymbols,
@@ -83,6 +84,7 @@ __all__ = [
     "ReceivedSymbols",
     "Receiver",
     "Result",
+    "Scheme",
     "Simulation",
     "SimulationMetadata",
     "SingleCarrierReceivedSymbols",

@@ -9,13 +9,16 @@ be shared across simulations and threads. Numerical work is delegated to the
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from pydantic import Field, model_validator
 
 from hpcom._model import HpcomModel
 from hpcom._typing import ComplexArray, Direction, Polarization, StepDistribution
 from hpcom.backends import get_propagator
-from hpcom.backends.base import step_boundaries_m
+from hpcom.backends.base import CPUFallbackWarning, step_boundaries_m
+from hpcom.numerics import Scheme
 from hpcom.units import dispersion_slope_to_beta3, dispersion_to_beta2
 
 
@@ -53,6 +56,11 @@ class Fiber(HpcomModel):
         ``"logarithmic"`` — short steps where the power is high, each step
         carrying the same share of :math:`\int e^{-k\alpha z}dz` (see
         :attr:`step_boundaries_km` and ``docs/numerics.rst``).
+    scheme
+        How each step is integrated — a :class:`~hpcom.numerics.Scheme` or a
+        method name. Default: the symmetric split step with the Kerr phase at
+        the step midpoint (second order). See :mod:`hpcom.numerics` and
+        ``docs/numerics.rst``.
     step_log_factor
         :math:`k` of the logarithmic placement: ``1`` equal nonlinear phase
         per step (Bosco et al. 2000), ``1/3`` constant local error of the
@@ -75,6 +83,7 @@ class Fiber(HpcomModel):
     n_steps: int = Field(default=100, ge=1)
     step_distribution: StepDistribution = "uniform"
     step_log_factor: float = Field(default=1.0, gt=0)
+    scheme: Scheme = Scheme()
     polarization: Polarization = "single"
     backend: str = "numpy"
 
@@ -187,8 +196,22 @@ class Fiber(HpcomModel):
         dt_s: float,
         direction: Direction = "forward",
     ) -> ComplexArray:
-        """Propagate ``field`` (sample period ``dt_s``) through this span."""
-        return get_propagator(self.backend).propagate(field, self, dt_s=dt_s, direction=direction)
+        """Propagate ``field`` (sample period ``dt_s``) through this span.
+
+        If :attr:`backend` does not implement :attr:`scheme`, the span runs on
+        the NumPy (CPU) backend and a :class:`~hpcom.backends.CPUFallbackWarning`
+        is emitted.
+        """
+        propagator = get_propagator(self.backend)
+        if self.scheme.method not in propagator.supported_methods:
+            warnings.warn(
+                f"backend {self.backend!r} does not implement scheme "
+                f"{self.scheme.method!r}; running this span on the NumPy (CPU) backend",
+                CPUFallbackWarning,
+                stacklevel=2,
+            )
+            propagator = get_propagator("numpy")
+        return propagator.propagate(field, self, dt_s=dt_s, direction=direction)
 
     def apply(
         self,

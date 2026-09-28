@@ -20,6 +20,7 @@ from hpcom._model import HpcomModel
 from hpcom._typing import ComplexArray, StepDistribution
 from hpcom.fiber import Fiber
 from hpcom.link import Link
+from hpcom.numerics import Scheme
 
 __all__ = ["Compensator", "DigitalBackPropagation"]
 
@@ -126,6 +127,11 @@ class DigitalBackPropagation(Compensator):
     steps_per_span
         Split-step count for every fiber (``None``: each fiber's own
         ``n_steps``, i.e. the forward model's).
+    scheme
+        Numerical scheme of the back-propagation (``None``: each fiber's
+        own) — e.g. ``Scheme(kerr_length="effective")`` for coarse steps,
+        ``nonlinear_position`` for the lumped-Kerr position, or a Kerr
+        intensity filter (filtered DBP); see :class:`~hpcom.numerics.Scheme`.
     step_distribution, step_log_factor
         Step placement within each span (``None``: each fiber's own):
         ``"uniform"`` or ``"logarithmic"`` with factor :math:`k` — short
@@ -144,6 +150,7 @@ class DigitalBackPropagation(Compensator):
     steps_per_span: int | None = Field(ge=1)
     step_distribution: StepDistribution | None = None
     step_log_factor: float | None = Field(default=None, gt=0)
+    scheme: Scheme | None = None
     nonlinearity_scale: float = Field(default=1.0, ge=0.0)
     backend: str | None = None
 
@@ -187,6 +194,8 @@ class DigitalBackPropagation(Compensator):
             "beta2_s2_per_m": b2 - b3 * omega_k,
         }
         fiber = fiber.with_steps(self.steps_per_span, self.step_distribution, self.step_log_factor)
+        if self.scheme is not None:
+            changes["scheme"] = self.scheme
         if self.backend is not None:
             changes["backend"] = self.backend
         elif self.nonlinearity_scale == 0.0:

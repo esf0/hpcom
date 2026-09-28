@@ -22,6 +22,7 @@ from hpcom._model import HpcomModel, Polymorphic
 from hpcom._typing import ComplexArray, LinkComponent, StepDistribution
 from hpcom.amplifier import Amplifier
 from hpcom.fiber import Fiber
+from hpcom.numerics import Scheme
 
 
 class Link(HpcomModel):
@@ -121,6 +122,7 @@ class Link(HpcomModel):
         backend: str | None = None,
         step_distribution: StepDistribution | None = None,
         step_log_factor: float | None = None,
+        scheme: Scheme | str | None = None,
     ) -> ComplexArray:
         """Digital back-propagation: undo the link deterministically, last element first.
 
@@ -143,6 +145,8 @@ class Link(HpcomModel):
         step_distribution, step_log_factor
             Step placement for every fiber (``None`` = each fiber's own); see
             :meth:`Fiber.with_steps`.
+        scheme
+            Numerical scheme for every fiber (``None`` = each fiber's own).
         """
         out = field
         for el in reversed(self.elements):
@@ -153,6 +157,8 @@ class Link(HpcomModel):
                 }
                 if backend is not None:
                     changes["backend"] = backend
+                if scheme is not None:
+                    changes["scheme"] = scheme
                 out = fiber.replace(**changes).apply_inverse(out, dt_s)
             elif callable(inverse := getattr(el, "apply_inverse", None)):
                 out = inverse(out, dt_s)
