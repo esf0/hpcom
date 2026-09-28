@@ -24,6 +24,12 @@ Propagators
                           FFT); ignores γ and ``n_steps``.
 ========================  ====================================================
 
+**GPU backends.** JAX is the recommended GPU backend. TensorFlow stays a
+fully supported alternative for systems where it is the better fit (an
+existing TensorFlow stack, a platform without a JAX GPU build). Both
+implement every scheme and pass the same conformance suite; their results
+agree with NumPy to rounding.
+
 Select one per fiber (``Fiber(..., backend="jax")``,
 ``fiber.with_backend("jax")``). Backends are imported lazily:
 ``import hpcom`` never imports JAX or TensorFlow, and asking for an uninstalled

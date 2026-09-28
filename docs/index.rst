@@ -3,7 +3,8 @@ hpcom
 
 Simulation of coherent optical communication links: QAM, WDM and OFDM
 transceivers, scalar (NLSE) and dual-polarisation (Manakov) fiber
-propagation with a split-step Fourier solver on NumPy or TensorFlow (GPU),
+propagation with split-step, fourth-order and adaptive solvers on NumPy, JAX
+or TensorFlow (GPU),
 EDFA noise, digital back-propagation, and data-aided performance metrics
 (BER, SNR, Q, MI, GMI).
 
@@ -17,8 +18,8 @@ Install
 .. code-block:: bash
 
    pip install hpcom              # NumPy backend
-   pip install "hpcom[tf]"        # + TensorFlow backend (CPU)
-   pip install "hpcom[tf-gpu]"    # + TensorFlow with CUDA
+   pip install "hpcom[jax-cuda]"  # + JAX backend on NVIDIA GPUs (CPU: "hpcom[jax]")
+   pip install "hpcom[tf-gpu]"    # + TensorFlow backend with CUDA (CPU: "hpcom[tf]")
 
 Quick start
 -----------

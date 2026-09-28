@@ -632,7 +632,8 @@ its deviation from NumPy (≈ 1e-14 for every scheme);
 node.
 
 Policy for new schemes: a scheme that can run on a GPU gets its GPU
-implementation (JAX, and TensorFlow while it is kept) and must pass the conformance
+implementation in both GPU backends (JAX, recommended; TensorFlow, kept for
+systems where it suits better) and must pass the conformance
 suite in ``tests/backends/`` on every backend that offers it. A scheme that
 cannot run on the GPU must say so at run time — a warning that the CPU
 implementation is used — never fall back silently.

@@ -13,11 +13,14 @@ datasets.
 - **Transceivers**: RRC-shaped QAM (single carrier and WDM), CP-OFDM, pilots,
   geometric (APSK, arbitrary points) and probabilistic shaping (Maxwell–Boltzmann,
   constant-composition distribution matching), single or dual polarisation.
-- **Channel**: scalar NLSE and Manakov split-step Fourier solver with loss,
-  β₂, β₃ and Kerr nonlinearity; EDFAs with ASE; noise loading by SNR/OSNR;
-  digital back-propagation.
-- **Backends**: NumPy (reference, always available) and TensorFlow (GPU);
-  a registry and conformance test suites for adding JAX, Rust, …
+- **Channel**: scalar NLSE and Manakov solvers with loss, β₂, β₃ and Kerr
+  nonlinearity — symmetric split-step (uniform or logarithmic steps, Kerr
+  position, effective Kerr length), fourth-order Yoshida/Suzuki compositions,
+  RK4IP and adaptive local-error control; EDFAs with ASE; noise loading by
+  SNR/OSNR; digital back-propagation at realistic sampling rates.
+- **Backends**: NumPy (reference, always available), JAX (recommended for
+  GPU) and TensorFlow (GPU, kept for systems where it suits better); a
+  registry and conformance test suites for adding more.
 - **Metrics**: data-aided BER, SER, EVM, SNR, Q-factor, MI and GMI, per
   polarisation and WDM channel.
 - **Trustworthy**: every convention is written down as formulas in the
@@ -32,8 +35,8 @@ datasets.
 
 ```bash
 pip install hpcom              # NumPy backend
-pip install "hpcom[tf]"        # + TensorFlow backend
-pip install "hpcom[tf-gpu]"    # + TensorFlow with CUDA
+pip install "hpcom[jax-cuda]"  # + JAX backend on NVIDIA GPUs (CPU: "hpcom[jax]")
+pip install "hpcom[tf-gpu]"    # + TensorFlow backend with CUDA (CPU: "hpcom[tf]")
 ```
 
 Python ≥ 3.10.
@@ -45,7 +48,7 @@ Dual-polarisation 16-QAM at 32 GBd over 10 × 80 km of standard fibre:
 ```python
 from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierTransmitter
 
-fiber = Fiber.ssmf(length_km=80.0, polarization="dual")        # backend="tensorflow" for GPU
+fiber = Fiber.ssmf(length_km=80.0, polarization="dual")        # backend="jax" for GPU
 link = Link.from_spans(10, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0))
 
 tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=32e9, n_symbols=4096,
