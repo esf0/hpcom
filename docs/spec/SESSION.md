@@ -1,6 +1,6 @@
 # Session resume — hpcom v1
 
-**Last updated: 2026-09-28.** Branch `dev`. 1520 tests pass (≈3 min); ruff,
+**Last updated: 2026-09-28.** Branch `dev`. 1529 tests pass (≈3 min); ruff,
 ruff-format, mypy (strict) and the Sphinx build (`-W`) are clean. A core-only
 install (numpy, scipy, pydantic) passes too, with TF/legacy tests skipped.
 
@@ -36,7 +36,7 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   length, filtered Kerr step, Yoshida/Suzuki 4th-order compositions, RK4IP,
   FWM-aware step count, adaptive local-error method (Sinkin 2003);
   NumPy + TF (GPU); CPU-fallback warning mechanism.
-  Next: DBP for OFDM, JAX to replace TensorFlow. Later ideas: multicore fibers. NFT: not in hpcom for now — the
+  DBP for OFDM receivers done. Next: JAX to replace TensorFlow. Later ideas: multicore fibers. NFT: not in hpcom for now — the
   maintainer's separate NFT project will be integrated later. Rust: the maintainer will write it
   themselves later.
 - Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data

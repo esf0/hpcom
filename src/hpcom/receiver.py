@@ -16,10 +16,10 @@ Processing chain of every receiver:
    inverse of the fiber's dispersive phase (see :doc:`/physics`). Set
    ``cd_compensation_s2 = link.total_dispersion_s2`` (and ``_s3``).
 
-   *Or*, for pulse-shaped receivers, a **compensation stage**
+   *Or*, for pulse-shaped and OFDM receivers, a **compensation stage**
    (``compensation=``, e.g. :class:`~hpcom.dsp.DigitalBackPropagation`) run
-   per channel on realistic front-end samples: shifted to baseband,
-   band-limited and resampled to the stage's rate (see
+   on realistic front-end samples: per channel shifted to baseband (OFDM:
+   the whole band), band-limited and resampled to the stage's rate (see
    :class:`~hpcom.dsp.Compensator`).
 2. **Waveform-specific demodulation** to symbol-rate samples (matched
    filter — at the compensation stage's rate if one is set — or FFT for
@@ -339,6 +339,72 @@ class Receiver(ModulationSpec, ABC):
 
 
 # ---------------------------------------------------------------------------
+# Compensation stage (shared by pulse-shaped and OFDM receivers)
+# ---------------------------------------------------------------------------
+
+
+def _check_compensation_exclusive(receiver: Receiver, compensation: Compensator | None) -> None:
+    if compensation is not None and (
+        receiver.cd_compensation_s2 != 0.0 or receiver.cd_compensation_s3 != 0.0
+    ):
+        raise ValueError(
+            "`compensation` already compensates dispersion; "
+            "leave cd_compensation_s2 and cd_compensation_s3 at 0"
+        )
+
+
+def _is_identity_front_end(compensation: Compensator | None, samples_per_symbol: int) -> bool:
+    """The front end changes nothing: the stage runs once on the whole field."""
+    return (
+        compensation is not None
+        and compensation.bandwidth_hz is None
+        and compensation.samples_per_symbol in (None, samples_per_symbol)
+    )
+
+
+def _compensation_front_end(
+    streams: npt.NDArray[np.complex128],
+    dt_s: float,
+    samples_per_symbol: int,
+    compensation: Compensator,
+) -> tuple[npt.NDArray[np.complex128], float, int]:
+    """Low-pass to ``bandwidth_hz`` and resample to the stage's samples per symbol.
+
+    ``samples_per_symbol`` is the input rate over the (aggregate) symbol rate:
+    the pulse-shaped ``samples_per_symbol``, or the OFDM oversampling ``L``
+    (symbol rate ``N·Δf``). Returns ``(samples, dt_s, samples_per_symbol)``.
+    """
+    sps_in, n = samples_per_symbol, streams.shape[-1]
+    if n % sps_in:
+        raise ValueError(f"field length {n} is not a multiple of samples_per_symbol={sps_in}")
+    sps_out = compensation.samples_per_symbol or sps_in
+    symbol_rate_hz = 1.0 / (dt_s * sps_in)
+    rate_hz = sps_out * symbol_rate_hz
+    if compensation.bandwidth_hz is not None:
+        if compensation.bandwidth_hz > rate_hz * (1.0 + 1e-12):
+            raise ValueError(
+                f"compensation.bandwidth_hz = {compensation.bandwidth_hz:.4g} Hz exceeds the "
+                f"front-end sampling rate {rate_hz:.4g} Hz ({sps_out} samples/symbol "
+                f"at {symbol_rate_hz:.4g} Bd); raise samples_per_symbol"
+            )
+        streams = lowpass(streams, dt_s, compensation.bandwidth_hz)
+    if sps_out != sps_in:
+        streams = resample(streams, n // sps_in * sps_out)
+    return streams, 1.0 / rate_hz, sps_out
+
+
+def _checked(
+    compensation: Compensator, out: ComplexArray, shape: tuple[int, ...]
+) -> npt.NDArray[np.complex128]:
+    arr = np.asarray(out, dtype=np.complex128)
+    if arr.shape != shape:
+        raise ValueError(
+            f"{type(compensation).__name__}.compensate returned shape {arr.shape}, expected {shape}"
+        )
+    return arr
+
+
+# ---------------------------------------------------------------------------
 # Pulse-shaped receivers
 # ---------------------------------------------------------------------------
 
@@ -366,13 +432,7 @@ class PulseShapedReceiver(Receiver, ABC):
 
     @model_validator(mode="after")
     def _validate_pulse_rx(self) -> PulseShapedReceiver:
-        if self.compensation is not None and (
-            self.cd_compensation_s2 != 0.0 or self.cd_compensation_s3 != 0.0
-        ):
-            raise ValueError(
-                "`compensation` already compensates dispersion; "
-                "leave cd_compensation_s2 and cd_compensation_s3 at 0"
-            )
+        _check_compensation_exclusive(self, self.compensation)
         if self.convolution == "linear" and self.pulse_span_symbols is None:
             raise ValueError('convolution="linear" needs a finite `pulse_span_symbols`')
         if self.equalize == "pilot" and self.pilots is None:
@@ -434,12 +494,7 @@ class PulseShapedReceiver(Receiver, ABC):
     @property
     def _full_field_compensation(self) -> bool:
         """``True`` if ``compensation`` runs once on the whole field (identity front end)."""
-        comp = self.compensation
-        return (
-            comp is not None
-            and comp.bandwidth_hz is None
-            and comp.samples_per_symbol in (None, self.samples_per_symbol)
-        )
+        return _is_identity_front_end(self.compensation, self.samples_per_symbol)
 
     def _baseband(
         self, field: npt.NDArray[np.complex128], dt_s: float
@@ -458,23 +513,8 @@ class PulseShapedReceiver(Receiver, ABC):
         comp = self.compensation
         if comp is None:
             return streams, dt_s
-        sps_in, n = self.samples_per_symbol, streams.shape[-1]
-        if n % sps_in:
-            raise ValueError(f"field length {n} is not a multiple of samples_per_symbol={sps_in}")
-        sps_out = comp.samples_per_symbol or sps_in
-        symbol_rate_hz = 1.0 / (dt_s * sps_in)
-        rate_hz = sps_out * symbol_rate_hz
-        if comp.bandwidth_hz is not None:
-            if comp.bandwidth_hz > rate_hz * (1.0 + 1e-12):
-                raise ValueError(
-                    f"compensation.bandwidth_hz = {comp.bandwidth_hz:.4g} Hz exceeds the "
-                    f"front-end sampling rate {rate_hz:.4g} Hz ({sps_out} samples/symbol "
-                    f"at {symbol_rate_hz:.4g} Bd); raise samples_per_symbol"
-                )
-            streams = lowpass(streams, dt_s, comp.bandwidth_hz)
-        if sps_out != sps_in:
-            streams = resample(streams, n // sps_in * sps_out)
-        return streams, 1.0 / rate_hz
+        samples, dt_out, _ = _compensation_front_end(streams, dt_s, self.samples_per_symbol, comp)
+        return samples, dt_out
 
     def _receive_field(
         self,
@@ -506,13 +546,8 @@ class PulseShapedReceiver(Receiver, ABC):
         )
 
     def _checked(self, out: ComplexArray, shape: tuple[int, ...]) -> npt.NDArray[np.complex128]:
-        arr = np.asarray(out, dtype=np.complex128)
-        if arr.shape != shape:
-            raise ValueError(
-                f"{type(self.compensation).__name__}.compensate returned shape {arr.shape}, "
-                f"expected {shape}"
-            )
-        return arr
+        assert self.compensation is not None
+        return _checked(self.compensation, out, shape)
 
     def _demodulate(
         self,

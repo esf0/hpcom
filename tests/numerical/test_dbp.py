@@ -25,6 +25,8 @@ from hpcom import (
     DigitalBackPropagation,
     Fiber,
     Link,
+    OFDMConfig,
+    OFDMTransmitter,
     PilotConfig,
     Scheme,
     Simulation,
@@ -380,3 +382,89 @@ def test_reduced_rate_chain_works_for_every_pulse_mode_and_pilots(pulse, pilots)
     sl = slice(cut, data.shape[-1] - cut)
     assert received.equalizer == ("pilot" if pilots else "data_aided")
     assert _snr_db(np.asarray(received.symbols)[..., sl], np.asarray(data)[..., sl]) > 25
+
+
+# ---------------------------------------------------------------------------
+# OFDM receivers
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ofdm_nonlinear():
+    """Noiseless 5×80 km, 128-subcarrier 16-QAM OFDM (32 GHz, L = 4, 8 pilots) at 4 dBm."""
+    link = _link()
+    cfg = OFDMConfig(
+        n_subcarriers=128,
+        cp_len=16,
+        n_guard=4,
+        pilot_subcarrier_indices=(8, 24, 40, 56, 72, 88, 104, 120),
+        oversampling=4,
+    )
+    tx = OFDMTransmitter(
+        modulation_order=16,
+        subcarrier_spacing_hz=250e6,
+        n_frames=64,
+        ofdm=cfg,
+        polarization="dual",
+        launch_power_per_channel_dbm=4.0,
+        seed=1,
+    )
+    sent = tx.generate()
+    return tx, link, sent, link.propagate(sent.field, sent.dt_s)
+
+
+def _ofdm_snr(case, **rx_kwargs) -> float:
+    tx, _, sent, out = case
+    rx = tx.matched_receiver(**rx_kwargs)
+    return _snr_db(rx.receive(out, sent.dt_s, reference=sent).symbols, sent.symbols)
+
+
+def test_ofdm_linear_dbp_is_cd_compensation(ofdm_nonlinear):
+    """Exact at the transmitter's rate; ≈ at a lower rate (the ADC cuts OFDM's sinc sidelobes)."""
+    tx, link, sent, out = ofdm_nonlinear
+    cdc = tx.matched_receiver(equalize="none", cd_compensation_s2=link.total_dispersion_s2)
+    a = np.asarray(cdc.receive(out, sent.dt_s).symbols)
+    rms = np.sqrt(np.mean(np.abs(a) ** 2))
+    for sps, tol in ((None, 1e-12), (4, 1e-12), (2, 2e-2)):
+        lin = tx.matched_receiver(
+            equalize="none", compensation=_dbp(link, nonlinearity_scale=0.0, samples_per_symbol=sps)
+        )
+        b = np.asarray(lin.receive(out, sent.dt_s).symbols)
+        assert np.max(np.abs(b - a)) < tol * rms, sps
+
+
+def test_ofdm_full_field_dbp_inverts_the_link(ofdm_nonlinear):
+    link = ofdm_nonlinear[1]
+    assert _ofdm_snr(ofdm_nonlinear, cd_compensation_s2=link.total_dispersion_s2) < 20
+    assert _ofdm_snr(ofdm_nonlinear, compensation=_dbp(link, samples_per_symbol=None)) > 200
+
+
+def test_ofdm_dbp_converges_with_steps_to_a_rate_set_floor(ofdm_nonlinear):
+    """L′ = 2: ≈ 22 → 29 → 41 → 47 dB, then the band limit; L′ = 4 keeps improving."""
+    link = ofdm_nonlinear[1]
+    two = [
+        _ofdm_snr(ofdm_nonlinear, compensation=_dbp(link, steps_per_span=k, samples_per_symbol=2))
+        for k in (1, 2, 4, 8, 16)
+    ]
+    four = _ofdm_snr(
+        ofdm_nonlinear, compensation=_dbp(link, steps_per_span=16, samples_per_symbol=4)
+    )
+    cdc = _ofdm_snr(ofdm_nonlinear, cd_compensation_s2=link.total_dispersion_s2)
+    assert cdc + 2 < two[0] < two[1] < two[2] < two[3]
+    assert abs(two[4] - two[3]) < 2 and four > two[4] + 10
+
+
+def test_ofdm_dbp_through_simulation_evaluate(ofdm_nonlinear):
+    tx = ofdm_nonlinear[0]
+    noisy = _link(n_spans=2, noise_figure_db=5.0)
+    sim = Simulation(
+        transmitter=tx.replace(launch_power_per_channel_dbm=8.0),
+        link=noisy,
+        receiver=tx.matched_receiver(cd_compensation_s2=noisy.total_dispersion_s2),
+        seed=2,
+    )
+    cdc = sim.run()
+    dbp = sim.evaluate(
+        cdc, tx.matched_receiver(compensation=_dbp(noisy, steps_per_span=8, samples_per_symbol=2))
+    )
+    assert dbp.metrics.snr_db > cdc.metrics.snr_db + 1

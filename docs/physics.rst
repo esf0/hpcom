@@ -428,6 +428,18 @@ If steps 2–3 change nothing (``samples_per_symbol=None`` or the simulation's,
 ``bandwidth_hz=None``) the whole field is back-propagated once instead:
 **full-field DBP**, the exact inverse of a noiseless link.
 
+An :class:`~hpcom.OFDMReceiver` takes the same ``compensation=``: the whole
+OFDM band is low-passed, resampled to ``samples_per_symbol``
+:math:`\cdot N\Delta f` (the OFDM oversampling :math:`L'`), back-propagated
+and demodulated with :math:`L'N`-point FFTs. OFDM frames are not strictly
+band-limited (sinc sidelobes, cyclic prefix), so below the transmitter's
+oversampling the front end also removes some out-of-band signal:
+:math:`\xi = 0` then matches CD compensation to ≈ 1 % of the RMS instead
+of rounding. Measured (5 × 80 km, 128 subcarriers, 32 GHz, 16-QAM, 4 dBm;
+CDC 18.3 dB): :math:`L' = 2`: 21.6 / 28.6 / 40.6 / 46.5 dB at 1 / 2 / 4 / 8
+steps per span, then the band limit (≈ 47 dB); :math:`L' = 4`: 67 dB at 16
+steps [``test_ofdm_dbp_converges_with_steps_to_a_rate_set_floor``].
+
 **What it computes.** The link runs backwards, last element first: fibers by
 the same symmetric split-step scheme with :math:`h \to -h`,
 ``steps_per_span`` steps and :math:`\gamma \to \xi\gamma`

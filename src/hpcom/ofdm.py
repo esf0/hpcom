@@ -35,7 +35,14 @@ from pydantic import Field, field_validator, model_validator
 
 from hpcom._model import HpcomModel, Polymorphic
 from hpcom._typing import ComplexArray, _is_power_of_two
-from hpcom.receiver import ReceivedSymbols, Receiver
+from hpcom.dsp.compensation import Compensator
+from hpcom.receiver import (
+    ReceivedSymbols,
+    Receiver,
+    _check_compensation_exclusive,
+    _checked,
+    _compensation_front_end,
+)
 from hpcom.transmitter import TransmittedSignal, Transmitter
 
 __all__ = ["OFDMConfig", "OFDMReceivedSymbols", "OFDMReceiver", "OFDMSignal", "OFDMTransmitter"]
@@ -239,12 +246,22 @@ class OFDMReceiver(Receiver):
       outermost pilots) to the data subcarriers. Needs pilot subcarriers.
     * ``"none"``, ``"unit_power"``, ``"data_aided"`` — one complex gain per
       polarisation, as for the other receivers.
+
+    ``compensation`` (optional) is a :class:`~hpcom.dsp.Compensator` — e.g.
+    :class:`~hpcom.dsp.DigitalBackPropagation` — run on the whole OFDM band
+    in place of ``cd_compensation_s2``/``_s3``. Its ``samples_per_symbol``
+    is the oversampling ``L′`` relative to the aggregate symbol rate
+    ``N·Δf`` (the transmitter's is ``ofdm.oversampling``): the field is
+    band-limited, resampled to ``L′·N·Δf``, compensated, and demodulated
+    with ``L′·N``-point FFTs.
     """
 
     ofdm: OFDMConfig
+    compensation: Polymorphic[Compensator] | None = None
 
     @model_validator(mode="after")
     def _validate_ofdm_rx(self) -> OFDMReceiver:
+        _check_compensation_exclusive(self, self.compensation)
         if self.equalize == "pilot" and self.ofdm.n_pilots == 0:
             raise ValueError('equalize="pilot" requires ofdm.pilot_subcarrier_indices')
         return self
@@ -262,6 +279,23 @@ class OFDMReceiver(Receiver):
     ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.complex128]]:
         return np.asarray(sent.bits), np.asarray(sent.symbols)
 
+    def front_end(
+        self, field: ComplexArray, dt_s: float
+    ) -> tuple[npt.NDArray[np.complex128], float]:
+        """The samples the compensation stage receives and their sample period.
+
+        The whole OFDM band, low-passed to ``compensation.bandwidth_hz`` and
+        resampled to ``compensation.samples_per_symbol·N·Δf``; without
+        ``compensation``, the field at the simulation rate.
+        """
+        x = self._check_field(field)
+        if self.compensation is None:
+            return x.copy(), dt_s
+        samples, dt_out, _ = _compensation_front_end(
+            x, dt_s, self.ofdm.oversampling, self.compensation
+        )
+        return samples, dt_out
+
     def receive(
         self,
         field: ComplexArray,
@@ -271,6 +305,14 @@ class OFDMReceiver(Receiver):
     ) -> OFDMReceivedSymbols:
         cfg = self.ofdm
         x = self._compensate_dispersion(self._check_field(field), dt_s)
+        if self.compensation is not None:
+            samples, dt_c, oversampling = _compensation_front_end(
+                x, dt_s, cfg.oversampling, self.compensation
+            )
+            x = _checked(
+                self.compensation, self.compensation.compensate(samples, dt_c), samples.shape
+            )
+            cfg = cfg.replace(oversampling=oversampling)  # demodulate at the stage's rate
         spf = cfg.samples_per_frame
         if x.shape[-1] % spf:
             raise ValueError(f"field length {x.shape[-1]} is not a multiple of {spf} samples/frame")

@@ -95,8 +95,8 @@ pre-v1 hpcom always applied), otherwise blind amplitude normalisation. ``receive
 :class:`~hpcom.ReceivedSymbols`: equalised symbols, decisions, decoded bits
 and the removed gain per stream.
 
-Instead of bulk dispersion compensation, single-carrier and WDM receivers
-accept a **compensation stage**, e.g. digital back-propagation::
+Instead of bulk dispersion compensation, single-carrier, WDM and OFDM
+receivers accept a **compensation stage**, e.g. digital back-propagation::
 
     rx = tx.matched_receiver(
         compensation=DigitalBackPropagation(link=link, steps_per_span=4, samples_per_symbol=2)

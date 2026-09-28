@@ -280,3 +280,63 @@ def test_a_compensator_returning_the_wrong_shape_is_reported():
     sent = tx.generate(rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match=r"Broken.compensate returned shape"):
         rx.receive(sent.field, sent.dt_s)
+
+
+# ---------------------------------------------------------------------------
+# OFDM receivers
+# ---------------------------------------------------------------------------
+
+
+def _ofdm(**rx_kwargs):
+    from hpcom import OFDMConfig, OFDMTransmitter
+
+    cfg = OFDMConfig(n_subcarriers=64, cp_len=8, n_guard=2, oversampling=4)
+    tx = OFDMTransmitter(
+        modulation_order=16,
+        subcarrier_spacing_hz=500e6,
+        n_frames=8,
+        ofdm=cfg,
+        polarization="dual",
+        seed=0,
+    )
+    return tx, tx.matched_receiver(**rx_kwargs)
+
+
+@pytest.mark.parametrize(("sps", "per_frame"), [(2, 2 * 72), (1, 72), (4, 4 * 72)])
+def test_ofdm_front_end_resamples_to_the_stage_rate(sps, per_frame):
+    tx, rx = _ofdm(
+        compensation=DigitalBackPropagation(link=_link(), steps_per_span=1, samples_per_symbol=sps)
+    )
+    sent = tx.generate()
+    samples, dt = rx.front_end(sent.field, sent.dt_s)
+    assert samples.shape == (2, 8 * per_frame)
+    assert dt == pytest.approx(1 / (sps * 64 * 500e6))
+    plain, dt_plain = tx.matched_receiver().front_end(sent.field, sent.dt_s)
+    np.testing.assert_array_equal(plain, sent.field)
+    assert dt_plain == sent.dt_s
+
+
+def test_ofdm_compensation_validation_and_serialisation():
+    dbp = DigitalBackPropagation(link=_link(), steps_per_span=2, bandwidth_hz=70e9)
+    with pytest.raises(ValidationError, match="already compensates dispersion"):
+        _ofdm(compensation=dbp, cd_compensation_s2=1e-24)
+    tx, rx = _ofdm(compensation=dbp)
+    assert type(rx).model_validate_json(rx.model_dump_json()) == rx
+    sent = tx.generate()
+    with pytest.raises(ValueError, match="exceeds the front-end sampling rate"):
+        rx.receive(sent.field, sent.dt_s)  # 70 GHz > 2 × 32 GHz
+
+
+def test_ofdm_identity_compensation_leaves_the_receiver_unchanged():
+    class Identity(Compensator):
+        def compensate(self, field, dt_s, *, frequency_offset_hz=0.0):
+            return field
+
+    tx, rx = _ofdm(compensation=Identity(samples_per_symbol=None))
+    sent = tx.generate()
+    np.testing.assert_allclose(
+        rx.receive(sent.field, sent.dt_s).symbols,
+        tx.matched_receiver().receive(sent.field, sent.dt_s).symbols,
+        rtol=0,
+        atol=1e-13,
+    )

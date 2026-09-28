@@ -1,7 +1,7 @@
 r"""Receiver-side compensation of deterministic link impairments.
 
-:class:`Compensator` is the stage a pulse-shaped receiver runs on its
-front-end samples when ``compensation=`` is set; :class:`DigitalBackPropagation`
+:class:`Compensator` is the stage a pulse-shaped or OFDM receiver runs on
+its front-end samples when ``compensation=`` is set; :class:`DigitalBackPropagation`
 is the built-in implementation. Any algorithm — learned DBP, perturbation or
 Volterra compensation, … — plugs in by subclassing :class:`Compensator`, and
 then sees the same samples and is scored by the same matched filter,
@@ -43,6 +43,10 @@ class Compensator(HpcomModel, ABC):
     the receiver's, ``bandwidth_hz`` ``None``) the stage instead runs once on
     the whole received field (centred at 0 Hz) before the channels are
     separated: *full-field* processing — for WDM, full-field DBP.
+
+    An :class:`~hpcom.ofdm.OFDMReceiver` runs steps 2–4 on the whole OFDM
+    band, with ``samples_per_symbol`` the oversampling relative to
+    ``N·Δf``, and then demodulates with FFTs at that rate.
 
     The receiver's ``cd_compensation_s2``/``_s3`` must then be 0: dispersion
     compensation is this stage's job.
