@@ -14,15 +14,19 @@ Propagators
 ========================  ====================================================
 ``"numpy"`` (default)     Symmetric split-step Fourier, scalar NLSE and
                           Manakov, in NumPy. The reference implementation.
-``"tensorflow"``          The same step sequence on TensorFlow (runs on the
-                          GPU when available). ``pip install "hpcom[tf]"``.
+``"jax"``                 Every scheme on JAX/XLA (runs on the GPU with
+                          ``pip install "hpcom[jax-cuda]"``; CPU with
+                          ``"hpcom[jax]"``). Computes in complex128 inside a
+                          scoped ``jax.enable_x64`` (no global side effect).
+``"tensorflow"``          Every scheme on TensorFlow (runs on the GPU when
+                          available). ``pip install "hpcom[tf]"``.
 ``"numpy-linear"``        Exact linear solution (loss and dispersion in one
                           FFT); ignores γ and ``n_steps``.
 ========================  ====================================================
 
-Select one per fiber (``Fiber(..., backend="tensorflow")``,
-``fiber.with_backend("tensorflow")``). Backends are imported lazily:
-``import hpcom`` never imports TensorFlow, and asking for an uninstalled
+Select one per fiber (``Fiber(..., backend="jax")``,
+``fiber.with_backend("jax")``). Backends are imported lazily:
+``import hpcom`` never imports JAX or TensorFlow, and asking for an uninstalled
 backend raises :class:`~hpcom.backends.BackendUnavailableError` with the
 install command. :func:`~hpcom.backends.available_propagators` lists the
 usable ones.

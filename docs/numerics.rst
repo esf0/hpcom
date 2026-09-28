@@ -598,35 +598,41 @@ Backends and GPU policy
 
 .. list-table::
    :header-rows: 1
-   :widths: 40 15 20 25
+   :widths: 34 12 16 16 22
 
    * - Scheme
      - ``numpy``
+     - ``jax``
      - ``tensorflow``
      - ``numpy-linear``
-   * - Symmetric SSFM, uniform steps
+   * - Symmetric SSFM, uniform or logarithmic steps
      - ✓
      - ✓ (GPU)
-     - exact, no steps
-   * - Symmetric SSFM, logarithmic steps
-     - ✓
      - ✓ (GPU)
      - exact, no steps
    * - Kerr position, effective Kerr length, intensity filter
      - ✓
      - ✓ (GPU)
+     - ✓ (GPU)
      - exact, no steps
    * - Fourth order: Yoshida, Suzuki compositions; RK4IP
      - ✓
      - ✓ (GPU)
+     - ✓ (GPU)
      - exact, no steps
    * - Adaptive local-error method
      - ✓
+     - ✓ (GPU, ``lax.while_loop``)
      - ✓ (GPU, ``tf.while_loop``)
      - exact, no steps
 
+``benchmarks/backends.py`` times every backend on the same spans and prints
+its deviation from NumPy (≈ 1e-14 for every scheme);
+``benchmarks/gpu_validation.sh`` runs it with the conformance suite on a GPU
+node.
+
 Policy for new schemes: a scheme that can run on a GPU gets its GPU
-implementation (TensorFlow now, JAX planned) and must pass the conformance
+implementation (JAX, and TensorFlow while it is kept) and must pass the conformance
 suite in ``tests/backends/`` on every backend that offers it. A scheme that
 cannot run on the GPU must say so at run time — a warning that the CPU
 implementation is used — never fall back silently.

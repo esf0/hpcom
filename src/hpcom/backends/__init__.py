@@ -15,7 +15,10 @@ Built-in propagators:
                           implementation; default for :class:`~hpcom.Fiber`.
 ``"numpy-linear"``        Exact linear solution (loss + dispersion, γ
                           ignored) in one FFT. For linear-regime checks.
-``"tensorflow"``          Same SSFM algorithm on TensorFlow (GPU if present).
+``"jax"``                 Every scheme on JAX/XLA (GPU/TPU if present).
+                          Requires ``pip install "hpcom[jax]"``
+                          (``"hpcom[jax-cuda]"`` for NVIDIA GPUs).
+``"tensorflow"``          Every scheme on TensorFlow (GPU if present).
                           Requires ``pip install "hpcom[tf]"``.
 ========================  ===================================================
 
@@ -45,6 +48,11 @@ __all__ = [
 _BUILTIN: dict[str, tuple[str, str, str]] = {
     "numpy": ("hpcom.backends.numpy.ssfm", "NumpySSFMPropagator", ""),
     "numpy-linear": ("hpcom.backends.numpy.linear", "LinearNumpyPropagator", ""),
+    "jax": (
+        "hpcom.backends.jax.propagator",
+        "JaxPropagator",
+        'install JAX with `pip install "hpcom[jax]"` (NVIDIA GPU: "hpcom[jax-cuda]")',
+    ),
     "tensorflow": (
         "hpcom.backends.tensorflow.propagator",
         "TensorFlowPropagator",
