@@ -63,7 +63,7 @@ def main(out_dir: Path) -> None:
             index.append(
                 {
                     "file": name,
-                    "launch_power_dbm": power_dbm,
+                    "launch_power_per_channel_dbm": power_dbm,
                     **result.to_dict()["metrics"],
                     "seed": seed,
                 }

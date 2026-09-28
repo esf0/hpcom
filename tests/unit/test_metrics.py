@@ -134,3 +134,38 @@ def test_metrics_model_serialises():
         gmi_bits=1.4,
     )
     assert Metrics.model_validate_json(m.model_dump_json()) == m
+
+
+def _reference_rates(y, idx, points, labels, pmf):
+    """Direct log-domain implementation of the module-docstring formulas."""
+    from scipy.special import logsumexp
+
+    p = np.asarray(pmf)
+    h = float(-np.sum(p[p > 0] * np.log2(p[p > 0])))
+    sigma2 = np.mean(np.abs(y - points[idx]) ** 2)
+    with np.errstate(divide="ignore"):
+        metric = -(np.abs(y[:, None] - points[None, :]) ** 2) / sigma2 + np.log(p)
+    den = logsumexp(metric, axis=1)
+    mi = h - np.mean(den - metric[np.arange(y.size), idx]) / np.log(2)
+    loss = 0.0
+    for i in range(labels.shape[1]):
+        match = labels[:, i][None, :] == labels[idx, i][:, None]
+        loss += np.sum(den - logsumexp(np.where(match, metric, -np.inf), axis=1))
+    return mi, h - loss / y.size / np.log(2)
+
+
+@pytest.mark.parametrize("case", ["moderate-snr", "shaped", "far-outliers"])
+def test_vectorised_rates_equal_the_log_domain_reference(case):
+    from hpcom.metrics import information_rates
+
+    base = ConstellationConfig.from_square_qam(64)
+    pmf = base.pmf if case != "shaped" else maxwell_boltzmann_for_entropy(base.points, 5.0)
+    cfg = base if case != "shaped" else base.with_probabilities(pmf)
+    y, idx = _awgn(cfg, 4000, 10 ** (-1.4 if case != "far-outliers" else -5.0), seed=5, pmf=pmf)
+    if case == "far-outliers":  # decisions far away at very high SNR → subset sums underflow
+        y[:5] = cfg.points[(idx[:5] + 37) % 64]
+    got = information_rates(y, idx, cfg.points, cfg.bit_labels, pmf)
+    np.testing.assert_allclose(
+        got, _reference_rates(y, idx, cfg.points, cfg.bit_labels, pmf), rtol=1e-10
+    )
+    assert np.all(np.isfinite(got))

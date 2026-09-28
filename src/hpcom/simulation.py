@@ -18,8 +18,7 @@ from hpcom.metrics import (
     StreamMetrics,
     bit_error_rate,
     evm_rms,
-    gmi_gaussian,
-    mi_gaussian,
+    information_rates,
     q_factor_db,
     snr_db,
 )
@@ -159,8 +158,7 @@ class Simulation(HpcomModel):
             tx_idx = sent_idx[pos][sym_sl]
             ber, n_err, n_bits = bit_error_rate(ref_bits[pos][bit_sl], rx.bits[pos][bit_sl])
             n_sym_err = int(np.count_nonzero(np.asarray(rx.decisions[pos])[sym_sl] != tx_idx))
-            mi = mi_gaussian(y, tx_idx, cfg.points, pmf)
-            gmi = gmi_gaussian(y, tx_idx, cfg.points, cfg.bit_labels, pmf)
+            mi, gmi = information_rates(y, tx_idx, cfg.points, cfg.bit_labels, pmf)
             pol, ch = self._stream_labels(pos)
             streams.append(
                 StreamMetrics(

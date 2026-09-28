@@ -45,6 +45,7 @@ __all__ = [
     "bit_error_rate",
     "evm_rms",
     "gmi_gaussian",
+    "information_rates",
     "mi_gaussian",
     "q_factor_db",
     "snr_db",
@@ -131,6 +132,66 @@ def _noise_variance(y: npt.NDArray[np.complex128], x: npt.NDArray[np.complex128]
     return float(np.mean(np.abs(y - x) ** 2))
 
 
+def _entropy_bits(p: npt.NDArray[np.float64]) -> float:
+    nz = p[p > 0]
+    return float(-np.sum(nz * np.log2(nz)))
+
+
+def information_rates(
+    received: ComplexArray,
+    sent_indices: npt.ArrayLike,
+    points: ComplexArray,
+    bit_labels: npt.ArrayLike,
+    pmf: npt.ArrayLike | None = None,
+) -> tuple[float, float]:
+    """``(MI, GMI)`` in bits/symbol with a Gaussian auxiliary channel (module docstring).
+
+    Both are computed from one pass over the likelihoods. Per chunk of
+    samples, the weights ``w = p(x)·q(y|x)`` (scaled by the row maximum) are
+    formed once; the GMI's per-bit subset sums are two matrix products with
+    the label matrix. Rows in which the transmitted bit's subset underflows
+    (far-off decision errors at very high SNR) are recomputed exactly in the
+    log domain.
+    """
+    y = np.asarray(received, dtype=np.complex128).reshape(-1)
+    idx = np.asarray(sent_indices, dtype=np.intp).reshape(-1)
+    pts = np.asarray(points, dtype=np.complex128)
+    labels = np.asarray(bit_labels, dtype=np.float64)  # (M, m) of 0/1
+    p = np.full(pts.size, 1.0 / pts.size) if pmf is None else np.asarray(pmf, dtype=np.float64)
+    entropy = _entropy_bits(p)
+    sigma2 = _noise_variance(y, pts[idx])
+    if sigma2 == 0.0 or y.size == 0:
+        return entropy, entropy
+    with np.errstate(divide="ignore"):
+        log_p = np.log(p)  # -inf for zero-probability points
+    ones, zeros = labels, 1.0 - labels
+    sent_bits = labels[idx] > 0.5  # (n, m)
+    mi_loss = gmi_loss = 0.0
+    step = max(1, _CHUNK // pts.size)
+    for s in range(0, y.size, step):
+        rows = slice(s, s + step)
+        metric = _log_q(y[rows], pts, sigma2) + log_p  # ln p(x)q(y|x), (n, M)
+        row_max = metric.max(axis=1)
+        w = np.exp(metric - row_max[:, None])
+        total = w.sum(axis=1)  # ≥ 1
+        log_den = np.log(total) + row_max
+        sent_metric = metric[np.arange(metric.shape[0]), idx[rows]]
+        mi_loss += float(np.sum(log_den - sent_metric))
+        # Subset sums for bit value 1 and 0 of every label position, (n, m).
+        s1, s0 = w @ ones, w @ zeros
+        subset = np.where(sent_bits[rows], s1, s0)
+        ok = subset > 0
+        with np.errstate(divide="ignore"):
+            log_num = np.log(subset) + row_max[:, None]
+        bad_rows = np.flatnonzero(~ok.all(axis=1))
+        for r in bad_rows:  # exact log-domain fallback for underflowed subsets
+            for i in np.flatnonzero(~ok[r]):
+                match = labels[:, i] == float(sent_bits[s + r, i])
+                log_num[r, i] = logsumexp(metric[r, match])
+        gmi_loss += float(np.sum(log_den[:, None] - log_num))
+    return entropy - mi_loss / y.size / _LN2, entropy - gmi_loss / y.size / _LN2
+
+
 def mi_gaussian(
     received: ComplexArray,
     sent_indices: npt.ArrayLike,
@@ -138,24 +199,9 @@ def mi_gaussian(
     pmf: npt.ArrayLike | None = None,
 ) -> float:
     """Mutual information (bits/symbol) with a Gaussian auxiliary channel (module docstring)."""
-    y = np.asarray(received, dtype=np.complex128).reshape(-1)
-    idx = np.asarray(sent_indices, dtype=np.intp).reshape(-1)
     pts = np.asarray(points, dtype=np.complex128)
-    p = np.full(pts.size, 1.0 / pts.size) if pmf is None else np.asarray(pmf, dtype=np.float64)
-    sigma2 = _noise_variance(y, pts[idx])
-    if sigma2 == 0.0:
-        nz = p[p > 0]
-        return float(-np.sum(nz * np.log2(nz)))
-    nz = p[p > 0]
-    entropy = float(-np.sum(nz * np.log2(nz)))
-    log_p = np.log(np.where(p > 0, p, 1.0)) + np.where(p > 0, 0.0, -np.inf)
-    loss = 0.0
-    step = max(1, _CHUNK // pts.size)
-    for s in range(0, y.size, step):
-        metric = _log_q(y[s : s + step], pts, sigma2) + log_p  # ln p(x) q(y|x), (n, M)
-        sent = metric[np.arange(metric.shape[0]), idx[s : s + step]]
-        loss += float(np.sum(logsumexp(metric, axis=1) - sent))
-    return entropy - loss / y.size / _LN2
+    labels = np.zeros((pts.size, 1), dtype=np.uint8)  # labels are irrelevant for the MI
+    return information_rates(received, sent_indices, pts, labels, pmf)[0]
 
 
 def gmi_gaussian(
@@ -166,25 +212,4 @@ def gmi_gaussian(
     pmf: npt.ArrayLike | None = None,
 ) -> float:
     """Generalised mutual information (bits/symbol) for bit-wise decoding (module docstring)."""
-    y = np.asarray(received, dtype=np.complex128).reshape(-1)
-    idx = np.asarray(sent_indices, dtype=np.intp).reshape(-1)
-    pts = np.asarray(points, dtype=np.complex128)
-    labels = np.asarray(bit_labels, dtype=bool)
-    p = np.full(pts.size, 1.0 / pts.size) if pmf is None else np.asarray(pmf, dtype=np.float64)
-    nz = p[p > 0]
-    entropy = float(-np.sum(nz * np.log2(nz)))
-    sigma2 = _noise_variance(y, pts[idx])
-    if sigma2 == 0.0:
-        return entropy
-    log_p = np.log(np.where(p > 0, p, 1.0)) + np.where(p > 0, 0.0, -np.inf)
-    sent_bits = labels[idx]  # (n, m)
-    loss = 0.0
-    step = max(1, _CHUNK // pts.size)
-    for s in range(0, y.size, step):
-        metric = _log_q(y[s : s + step], pts, sigma2) + log_p  # (n, M)
-        den_all = logsumexp(metric, axis=1)  # (n,)
-        for i in range(labels.shape[1]):
-            match = labels[:, i][None, :] == sent_bits[s : s + step, i][:, None]  # (n, M)
-            num = logsumexp(np.where(match, metric, -np.inf), axis=1)
-            loss += float(np.sum(den_all - num))
-    return entropy - loss / y.size / _LN2
+    return information_rates(received, sent_indices, points, bit_labels, pmf)[1]
