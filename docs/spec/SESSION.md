@@ -1,6 +1,6 @@
 # Session resume — hpcom v1
 
-**Last updated: 2026-09-28.** Branch `dev`. 1374 tests pass (≈130 s); ruff,
+**Last updated: 2026-09-28.** Branch `dev`. 1508 tests pass (≈115 s); ruff,
 ruff-format, mypy (strict) and the Sphinx build (`-W`) are clean. A core-only
 install (numpy, scipy, pydantic) passes too, with TF/legacy tests skipped.
 
@@ -32,11 +32,13 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
 
 - Non-uniform steps done (`Fiber.step_distribution`/`step_log_factor`, DBP and
   `Link.backpropagate`; docs/numerics.rst with derivations and references).
-  Next (agreed with the maintainer): more schemes — effective-length Kerr
-  step, nonlinear-step position / filtered DBP, bandwidth-aware first step,
-  adaptive local error, 4th-order compositions, RK4IP — each with a GPU
-  implementation or a runtime CPU warning; then DBP for OFDM, then JAX to
-  replace TensorFlow. Rust: the maintainer will write it themselves later.
+  Schemes done (`hpcom.numerics.Scheme`): Kerr position, effective Kerr
+  length, filtered Kerr step, Yoshida/Suzuki 4th-order compositions, RK4IP,
+  FWM-aware step count; NumPy + TF (GPU); CPU-fallback warning mechanism.
+  Next: adaptive local-error control, DBP for OFDM, JAX to replace
+  TensorFlow. Later ideas: multicore fibers, an NFT module (the NSU group's
+  4th/6th-order scattering schemes). Rust: the maintainer will write it
+  themselves later.
 - Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data
   (regenerate with `tests/numerical/_data/make_opticommpy_golden.py` in a
   separate env — OptiCommPy needs numba), N = 2 soliton, Manakov vector

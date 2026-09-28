@@ -35,13 +35,21 @@ Kerr-step options (split-step methods only)
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal, get_args
 
 from pydantic import Field, model_validator
 
 from hpcom._model import HpcomModel
 
-__all__ = ["KerrFilterShape", "KerrLength", "Scheme", "SchemeMethod"]
+__all__ = [
+    "FWM_PHASE_RAD",
+    "KerrFilterShape",
+    "KerrLength",
+    "Scheme",
+    "SchemeMethod",
+    "fwm_aware_first_step_m",
+]
 
 #: Integration methods (see the module docstring).
 SchemeMethod = Literal["ssfm", "ssfm4-yoshida", "ssfm4-suzuki", "rk4ip"]
@@ -127,3 +135,26 @@ class Scheme(HpcomModel):
 
 
 _DEFAULT = Scheme()
+
+
+#: Recommended FWM phase in the first step, per step-update rule, for a
+#: received-SNR error of about 0.01 dB (Musetti, Serena & Bononi 2018, Sect. IV-B;
+#: symmetric split step): ``"cle"`` (constant local error, k = 1/3) and
+#: ``"nlp"`` (nonlinear-phase / logarithmic, k = 1).
+FWM_PHASE_RAD: dict[str, float] = {"cle": 20.0, "nlp": 4.0}
+
+
+def fwm_aware_first_step_m(phase_rad: float, bandwidth_hz: float, beta2_s2_per_m: float) -> float:
+    r"""Bandwidth-aware first step :math:`h_1 = \Phi_\mathrm{FWM} / \big(|\beta_2|(2\pi B)^2\big)`.
+
+    The largest phase-mismatch rotation of first-order FWM within the first
+    step (Musetti, Serena & Bononi 2018, eq. 13): with the steps then growing
+    by the constant-local-error or nonlinear-phase rule, the SSFM error on the
+    received SNR is independent of launch power and scales with the signal
+    bandwidth :math:`B` (e.g. the whole WDM comb). In metres.
+    """
+    if not phase_rad > 0 or not bandwidth_hz > 0:
+        raise ValueError("phase_rad and bandwidth_hz must be positive")
+    if beta2_s2_per_m == 0.0:
+        return math.inf
+    return phase_rad / (abs(beta2_s2_per_m) * (2.0 * math.pi * bandwidth_hz) ** 2)

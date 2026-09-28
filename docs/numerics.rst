@@ -387,6 +387,51 @@ e^{k\alpha z}`. [Asif2011]_ write the rule as
 its steps sum to :math:`L` only for :math:`A = 2`, where it is
 :eq:`log-rule` with :math:`k\alpha = 2\Gamma`.
 
+Bandwidth-aware step count
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The local error grows with the signal bandwidth :math:`B` (the phase
+mismatch of four-wave mixing across it), so the step count should follow
+from :math:`B`, not from the power. [Musetti2018]_ (eq. 13) choose the
+first step so that the largest FWM phase-mismatch rotation in it is a fixed
+:math:`\Phi_\mathrm{FWM}`,
+
+.. math::
+   :label: fwm-first-step
+
+   h_1 = \frac{\Phi_\mathrm{FWM}}{|\beta_2|\,(2\pi B)^2},
+
+and let the steps grow by the constant-local-error (FWM-CLE) or
+nonlinear-phase (FWM-NLP) rule; this made the SSFM error on the received
+SNR independent of launch power. For ≈ 0.01 dB SNR error they found
+:math:`\Phi_\mathrm{FWM} \approx 20` rad (CLE) and 4 rad (NLP) with the
+symmetric step.
+
+hpcom keeps :math:`K` and :eq:`log-rule`, and picks the smallest :math:`K`
+whose first step does not exceed :math:`h_1`:
+
+.. math::
+
+   K = \left\lceil \frac{1 - e^{-k\alpha L}}{1 - e^{-k\alpha h_1}} \right\rceil
+   \quad(\text{logarithmic}),\qquad
+   K = \lceil L/h_1 \rceil \quad(\text{uniform}).
+
+``Fiber.with_first_step(h1_km, ...)`` does this for any placement;
+``Fiber.with_fwm_aware_steps(B, rule="cle" | "nlp", phase_rad=None)`` applies
+:eq:`fwm-first-step` with the paper's :math:`\Phi_\mathrm{FWM}` and
+:math:`k = 1/3` or 1 (``hpcom.numerics.fwm_aware_first_step_m``,
+``FWM_PHASE_RAD``). Resulting steps per 80 km of SSMF:
+
+============================ ========== ==========
+signal bandwidth :math:`B`   FWM-CLE    FWM-NLP
+============================ ========== ==========
+35 GHz (one 32 GBd channel)  3          7
+250 GHz (≈ 5 channels)       124        284
+5 THz (C-band)               49 291     113 256
+============================ ========== ==========
+
+[``tests/unit/test_step_distribution.py``]
+
 Measured error constants
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -528,15 +573,23 @@ Planned schemes
 
 Not implemented yet; listed with the literature they follow.
 
-* **Bandwidth-aware first step** :math:`h_1 = \Phi_\mathrm{FWM}/\big(|\beta_2|
-  (2\pi B)^2\big)` with nonlinear-phase or constant-local-error updates
-  [Musetti2018]_.
 * **Adaptive local-error control** (step doubling, third-order accurate)
   [Sinkin2003]_.
 * **Sixth and higher order** compositions (e.g. a triple jump of the
   fourth-order step) and embedded RK schemes with error control
   [Muslu2005]_. A comparison of split-step variants for optical links is
   [Shao2014]_.
+* **Multicore fibers** (linearly coupled NLSEs), from the NSU / ICT SB RAS
+  group: an iterative compact dissipative scheme, fourth order in :math:`t`
+  and second order in :math:`z`, and a split-step method with a Padé
+  approximation of the coupling matrix exponential [Chekhovskoy2017]_,
+  extended to saturated gain in [Patrin2024]_ (both second order in
+  :math:`z`; hpcom's Fourier treatment of :math:`t` is already spectral).
+* **Nonlinear Fourier transform**: the same group's fourth- and sixth-order
+  exponential schemes for the Zakharov–Shabat and Manakov direct scattering
+  problems [Medvedev2020]_, [Kachulin2023]_; review [Sedov2025]_. These are
+  high-order in the NFT sense (time discretisation of the scattering
+  problem), not propagation schemes; they belong in a future NFT module.
 
 
 References
@@ -556,6 +609,10 @@ References
    S. Benedetto, "Suppression of spurious tones induced by the split-step
    method in fiber systems simulation," *IEEE Photon. Technol. Lett.* 12(5),
    489–491, 2000.
+
+.. [Chekhovskoy2017] I. S. Chekhovskoy, V. I. Paasonen, O. V. Shtyrina, M. P.
+   Fedoruk, "Numerical approaches to simulation of multi-core fibers,"
+   *J. Comput. Phys.* 334, 31–44, 2017.
 
 .. [DuLowery2010] L. B. Du, A. J. Lowery, "Improved single channel
    backpropagation for intra-channel fiber nonlinearity compensation in
@@ -577,9 +634,18 @@ References
    impairments using digital backpropagation," *J. Lightw. Technol.* 26(20),
    3416–3425, 2008.
 
+.. [Kachulin2023] D. I. Kachulin, I. S. Chekhovskoy, S. B. Medvedev, E. V.
+   Sedov, I. A. Vaseva, M. P. Fedoruk, "Fourth-order accurate schemes for
+   solving the direct scattering problem for the Manakov system,"
+   All-Russian Conference on Fibre Optics (VKVO), Perm, 2023.
+
 .. [Lubich2008] C. Lubich, "On splitting methods for Schrödinger–Poisson and
    cubic nonlinear Schrödinger equations," *Math. Comp.* 77(264), 2141–2153,
    2008.
+
+.. [Medvedev2020] S. Medvedev, I. Vaseva, I. Chekhovskoy, M. Fedoruk,
+   "Exponential fourth order schemes for direct Zakharov–Shabat problem,"
+   *Opt. Express* 28(1), 20–39, 2020.
 
 .. [Musetti2018] S. Musetti, P. Serena, A. Bononi, "On the accuracy of
    split-step Fourier simulations for wideband nonlinear optical
@@ -589,9 +655,18 @@ References
    schemes for the generalized nonlinear Schrödinger equation," *Math.
    Comput. Simul.* 67(6), 581–595, 2005.
 
+.. [Patrin2024] G. A. Patrin, I. S. Chekhovskoy, O. V. Shtyrina et al.,
+   "Modification of the split-step method for modeling multicore fiber with
+   saturated gain," *Bull. Lebedev Phys. Inst.* 51 (Suppl. 10), S816–S825,
+   2024.
+
 .. [Secondini2016] M. Secondini, S. Rommel, G. Meloni, F. Fresi, E. Forestieri,
    L. Potì, "Single-step digital backpropagation for nonlinearity
    mitigation," *Photon. Netw. Commun.* 31, 493–502, 2016.
+
+.. [Sedov2025] E. Sedov, I. Chekhovskoy, M. Fedoruk, S. Turitsyn, "Numerical
+   approaches in nonlinear Fourier transform-based signal processing for
+   telecommunications," *Stud. Appl. Math.* 154(1), e12795, 2025.
 
 .. [Shao2014] J. Shao, X. Liang, S. Kumar, "Comparison of split-step Fourier
    schemes for simulating fiber optic communication systems," *IEEE Photon.

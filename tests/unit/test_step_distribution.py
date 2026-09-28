@@ -104,3 +104,53 @@ def test_with_steps_semantics():
 def test_step_placement_round_trips_through_json():
     fiber = _log(1 / 3, polarization="dual")
     assert Fiber.model_validate_json(fiber.model_dump_json()) == fiber
+
+
+# ---------------------------------------------------------------------------
+# FWM-aware first step (Musetti, Serena & Bononi 2018)
+# ---------------------------------------------------------------------------
+
+
+def test_fwm_aware_first_step_formula():
+    from hpcom.numerics import fwm_aware_first_step_m
+
+    h1 = fwm_aware_first_step_m(20.0, 5e12, -2.17e-26)
+    assert h1 == pytest.approx(20.0 / (2.17e-26 * (2 * np.pi * 5e12) ** 2))
+    assert fwm_aware_first_step_m(4.0, 1e9, 0.0) == np.inf
+    with pytest.raises(ValueError, match="positive"):
+        fwm_aware_first_step_m(0.0, 1e9, -2e-26)
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [{}, {"distribution": "logarithmic"}, {"distribution": "logarithmic", "log_factor": 1 / 3}],
+)
+@pytest.mark.parametrize("first_step_km", [0.05, 1.3, 17.0])
+def test_with_first_step_takes_the_fewest_steps_that_respect_it(placement, first_step_km):
+    fiber = Fiber(length_km=80.0).with_first_step(first_step_km, **placement)
+    first = fiber.step_boundaries_km[1]
+    assert first <= first_step_km * (1 + 1e-9)
+    if fiber.n_steps > 1:
+        assert fiber.replace(n_steps=fiber.n_steps - 1).step_boundaries_km[1] > first_step_km
+
+
+def test_with_first_step_edge_cases():
+    assert Fiber(length_km=80.0).with_first_step(100.0).n_steps == 1
+    lossless = Fiber(length_km=80.0, alpha_db_per_km=0.0)
+    assert lossless.with_first_step(10.0, distribution="logarithmic").n_steps == 8
+    with pytest.raises(ValueError, match="positive"):
+        Fiber(length_km=80.0).with_first_step(0.0)
+
+
+@pytest.mark.parametrize(("rule", "k", "phase"), [("cle", 1 / 3, 20.0), ("nlp", 1.0, 4.0)])
+def test_with_fwm_aware_steps(rule, k, phase):
+    from hpcom.numerics import FWM_PHASE_RAD, fwm_aware_first_step_m
+
+    assert FWM_PHASE_RAD[rule] == phase
+    base = Fiber.ssmf(80.0)
+    fiber = base.with_fwm_aware_steps(250e9, rule)
+    assert (fiber.step_distribution, fiber.step_log_factor) == ("logarithmic", k)
+    h1 = fwm_aware_first_step_m(phase, 250e9, base.beta2_s2_per_m)
+    assert fiber.step_boundaries_km[1] * 1e3 <= h1 * (1 + 1e-9)
+    tighter = base.with_fwm_aware_steps(250e9, rule, phase_rad=phase / 4)
+    assert tighter.n_steps > fiber.n_steps

@@ -9,7 +9,9 @@ be shared across simulations and threads. Numerical work is delegated to the
 
 from __future__ import annotations
 
+import math
 import warnings
+from typing import Literal
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -18,7 +20,7 @@ from hpcom._model import HpcomModel
 from hpcom._typing import ComplexArray, Direction, Polarization, StepDistribution
 from hpcom.backends import get_propagator
 from hpcom.backends.base import CPUFallbackWarning, step_boundaries_m
-from hpcom.numerics import Scheme
+from hpcom.numerics import FWM_PHASE_RAD, Scheme, fwm_aware_first_step_m
 from hpcom.units import dispersion_slope_to_beta3, dispersion_to_beta2
 
 
@@ -185,6 +187,59 @@ class Fiber(HpcomModel):
         elif log_factor is not None:
             changes["step_log_factor"] = log_factor
         return self.replace(**changes) if changes else self
+
+    def with_first_step(
+        self,
+        first_step_km: float,
+        distribution: StepDistribution | None = None,
+        log_factor: float | None = None,
+    ) -> Fiber:
+        r"""Copy with the fewest steps whose first step is at most ``first_step_km``.
+
+        Placement as in :meth:`with_steps` (``None`` keeps this fiber's). For
+        uniform steps :math:`K = \lceil L/h_1 \rceil`; for logarithmic
+        steps with factor :math:`k`,
+
+        .. math:: K = \left\lceil \frac{1-e^{-k\alpha L}}{1-e^{-k\alpha h_1}} \right\rceil,
+
+        so the steps then grow as :math:`h \propto e^{k\alpha z}`
+        (``docs/numerics.rst``).
+        """
+        if not first_step_km > 0:
+            raise ValueError(f"first_step_km must be positive, got {first_step_km}")
+        placed = self.with_steps(distribution=distribution, log_factor=log_factor)
+        length, h1 = placed.length_km * 1e3, first_step_km * 1e3
+        rate = placed.step_log_factor * placed.alpha_db_per_km * math.log(10) / 10 / 1e3
+        if h1 >= length:
+            n_steps = 1
+        elif placed.step_distribution == "uniform" or rate == 0.0:
+            n_steps = math.ceil(length / h1 * (1 - 1e-12))
+        else:
+            n_steps = math.ceil(-math.expm1(-rate * length) / -math.expm1(-rate * h1) * (1 - 1e-12))
+        return placed.replace(n_steps=max(n_steps, 1))
+
+    def with_fwm_aware_steps(
+        self,
+        bandwidth_hz: float,
+        rule: Literal["cle", "nlp"] = "cle",
+        phase_rad: float | None = None,
+    ) -> Fiber:
+        """Steps by the FWM-aware rule of Musetti, Serena & Bononi (2018).
+
+        First step :func:`~hpcom.numerics.fwm_aware_first_step_m` for the
+        signal bandwidth ``bandwidth_hz`` (the whole WDM comb), then growing
+        as constant local error (``"cle"``: logarithmic, :math:`k = 1/3`) or
+        equal nonlinear phase (``"nlp"``: :math:`k = 1`). ``phase_rad``
+        defaults to the paper's value for ≈ 0.01 dB SNR error
+        (:data:`~hpcom.numerics.FWM_PHASE_RAD`: 20 rad CLE, 4 rad NLP).
+        """
+        phi = FWM_PHASE_RAD[rule] if phase_rad is None else phase_rad
+        h1_m = fwm_aware_first_step_m(phi, bandwidth_hz, self.beta2_s2_per_m)
+        return self.with_first_step(
+            min(h1_m, self.length_m) / 1e3,
+            distribution="logarithmic",
+            log_factor=1.0 / 3.0 if rule == "cle" else 1.0,
+        )
 
     def with_backend(self, backend: str) -> Fiber:
         """Return a copy of this fiber that propagates on ``backend``."""
