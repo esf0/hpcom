@@ -25,11 +25,10 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx.ext.todo",
-    "sphinx.ext.autosectionlabel",
-    "m2r2",
+    "sphinx.ext.mathjax",
 ]
 
-source_suffix = [".rst", ".md"]
+source_suffix = [".rst"]
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "intent", "spec", "source"]
 
@@ -40,8 +39,11 @@ napoleon_use_rtype = False
 
 # Mock the heavy / optional deps so the docs build doesn't pull TF on RTD.
 autodoc_mock_imports = ["tensorflow", "ssfm_gpu"]
-autodoc_typehints = "description"
+autodoc_typehints = "none"
 autodoc_member_order = "bysource"
+autodoc_default_options = {"exclude-members": "model_config, model_fields, model_computed_fields"}
+# pydantic models render their fields from the docstrings; field signatures are noise.
+autodoc_class_signature = "separated"
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -49,5 +51,6 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy", None),
 }
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "furo"
+html_title = f"hpcom {release}"
 html_static_path: list[str] = []

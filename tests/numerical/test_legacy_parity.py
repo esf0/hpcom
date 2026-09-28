@@ -26,11 +26,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import hpcom._pulse as pulse
-from hpcom import SingleCarrierTransmitter, WDMConfig, WDMReceiver, WDMTransmitter
-from hpcom._legacy.modulation import generate_constellation_dict, get_constellation_point
-from hpcom._legacy.signal import generate_wdm, rrcosfilter
-from hpcom.modulation import bits_to_symbols, square_qam
+for _dependency in ("tensorflow", "sklearn"):  # pre-v1 code: pip install "hpcom[legacy]"
+    pytest.importorskip(_dependency)
+
+import hpcom._pulse as pulse  # noqa: E402
+from hpcom import SingleCarrierTransmitter, WDMConfig, WDMReceiver, WDMTransmitter  # noqa: E402
+from hpcom._legacy.modulation import (  # noqa: E402
+    generate_constellation_dict,
+    get_constellation_point,
+)
+from hpcom._legacy.signal import generate_wdm, rrcosfilter  # noqa: E402
+from hpcom.modulation import bits_to_symbols, square_qam  # noqa: E402
 
 pytestmark = pytest.mark.legacy
 

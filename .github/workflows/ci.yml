@@ -11,8 +11,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint-and-test:
-    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+  lint:
+    name: Lint, types, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev,docs]"
+      - name: Ruff
+        run: |
+          python -m ruff check src tests examples
+          python -m ruff format --check src tests examples
+      - name: Mypy
+        run: python -m mypy src
+      - name: Docs (warnings are errors)
+        run: python -m sphinx -W --keep-going -b html docs docs/_build/html
+
+  test-full:
+    name: Tests ${{ matrix.os }} / py${{ matrix.python-version }} (all extras)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,54 +42,54 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev,tf,legacy]"
+      - name: Pytest (unit, backends, numerical, integration, legacy)
+        run: python -m pytest -q
 
-      - name: Install package + dev + tf extras
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,tf]"
-
-      - name: Ruff lint
-        run: python -m ruff check src tests
-
-      - name: Mypy
-        run: python -m mypy src
-
-      - name: Pytest (unit + numerical)
-        run: python -m pytest tests/unit tests/numerical -q
+  test-minimal:
+    name: Tests with core dependencies only (no TensorFlow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: TensorFlow must not be importable
+        run: python -c "import importlib.util as u; assert u.find_spec('tensorflow') is None"
+      - name: Pytest (TensorFlow and legacy tests skip)
+        run: python -m pytest -q
 
   build-wheel:
     name: Build wheel + smoke install
     runs-on: ubuntu-latest
-    needs: lint-and-test
+    needs: [lint, test-minimal]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
+          python-version: "3.12"
       - name: Build sdist + wheel
         run: |
           python -m pip install --upgrade pip build
           python -m build
-
-      - name: Install wheel in clean venv and run example 02
+      - name: Install the wheel in a clean venv and run the examples
         run: |
           python -m venv /tmp/wheel-env
-          /tmp/wheel-env/bin/pip install --upgrade pip
           /tmp/wheel-env/bin/pip install dist/*.whl
-          /tmp/wheel-env/bin/pip install "tensorflow>=2.15"
-          /tmp/wheel-env/bin/python examples/02_ssmf_edfa_chain.py
-
+          cd /tmp
+          for ex in 01_b2b_qam 03_dual_pol_manakov 05_custom_waveform 08_probabilistic_shaping; do
+            /tmp/wheel-env/bin/python "$GITHUB_WORKSPACE/examples/$ex.py" /tmp/out
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: dist

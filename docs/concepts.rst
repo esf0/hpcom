@@ -1,87 +1,101 @@
 Concepts
 ========
 
-A simulation in hpcom is composed from a small set of domain objects that
-each map to a real piece of optical-comm hardware or signal-processing stage.
-All of them are frozen dataclasses with validated config.
+A simulation is assembled from a few objects that each correspond to a piece
+of hardware or a DSP stage::
 
-Pipeline
---------
+   Transmitter ──field──▶ Link ──field──▶ Receiver ──▶ ReceivedSymbols
+       │                (Fiber, EDFA,                     │
+       └──TransmittedSignal  AdditiveNoise, …)            ▼
+                                        Simulation ──▶ Result (metrics, provenance)
 
-::
+All of them are **immutable, validated pydantic models** (:class:`hpcom._model.HpcomModel`):
 
-   Transmitter  →  Link  →  Receiver
-        │           │          │
-        │           ├── Fiber  │
-        │           ├── Amplifier
-        │           └── ... (any LinkComponent)
-        │
-        ↓
-     Result (BER, EVM, decoded symbols, metadata)
+* unknown keyword arguments raise (a typo never silently falls back to a default);
+* array fields are read-only;
+* ``a == b`` compares by value, arrays included;
+* ``obj.replace(field=value)`` returns a re-validated copy;
+* ``model_dump_json()`` / ``model_validate_json()`` round-trip everything,
+  including which transmitter/receiver/link-element subclass was used.
 
-You compose them yourself, or hand them to ``Simulation`` which runs the
-whole pipeline once and returns a ``Result``.
 
-Transmitter
------------
+Transmitters
+------------
 
-Generates a random bit stream, maps it to a square-QAM constellation
-(Gray-coded, unit average power), upsamples to the sample grid and
-pulse-shapes with a root-raised-cosine filter.
+.. list-table::
+   :widths: 45 55
 
-Key parameters: ``modulation_order`` (4/16/64/256/1024), ``symbol_rate_hz``,
-``n_symbols``, ``samples_per_symbol``, ``roll_off``, ``seed``.
+   * - :class:`~hpcom.SingleCarrierTransmitter`
+     - RRC-shaped QAM, one channel
+   * - :class:`~hpcom.WDMTransmitter`
+     - ``n_channels`` RRC-shaped channels on a grid
+   * - :class:`~hpcom.OFDMTransmitter`
+     - CP-OFDM with pilot and guard subcarriers
+   * - :class:`hpcom.experimental.ExperimentalTransmission`
+     - template for custom waveforms
 
-Fiber
------
+Shared fields (:class:`~hpcom.Transmitter`): the constellation
+(``modulation_order`` for Gray-coded square QAM, or a
+:class:`~hpcom.ConstellationConfig`), an optional distribution matcher
+``dm``, ``polarization`` (``"single"``/``"dual"``), the launch power
+(``launch_power_per_channel_dbm`` or ``launch_power_total_dbm``) and ``seed``.
 
-Frozen physics: ``length_km``, ``alpha_db_per_km``, ``beta2_s2_per_m``,
-``gamma_per_w_per_km``, ``n_steps``, ``polarization`` (``"single"`` for NLSE,
-``"dual"`` for Manakov), and ``backend`` (the propagator name).
+:meth:`~hpcom.Transmitter.generate` returns a
+:class:`~hpcom.TransmittedSignal`: the field in √W, the transmitted symbols
+and the information bits. Pass ``bits=`` or ``symbols=`` for deterministic
+input.
 
-The shortcut ``Fiber.ssmf(length_km)`` returns standard single-mode fibre
-parameters (D = 17 ps/nm/km, α = 0.2 dB/km, γ = 1.27 1/W/km).
+Array layout
+^^^^^^^^^^^^
 
-Amplifier (EDFA)
-----------------
+Time or symbol index is always the last axis. Leading axes are
+``(polarisation, channel)``, each present only when applicable:
 
-``EDFA(gain_db, noise_figure_db, wavelength_m=1550e-9)`` scales the field by
-``√G`` and adds zero-mean complex Gaussian ASE noise of PSD
-``N₀ = h · f_c · (G − 1) · NF`` per polarization. Accepts 1-D or 2-D
-(dual-pol) fields.
+==============================  =================  =======================
+Signal                          ``field``          ``symbols``/``bits``
+==============================  =================  =======================
+single-carrier, single-pol      ``(n,)``           ``(n_sym,)``
+single-carrier, dual-pol        ``(2, n)``         ``(2, n_sym)``
+WDM, single-pol                 ``(n,)``           ``(n_ch, n_sym)``
+WDM, dual-pol                   ``(2, n)``         ``(2, n_ch, n_sym)``
+==============================  =================  =======================
+
 
 Link
 ----
 
-An ordered tuple of ``LinkComponent`` instances. Built-ins are ``Fiber`` and
-``Amplifier``; any object with ``.apply(field, dt_s, *, rng) -> field``
-satisfies the protocol.
+A :class:`~hpcom.Link` is an ordered tuple of components, each with
+``apply(field, dt_s, *, rng)``: :class:`~hpcom.Fiber`,
+:class:`~hpcom.EDFA`, :class:`~hpcom.AdditiveNoise`, or your own.
+``Link.from_spans(n, fiber, amplifier)`` builds the usual amplified link;
+``link.total_dispersion_s2`` is what the receiver must compensate.
+``link.backpropagate(field, dt_s, steps_per_span=…)`` runs it backwards
+(digital back-propagation).
 
-``Link.from_spans(n, fiber, amp)`` builds a uniform N-span EDFA-compensated
-link. ``link.total_dispersion_s2`` returns ``Σ β₂·L`` over all spans —
-useful for receiver-side CD compensation.
+A fiber's ``polarization`` selects the equation (NLSE or Manakov) and its
+``backend`` the numerical engine (see :doc:`backends`).
 
-Receiver
---------
 
-Matched RRC filter, downsample at the symbol rate, optional unit-power
-equalization, hard decision to nearest constellation point. The optional
-``cd_compensation_s2`` parameter undoes accumulated chromatic dispersion
-before the matched filter.
+Receivers
+---------
 
-Simulation
-----------
+:class:`~hpcom.SingleCarrierReceiver`, :class:`~hpcom.WDMReceiver` (any
+subset of ``channels``) and :class:`~hpcom.OFDMReceiver` mirror the
+transmitters. All compensate chromatic dispersion
+(``cd_compensation_s2``/``_s3``) and equalise one complex gain per stream
+(``equalize="none" | "unit_power" | "pilot" | "data_aided"``; see
+:doc:`physics`). ``receive(field, dt_s, reference=sent)`` returns
+:class:`~hpcom.ReceivedSymbols`: equalised symbols, decisions, decoded bits
+and the removed gain per stream.
 
-The runner. Takes a ``Transmitter``, a ``Link``, a ``Receiver``, and an
-optional ``seed`` and ``launch_power_dbm``. Returns a ``Result`` with BER,
-EVM, decoded symbols, and reproducibility metadata. The single ``seed`` is
-split via ``numpy.random.SeedSequence`` into independent sub-streams for the
-Tx and the link's amplifiers.
 
-Result
-------
+Simulation and Result
+---------------------
 
-Carries the received field, decoded symbols and bits, ``Metrics`` (BER, EVM,
-counts), and ``SimulationMetadata`` (seed, runtime, config snapshot). Use
-``result.to_dict()`` for a serializable summary; ``np.savez`` the arrays
-yourself if you need to persist the signal.
+:class:`~hpcom.Simulation` checks that transmitter, link and receiver fit
+together (listing every mismatch), runs them with a single seed and scores
+the result. :class:`~hpcom.Result` holds the transmitted signal, the received
+field, the receiver output, aggregate :class:`~hpcom.Metrics`, one
+:class:`~hpcom.StreamMetrics` per (polarisation, channel), and
+:class:`~hpcom.SimulationMetadata` with the full configuration as JSON and
+the seed entropy, enough to replay the run exactly.

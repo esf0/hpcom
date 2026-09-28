@@ -1,14 +1,15 @@
 # `hpcom._legacy`
 
-These modules are the pre-v1 API, preserved verbatim for one release to ease migration.
+The pre-v1 hpcom modules, preserved unchanged for one release to ease
+migration. **They will be removed in v2.**
 
-**They will be removed in v2.** New code should use the public hpcom API
-(`Transmitter`, `Fiber`, `Amplifier`, `Receiver`, `Link`, `Simulation`,
-`Result`). See `docs/spec/hpcom-v1.md`.
+They are importable under their old names (`import hpcom.channel`,
+`from hpcom.signal import generate_wdm`, …) or as `hpcom._legacy.<name>`;
+the first import emits a `DeprecationWarning`. `import hpcom` alone never
+loads them. Their dependencies are installed with
 
-Importing anything from `hpcom._legacy` (or accessing legacy submodules via
-`hpcom.<name>` re-exports) emits a `DeprecationWarning`.
+    pip install "hpcom[legacy]"
 
-External dependencies of legacy code (e.g. `ssfm-gpu`, `tensorflow`) are not
-declared by the new `pyproject.toml`. If you need legacy modules to actually
-run, install those deps yourself.
+(TensorFlow, scikit-learn, matplotlib, ssfm-gpu). See `docs/migration.rst`
+for the v1 equivalents; `tests/numerical/test_legacy_parity.py` shows that
+the v1 transmitter reproduces the legacy WDM field.

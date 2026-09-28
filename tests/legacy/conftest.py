@@ -1,19 +1,24 @@
-"""Skip the entire legacy test suite.
+"""Tests of the pre-v1 modules under ``hpcom._legacy``.
 
-These tests target the pre-v1 ``hpcom._legacy`` modules. They are preserved for
-historical reference but several no longer collect cleanly because:
-  - they exercise legacy code paths that have drifted (e.g. modulation
-    constellation generation raises ``TypeError`` on current NumPy);
-  - they depend on the original ``ssfm-gpu`` package whose API has changed.
+They run only when the legacy dependencies (``pip install "hpcom[legacy]"``:
+TensorFlow, scikit-learn, ssfm-gpu) are installed. Two files are scripts
+rather than tests — they execute at import time — and are not collected:
 
-Rather than chase those bugs in code that v2 will delete, we skip the whole
-suite. To run them locally on a known-good legacy environment, override this
-conftest or invoke pytest with ``--no-header -p no:cacheprovider`` after
-restoring the original deps.
+* ``test.py`` prints GPU/TensorFlow diagnostics;
+* ``test_propagation.py`` drives ``ssfm_gpu.conversion``, whose API has
+  changed since the script was written (``KeyError: 'Q1'``).
 """
+
+from __future__ import annotations
+
+import importlib.util
 
 import pytest
 
-collect_ignore_glob = ["test_*.py", "test.py"]
+collect_ignore = ["test.py", "test_propagation.py"]
+
+_MISSING = [m for m in ("tensorflow", "sklearn", "ssfm_gpu") if importlib.util.find_spec(m) is None]
+if _MISSING:
+    collect_ignore_glob = ["test_*.py"]
 
 pytestmark = pytest.mark.legacy

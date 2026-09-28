@@ -1,42 +1,113 @@
-API Reference
+API reference
 =============
 
-Public API
-----------
+Transmitters and signals
+------------------------
 
-.. automodule:: hpcom
+.. automodule:: hpcom.transmitter
    :members:
-   :imported-members:
    :show-inheritance:
 
-Backend interfaces
-------------------
+.. automodule:: hpcom.wdm
+   :members:
+   :show-inheritance:
+
+.. automodule:: hpcom.ofdm
+   :members:
+   :show-inheritance:
+
+.. automodule:: hpcom.pilots
+   :members:
+
+Receivers
+---------
+
+.. automodule:: hpcom.receiver
+   :members:
+   :show-inheritance:
+
+Link components
+---------------
+
+.. automodule:: hpcom.fiber
+   :members:
+
+.. automodule:: hpcom.amplifier
+   :members:
+   :show-inheritance:
+
+.. automodule:: hpcom.noise
+   :members:
+
+.. automodule:: hpcom.link
+   :members:
+
+Simulation, results, metrics
+----------------------------
+
+.. automodule:: hpcom.simulation
+   :members:
+
+.. automodule:: hpcom.result
+   :members:
+
+.. automodule:: hpcom.metrics
+   :members:
+
+Modulation and shaping
+----------------------
+
+.. automodule:: hpcom.modulation.shaping
+   :members:
+
+.. automodule:: hpcom.modulation.dm
+   :members:
+
+.. automodule:: hpcom.modulation.constellations
+   :members:
+
+.. automodule:: hpcom.modulation.mapping
+   :members:
+
+.. automodule:: hpcom.modulation.spec
+   :members:
+
+Units
+-----
+
+.. automodule:: hpcom.units
+   :members:
+
+Backends
+--------
+
+.. automodule:: hpcom.backends
+   :members:
 
 .. automodule:: hpcom.backends.base
    :members:
-   :show-inheritance:
 
-.. automodule:: hpcom.backends
-   :members: get_propagator, list_propagators, register_propagator
+.. automodule:: hpcom.backends.kernels
+   :members:
+
+.. automodule:: hpcom.backends.numpy.ssfm
+   :members:
 
 .. automodule:: hpcom.backends.numpy.linear
    :members:
-   :show-inheritance:
 
-.. automodule:: hpcom.backends.tensorflow.propagator
+.. automodule:: hpcom.backends.python.kernels
    :members:
-   :show-inheritance:
 
-Modulation
+Model base
 ----------
 
-.. automodule:: hpcom.modulation
-   :members:
-   :show-inheritance:
+.. automodule:: hpcom._model
+   :members: HpcomModel
 
-Metrics
--------
+Custom waveforms
+----------------
 
-.. automodule:: hpcom.metrics
+.. automodule:: hpcom.experimental
    :members:
    :show-inheritance:
