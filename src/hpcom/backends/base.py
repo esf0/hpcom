@@ -162,7 +162,10 @@ COMPOSITION_WEIGHTS: dict[str, tuple[float, ...]] = {
 }
 
 #: Every ``Scheme.method`` hpcom defines.
-ALL_METHODS: frozenset[str] = frozenset(COMPOSITION_WEIGHTS) | {"rk4ip"}
+ALL_METHODS: frozenset[str] = frozenset(COMPOSITION_WEIGHTS) | {"rk4ip", "ssfm-local-error"}
+
+#: Step-size factors of the local-error controller (Sinkin et al. 2003).
+LOCAL_ERROR_GROWTH = 2.0 ** (1.0 / 3.0)
 
 
 def attenuation_per_m(fiber: FiberLike) -> float:

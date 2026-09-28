@@ -1,6 +1,6 @@
 # Session resume — hpcom v1
 
-**Last updated: 2026-09-28.** Branch `dev`. 1508 tests pass (≈115 s); ruff,
+**Last updated: 2026-09-28.** Branch `dev`. 1520 tests pass (≈3 min); ruff,
 ruff-format, mypy (strict) and the Sphinx build (`-W`) are clean. A core-only
 install (numpy, scipy, pydantic) passes too, with TF/legacy tests skipped.
 
@@ -34,10 +34,10 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   `Link.backpropagate`; docs/numerics.rst with derivations and references).
   Schemes done (`hpcom.numerics.Scheme`): Kerr position, effective Kerr
   length, filtered Kerr step, Yoshida/Suzuki 4th-order compositions, RK4IP,
-  FWM-aware step count; NumPy + TF (GPU); CPU-fallback warning mechanism.
-  Next: adaptive local-error control, DBP for OFDM, JAX to replace
-  TensorFlow. Later ideas: multicore fibers, an NFT module (the NSU group's
-  4th/6th-order scattering schemes). Rust: the maintainer will write it
+  FWM-aware step count, adaptive local-error method (Sinkin 2003);
+  NumPy + TF (GPU); CPU-fallback warning mechanism.
+  Next: DBP for OFDM, JAX to replace TensorFlow. Later ideas: multicore fibers. NFT: not in hpcom for now — the
+  maintainer's separate NFT project will be integrated later. Rust: the maintainer will write it
   themselves later.
 - Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data
   (regenerate with `tests/numerical/_data/make_opticommpy_golden.py` in a

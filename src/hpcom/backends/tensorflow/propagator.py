@@ -23,11 +23,14 @@ import tensorflow as tf
 from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
     ALL_METHODS,
+    LOCAL_ERROR_GROWTH,
     Propagator,
+    attenuation_per_m,
     check_field_shape,
     effective_gamma_per_m,
     kerr_filter_response,
     linear_operator_exponent,
+    signed_length_m,
     split_step_sequence,
     step_sizes_m,
     uses_fast_path,
@@ -90,6 +93,66 @@ def _rk4ip(a: Any, exponent: Any, sizes: Any, gamma_eff: Any, dual: bool) -> Any
     return a
 
 
+@tf.function(reduce_retracing=True)
+def _local_error(
+    a: Any,
+    exponent: Any,
+    total: Any,
+    sign: Any,
+    first_step: Any,
+    goal: Any,
+    gamma_eff: Any,
+    alpha_eff: Any,
+    response: Any,
+    dual: bool,
+    filtered: bool,
+    effective: bool,
+) -> Any:
+    """Local-error method (Sinkin et al. 2003) as a ``tf.while_loop``; same decisions as NumPy."""
+
+    def kerr(spectrum: Any, h: Any) -> Any:
+        length = 2.0 * tf.sinh(alpha_eff * h / 2.0) / alpha_eff if effective else h
+        x = _kerr(
+            tf.signal.ifft(spectrum), gamma_eff * length, dual, response if filtered else None
+        )
+        return tf.signal.fft(x)
+
+    def keep_going(z: Any, step: Any, spectrum: Any) -> Any:
+        return tf.logical_and(z < total * (1.0 - 1e-14), step >= total * 1e-12)
+
+    def advance(z: Any, step: Any, spectrum: Any) -> Any:
+        big = tf.minimum(step, total - z)
+        h = sign * big / 2.0
+        d_h = tf.exp(exponent * tf.cast(h, tf.complex128))
+        d_half = tf.exp(exponent * tf.cast(h / 2.0, tf.complex128))
+        coarse = kerr(spectrum * d_h, 2.0 * h) * d_h
+        fine = kerr(kerr(spectrum * d_half, h) * d_h, h) * d_half
+        delta = tf.norm(fine - coarse) / tf.norm(fine)
+        delta = tf.math.real(delta)
+        reject = delta > 2.0 * goal
+        new_spectrum = tf.cond(
+            reject, lambda: spectrum, lambda: (4.0 / 3.0) * fine - (1.0 / 3.0) * coarse
+        )
+        new_z = tf.where(reject, z, z + big)
+        new_step = tf.where(
+            reject,
+            big / 2.0,
+            tf.where(
+                delta > goal,
+                big / LOCAL_ERROR_GROWTH,
+                tf.where(delta < goal / 2.0, big * LOCAL_ERROR_GROWTH, big),
+            ),
+        )
+        return new_z, new_step, new_spectrum
+
+    z, _step, spectrum = tf.while_loop(
+        keep_going,
+        advance,
+        (tf.constant(0.0, tf.float64), first_step, tf.signal.fft(a)),
+    )
+    return tf.signal.ifft(spectrum), z
+
+
 class TensorFlowPropagator(Propagator):
     """Scalar NLSE / Manakov SSFM on TensorFlow (see module docstring)."""
 
@@ -119,6 +182,30 @@ class TensorFlowPropagator(Propagator):
                 tf.constant(sizes.size, dtype=tf.int32),
                 dual,
             )
+        elif fiber.scheme.method == "ssfm-local-error":
+            length_m = signed_length_m(fiber, direction)
+            response = kerr_filter_response(a.shape[-1], dt_s, fiber)
+            effective = fiber.scheme.kerr_length == "effective" and attenuation_per_m(fiber) > 0
+            out, reached = _local_error(
+                tf.constant(a),
+                tf.constant(exponent),
+                tf.constant(abs(length_m), tf.float64),
+                tf.constant(float(np.sign(length_m)), tf.float64),
+                tf.constant(abs(float(sizes[0])), tf.float64),
+                tf.constant(float(fiber.scheme.local_error or 0.0), tf.float64),
+                tf.constant(gamma_eff, tf.float64),
+                tf.constant(attenuation_per_m(fiber), tf.float64),
+                tf.constant(
+                    np.ones(a.shape[-1]) if response is None else response, dtype=tf.complex128
+                ),
+                dual,
+                response is not None,
+                effective,
+            )
+            if float(reached) < abs(length_m) * (1.0 - 1e-12):
+                raise RuntimeError(
+                    f"local-error method cannot reach local_error={fiber.scheme.local_error}"
+                )
         elif fiber.scheme.method == "rk4ip":
             out = _rk4ip(
                 tf.constant(a),

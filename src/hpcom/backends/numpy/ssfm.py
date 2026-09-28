@@ -36,11 +36,14 @@ import numpy as np
 from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
     ALL_METHODS,
+    LOCAL_ERROR_GROWTH,
     Propagator,
+    attenuation_per_m,
     check_field_shape,
     effective_gamma_per_m,
     kerr_filter_response,
     linear_operator_exponent,
+    signed_length_m,
     split_step_sequence,
     step_sizes_m,
     uses_fast_path,
@@ -83,6 +86,18 @@ class NumpySSFMPropagator(Propagator):
             return self._uniform(a, exponent, sizes, gamma_eff, dual)
         if fiber.scheme.method == "rk4ip":
             return self._rk4ip(a, exponent, sizes, gamma_eff, dual)
+        if fiber.scheme.method == "ssfm-local-error":
+            return self._local_error(
+                a,
+                exponent,
+                signed_length_m(fiber, direction),
+                float(sizes[0]),
+                float(fiber.scheme.local_error or 0.0),
+                gamma_eff,
+                dual,
+                kerr_filter_response(a.shape[-1], dt_s, fiber),
+                attenuation_per_m(fiber) if fiber.scheme.kerr_length == "effective" else 0.0,
+            )
         linear, kerr = split_step_sequence(fiber, direction)
         response = kerr_filter_response(a.shape[-1], dt_s, fiber)
         return self._sequence(a, exponent, linear, kerr, gamma_eff, dual, response)
@@ -130,6 +145,57 @@ class NumpySSFMPropagator(Propagator):
             a = disperse(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
         result: ComplexArray = a
         return result
+
+    @staticmethod
+    def _local_error(
+        a: np.ndarray,
+        exponent: np.ndarray,
+        length_m: float,
+        first_step_m: float,
+        goal: float,
+        gamma_eff: float,
+        dual: bool,
+        response: np.ndarray | None,
+        alpha_eff: float,
+    ) -> ComplexArray:
+        """Local-error method (Sinkin et al. 2003) in the spectral domain, 6 FFTs per 2h."""
+        sign, total = np.sign(length_m), abs(length_m)
+
+        def kerr_length(h: float) -> float:  # symmetric step: 2 sinh(αh/2)/α, or h
+            return 2.0 * np.sinh(alpha_eff * h / 2.0) / alpha_eff if alpha_eff else h
+
+        def kerr(spectrum: np.ndarray, h: float) -> np.ndarray:
+            x = np.fft.ifft(spectrum, axis=-1)
+            x *= np.exp(1j * (gamma_eff * kerr_length(h)) * _kerr_power(x, dual, response))
+            out: np.ndarray = np.fft.fft(x, axis=-1)
+            return out
+
+        spectrum = np.fft.fft(a, axis=-1)
+        z, step = 0.0, abs(first_step_m)
+        while z < total * (1.0 - 1e-14):
+            big = min(step, total - z)
+            h = sign * big / 2.0
+            d_h, d_half = np.exp(exponent * h), np.exp(exponent * (h / 2.0))
+            coarse = kerr(spectrum * d_h, 2.0 * h) * d_h
+            fine = kerr(kerr(spectrum * d_half, h) * d_h, h) * d_half
+            delta = np.linalg.norm(fine - coarse) / np.linalg.norm(fine)
+            if not np.isfinite(delta):
+                raise FloatingPointError("local-error method: non-finite field")
+            if delta > 2.0 * goal:
+                step = big / 2.0
+                if step < total * 1e-12:
+                    raise RuntimeError(f"local-error method cannot reach local_error={goal}")
+                continue
+            spectrum = (4.0 / 3.0) * fine - (1.0 / 3.0) * coarse
+            z += big
+            if delta > goal:
+                step = big / LOCAL_ERROR_GROWTH
+            elif delta < goal / 2.0:
+                step = big * LOCAL_ERROR_GROWTH
+            else:
+                step = big
+        out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
+        return out
 
     @staticmethod
     def _sequence(

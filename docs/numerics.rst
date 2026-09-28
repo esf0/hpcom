@@ -269,6 +269,66 @@ error falls 16× per halving and Suzuki at 800 steps (7.7e-9) is
 [``test_fourth_order_methods_on_the_second_order_soliton``].
 
 
+Adaptive local-error method
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``Scheme(method="ssfm-local-error", local_error=δ_G)`` chooses the step size
+during propagation [Sinkin2003]_ (Sect. II-F). From :math:`z`, with the
+symmetric step :eq:`strang-step`,
+
+.. math::
+
+   u_c = S(2h)\,u(z), \qquad u_f = S(h)S(h)\,u(z), \qquad
+   \delta = \frac{\lVert u_f - u_c\rVert}{\lVert u_f\rVert}.
+
+Since the local error of :math:`S` is :math:`\kappa h^3`,
+:math:`u_c = u_t + 8\kappa h^3` and :math:`u_f = u_t + 2\kappa h^3`, so
+
+.. math::
+
+   u(z + 2h) = \tfrac43\,u_f - \tfrac13\,u_c = u_t + O(h^4)
+
+is accepted (globally third order), and the step is controlled by the
+relative local error :math:`\delta` of the coarse solution:
+
+=============================================== ==========================================
+:math:`\delta`                                  action
+=============================================== ==========================================
+:math:`> 2\delta_G`                              reject, retry with :math:`h/2`
+:math:`(\delta_G, 2\delta_G]`                   accept, next :math:`h \to h/2^{1/3}`
+:math:`[\delta_G/2, \delta_G]`                  accept, keep :math:`h`
+:math:`< \delta_G/2`                             accept, next :math:`h \to 2^{1/3}h`
+=============================================== ==========================================
+
+hpcom keeps the field in the frequency domain between steps, so a double
+step costs 6 FFTs (2 coarse, 4 fine, :math:`D(h/2)D(h/2)` merged) — 50 %
+more than two Strang steps [``test_local_error_method_costs_six_ffts_per_double_step``].
+The fiber's first step (``n_steps``, ``step_distribution``) sets only the
+initial :math:`h`; the effective Kerr length and the intensity filter apply.
+Norms run over all polarisations and batch rows together (one step sequence
+for the whole field). The step sequence depends on the field, so backward
+propagation is accurate, not exact. The TensorFlow backend runs the same
+controller as a ``tf.while_loop`` on the device and takes the same
+decisions [``test_local_error_method_agrees_with_numpy_reference``].
+
+Measured on the 30 GHz / 10 mW / 80 km field
+[``test_local_error_method_error_follows_the_goal``]:
+
+====================== ========= ========= ========= ========= =========
+:math:`\delta_G`       1e-3      1.25e-4   1.56e-5   1.95e-6   2.4e-7
+====================== ========= ========= ========= ========= =========
+error                  7.5e-4    2.3e-5    9.8e-7    2.3e-8    1.4e-9
+FFTs per span          260       506       980       1922      3806
+====================== ========= ========= ========= ========= =========
+
+Each 8× tighter :math:`\delta_G` doubles the cost (:math:`h \propto
+\delta_G^{1/3}`) and cuts the error 16–43×. At similar cost, Strang with
+1280 steps (2562 FFTs) reaches 1.9e-6 and RK4IP with 160 steps (1280 FFTs)
+9.6e-7, against 2.3e-8 here at 1922 FFTs. On the exact second-order soliton
+the error also follows :math:`\delta_G`
+[``test_local_error_method_on_the_second_order_soliton``].
+
+
 Order of accuracy
 -----------------
 
@@ -560,6 +620,10 @@ Backends and GPU policy
      - ✓
      - ✓ (GPU)
      - exact, no steps
+   * - Adaptive local-error method
+     - ✓
+     - ✓ (GPU, ``tf.while_loop``)
+     - exact, no steps
 
 Policy for new schemes: a scheme that can run on a GPU gets its GPU
 implementation (TensorFlow now, JAX planned) and must pass the conformance
@@ -573,8 +637,6 @@ Planned schemes
 
 Not implemented yet; listed with the literature they follow.
 
-* **Adaptive local-error control** (step doubling, third-order accurate)
-  [Sinkin2003]_.
 * **Sixth and higher order** compositions (e.g. a triple jump of the
   fourth-order step) and embedded RK schemes with error control
   [Muslu2005]_. A comparison of split-step variants for optical links is
@@ -589,7 +651,8 @@ Not implemented yet; listed with the literature they follow.
   exponential schemes for the Zakharov–Shabat and Manakov direct scattering
   problems [Medvedev2020]_, [Kachulin2023]_; review [Sedov2025]_. These are
   high-order in the NFT sense (time discretisation of the scattering
-  problem), not propagation schemes; they belong in a future NFT module.
+  problem), not propagation schemes; NFT support will come from a separate
+  project to be integrated later.
 
 
 References

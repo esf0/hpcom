@@ -20,6 +20,12 @@ hpcom, ``ssfm-gpu`` and OptiCommPy's ``ssfm``.
 * ``"rk4ip"`` — fourth-order Runge–Kutta in the interaction picture
   (Hult 2007): 4 Kerr evaluations and 8 FFTs per step. Not time-reversible,
   so backward propagation is accurate to fourth order, not exact.
+* ``"ssfm-local-error"`` — adaptive step size bounding the relative local
+  error by ``local_error`` (Sinkin et al. 2003): a coarse step of :math:`2h`
+  and two fine steps of :math:`h`, accepted as
+  :math:`\tfrac43 u_f - \tfrac13 u_c` (third order). The fiber's first step
+  only sets the initial step; the step sequence depends on the field, so
+  backward propagation is accurate, not exact.
 
 Kerr-step options (split-step methods only)
 
@@ -52,13 +58,14 @@ __all__ = [
 ]
 
 #: Integration methods (see the module docstring).
-SchemeMethod = Literal["ssfm", "ssfm4-yoshida", "ssfm4-suzuki", "rk4ip"]
+SchemeMethod = Literal["ssfm", "ssfm4-yoshida", "ssfm4-suzuki", "rk4ip", "ssfm-local-error"]
 #: Length used in the Kerr phase of a split step.
 KerrLength = Literal["step", "effective"]
 #: Shape of the intensity filter of a filtered Kerr step.
 KerrFilterShape = Literal["gaussian", "rectangular"]
 
 _SPLIT_STEP: frozenset[str] = frozenset({"ssfm", "ssfm4-yoshida", "ssfm4-suzuki"})
+_KERR_OPTIONS: frozenset[str] = _SPLIT_STEP | {"ssfm-local-error"}
 
 
 class Scheme(HpcomModel):
@@ -83,6 +90,9 @@ class Scheme(HpcomModel):
         ``"gaussian"``, :math:`H(f) = e^{-\\frac{\\ln 2}{2}(f/f_c)^2}`
         (:math:`|H(f_c)|^2 = 1/2`), or ``"rectangular"``,
         :math:`H(f) = [\\,|f| \\le f_c\\,]`.
+    local_error
+        Goal relative local error :math:`\\delta_G` of ``"ssfm-local-error"``
+        (required there, not allowed elsewhere).
     """
 
     method: SchemeMethod = "ssfm"
@@ -90,6 +100,7 @@ class Scheme(HpcomModel):
     kerr_length: KerrLength = "step"
     kerr_filter_bandwidth_hz: float | None = Field(default=None, gt=0)
     kerr_filter_shape: KerrFilterShape = "gaussian"
+    local_error: float | None = Field(default=None, gt=0, lt=1)
 
     @model_validator(mode="before")
     @classmethod
@@ -107,7 +118,11 @@ class Scheme(HpcomModel):
                 f'nonlinear_position applies only to method="ssfm" ({self.method} '
                 "composes symmetric steps)"
             )
-        if self.method not in _SPLIT_STEP:
+        if (self.method == "ssfm-local-error") != (self.local_error is not None):
+            raise ValueError(
+                'local_error is required by, and only allowed with, "ssfm-local-error"'
+            )
+        if self.method not in _KERR_OPTIONS:
             if self.kerr_length != "step":
                 raise ValueError(f'kerr_length="{self.kerr_length}" needs a split-step method')
             if self.kerr_filter_bandwidth_hz is not None:
@@ -118,7 +133,7 @@ class Scheme(HpcomModel):
 
     @property
     def is_split_step(self) -> bool:
-        """``True`` for the split-step methods (exactly invertible, :math:`N` is a phase)."""
+        """``True`` for the fixed-step split-step methods (exactly invertible)."""
         return self.method in _SPLIT_STEP
 
     @property
@@ -126,6 +141,8 @@ class Scheme(HpcomModel):
         """Global order of accuracy in the step for the unfiltered equation."""
         if self.method == "ssfm":
             return 2 if self.nonlinear_position == 0.5 else 1
+        if self.method == "ssfm-local-error":
+            return 3
         return 4
 
     @property

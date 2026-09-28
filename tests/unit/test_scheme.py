@@ -165,3 +165,38 @@ def test_composition_sequence_has_one_kerr_step_per_stage():
     assert kerr.size == 10 and linear.size == 11
     assert kerr.sum() == pytest.approx(10e3) and linear.sum() == pytest.approx(10e3)
     assert np.sum(kerr < 0) == 2  # the negative middle stage of each step
+
+
+def test_local_error_scheme_validation():
+    s = Scheme(method="ssfm-local-error", local_error=1e-5, kerr_length="effective")
+    assert s.order == 3 and not s.is_split_step
+    assert Scheme.model_validate_json(s.model_dump_json()) == s
+    with pytest.raises(ValidationError, match="local_error is required"):
+        Scheme(method="ssfm-local-error")
+    with pytest.raises(ValidationError, match="local_error is required"):
+        Scheme(local_error=1e-5)
+    with pytest.raises(ValidationError):
+        Scheme(method="ssfm-local-error", local_error=1.5)
+    with pytest.raises(ValidationError, match="nonlinear_position"):
+        Scheme(method="ssfm-local-error", local_error=1e-5, nonlinear_position=0.2)
+
+
+def test_local_error_method_costs_six_ffts_per_double_step():
+    """Coarse 2h (2 FFTs) + fine h, h (4 FFTs); +2 for entering/leaving the spectral domain."""
+    from unittest import mock
+
+    fiber = Fiber(
+        length_km=1.0,
+        alpha_db_per_km=0.0,
+        gamma_per_w_per_km=0.0,  # linear: δ = 0, so the step only grows
+        n_steps=4,
+        scheme=Scheme(method="ssfm-local-error", local_error=1e-6),
+    )
+    x = np.random.default_rng(0).standard_normal(64) + 0j
+    with (
+        mock.patch("numpy.fft.fft", wraps=np.fft.fft) as fft,
+        mock.patch("numpy.fft.ifft", wraps=np.fft.ifft) as ifft,
+    ):
+        fiber.propagate(x, 1e-12)
+    # steps: 250 m, then ×2^{1/3} each: 250, 315, 397 (→ 38 m clamp) = 4 double steps
+    assert fft.call_count + ifft.call_count == 6 * 4 + 2

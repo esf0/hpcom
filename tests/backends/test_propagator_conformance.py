@@ -32,6 +32,7 @@ class StubScheme:
     kerr_length: str = "step"
     kerr_filter_bandwidth_hz: float | None = None
     kerr_filter_shape: str = "gaussian"
+    local_error: float | None = None
 
 
 @dataclass(frozen=True)
@@ -588,6 +589,57 @@ def test_rk4ip_backward_is_a_fourth_order_but_not_exact_inverse(nonlinear_backen
     assert all(a / b > 14 for a, b in itertools.pairwise(errors)), errors
 
 
+def _local_error_fiber(goal: float, **extra) -> StubFiber:
+    return replace(
+        _ORDER_BASE,
+        n_steps=10,
+        scheme=StubScheme(method="ssfm-local-error", local_error=goal, **extra),
+    )
+
+
+def test_local_error_method_error_follows_the_goal(nonlinear_backend):
+    """Each 8× tighter goal δ_G halves the steps (h ∝ δ_G^{1/3}) and cuts the error ≥ 8×."""
+    field, dt = _order_test_field()
+    ref = _fourth_order_reference(nonlinear_backend)
+    prop = get_propagator(nonlinear_backend)
+    goals = (1.25e-4, 1.5625e-5, 1.953125e-6)
+    errors = [
+        np.linalg.norm(prop.propagate(field, _local_error_fiber(g), dt_s=dt) - ref)
+        / np.linalg.norm(ref)
+        for g in goals
+    ]
+    assert all(e < g for e, g in zip(errors, goals, strict=True)), errors
+    assert all(a / b > 8 for a, b in itertools.pairwise(errors)), errors
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({}, id="plain"),
+        pytest.param({"kerr_length": "effective", "kerr_filter_bandwidth_hz": 40e9}, id="options"),
+    ],
+)
+def test_local_error_method_agrees_with_numpy_reference(nonlinear_backend, extra):
+    """Same accept/reject decisions on every backend."""
+    field, dt = _order_test_field()
+    fiber = replace(_local_error_fiber(1e-5, **extra), polarization="dual")
+    field = np.stack([field, np.roll(field, 100)])
+    ref = get_propagator("numpy").propagate(field, fiber, dt_s=dt)
+    out = get_propagator(nonlinear_backend).propagate(field, fiber, dt_s=dt)
+    np.testing.assert_allclose(out, ref, rtol=0, atol=1e-12 * np.max(np.abs(ref)))
+
+
+def test_local_error_method_backward_is_accurate_not_exact(nonlinear_backend):
+    field, dt = _order_test_field()
+    fiber = _local_error_fiber(1e-5)
+    prop = get_propagator(nonlinear_backend)
+    back = prop.propagate(
+        prop.propagate(field, fiber, dt_s=dt), fiber, dt_s=dt, direction="backward"
+    )
+    error = np.linalg.norm(back - field) / np.linalg.norm(field)
+    assert 1e-10 < error < 1e-5
+
+
 # ---------------------------------------------------------------------------
 # Exact solutions of the NLSE / Manakov equation
 # ---------------------------------------------------------------------------
@@ -606,6 +658,26 @@ def _satsuma_yajima(tau: np.ndarray, xi: float, p0: float) -> np.ndarray:
     num = 4 * (np.cosh(3 * tau) + 3 * np.exp(4j * xi) * np.cosh(tau)) * np.exp(1j * xi / 2)
     den = np.cosh(4 * tau) + 4 * np.cosh(2 * tau) + 3 * np.cos(4 * xi)
     return np.sqrt(p0) * num / den
+
+
+def test_local_error_method_on_the_second_order_soliton(nonlinear_backend):
+    """The adaptive method tracks the compressing N = 2 soliton; its error follows δ_G."""
+    tau, dt = _soliton_grid()
+    p0 = abs(_B2) / (_GAMMA * _T0**2)
+    a0, expected = _satsuma_yajima(tau, 0.0, p0), _satsuma_yajima(tau, np.pi / 2, p0)
+    errors = []
+    for goal in (1e-4, 1.25e-5, 1.5625e-6):
+        fiber = StubFiber(
+            length_km=np.pi / 2 * _LD / 1e3,
+            beta2_s2_per_m=_B2,
+            gamma_per_w_per_km=_GAMMA * 1e3,
+            n_steps=10,
+            scheme=StubScheme(method="ssfm-local-error", local_error=goal),
+        )
+        out = get_propagator(nonlinear_backend).propagate(a0, fiber, dt_s=dt)
+        errors.append(np.max(np.abs(out - expected)) / np.max(np.abs(a0)))
+    assert errors[-1] < 1e-6
+    assert all(a / b > 6 for a, b in itertools.pairwise(errors)), errors
 
 
 @pytest.mark.parametrize("method", FOURTH_ORDER)
