@@ -1,8 +1,7 @@
-"""Optical amplifiers.
+r"""Optical amplifiers.
 
-Currently provides :class:`EDFA`. New amplifier types (Raman, semiconductor,
-…) plug in by subclassing :class:`Amplifier` and implementing
-:meth:`Amplifier.amplify`.
+Provides :class:`EDFA`. New amplifier types (Raman, SOA, …) plug in by
+subclassing :class:`Amplifier` and implementing :meth:`Amplifier.amplify`.
 """
 
 from __future__ import annotations
@@ -10,26 +9,22 @@ from __future__ import annotations
 from abc import abstractmethod
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from hpcom._model import HpcomModel
 from hpcom._typing import ComplexArray
-
-#: Speed of light in vacuum, m/s.
-_C_LIGHT_M_PER_S = 299_792_458.0
-#: Planck constant, J·s.
-_H_PLANCK_J_S = 6.62607015e-34
+from hpcom.units import PLANCK_J_S, db_to_linear, wavelength_to_frequency_hz
 
 
-class Amplifier(BaseModel):
-    """Common base for optical amplifiers.
+class Amplifier(HpcomModel):
+    """Base class for optical amplifiers.
 
-    Implementations should accept either a 1-D scalar field of shape ``(N,)``
-    or a 2-D dual-polarization field of shape ``(2, N)`` and return the same
-    shape. Stochastic noise (if any) is injected via the ``rng`` argument so
-    callers can pin reproducibility from above.
+    ``amplify`` accepts a field of any shape (time on the last axis; a
+    dual-polarisation field is ``(..., 2, n)``) and returns the same shape.
+    Stochastic noise is drawn from the ``rng`` argument so reproducibility is
+    controlled by the caller (:class:`~hpcom.simulation.Simulation` threads
+    its seed through :class:`~hpcom.link.Link`).
     """
-
-    model_config = ConfigDict(frozen=True)
 
     @abstractmethod
     def amplify(
@@ -41,6 +36,11 @@ class Amplifier(BaseModel):
     ) -> ComplexArray:
         """Return the amplified field. Implementations may add stochastic noise."""
 
+    @property
+    @abstractmethod
+    def gain_linear(self) -> float:
+        """Power gain ``G`` (linear)."""
+
     def apply(
         self,
         field: ComplexArray,
@@ -48,24 +48,59 @@ class Amplifier(BaseModel):
         *,
         rng: np.random.Generator | None = None,
     ) -> ComplexArray:
-        """:class:`hpcom._typing.LinkComponent` adaptor — alias for :meth:`amplify`."""
+        """:class:`~hpcom._typing.LinkComponent` interface: alias for :meth:`amplify`."""
         return self.amplify(field, dt_s, rng=rng)
+
+    def apply_inverse(self, field: ComplexArray, dt_s: float) -> ComplexArray:
+        """Noiseless inverse gain ``field / √G`` (used by digital back-propagation)."""
+        del dt_s
+        out: ComplexArray = np.asarray(field, dtype=np.complex128) / np.sqrt(self.gain_linear)
+        return out
 
 
 class EDFA(Amplifier):
-    """Erbium-doped fibre amplifier with ASE noise.
+    r"""Erbium-doped fibre amplifier: power gain ``G`` plus ASE noise.
 
-    The amplifier scales the field amplitude by ``√G`` and adds zero-mean
-    complex Gaussian ASE noise. Noise spectral density per polarization is
+    The output field is
 
-        N₀ = h · f_c · (G − 1) · NF
+    .. math:: A_\text{out} = \sqrt{G}\,A_\text{in} + n,
 
-    in W/Hz, so the per-sample complex variance at sample rate ``f_s = 1/dt_s``
-    is ``N₀ · f_s`` (split equally between real and imaginary parts).
+    where ``n`` is white, circular complex Gaussian ASE, independent in every
+    sample and every polarisation, with one-sided power spectral density
+    **per polarisation** (Essiambre et al., "Capacity limits of optical fiber
+    networks", *J. Lightwave Technol.* 28(4), 662–701, 2010; the same model
+    as OptiCommPy's ``edfa``)
 
-    Accepts either a 1-D field ``(N,)`` (single pol) or a 2-D field ``(2, N)``
-    (dual pol). For dual pol, each polarization independently receives ASE of
-    variance ``N₀ · f_s`` — i.e. ``N₀`` is per-pol, not split across pols.
+    .. math::
+
+        S_\text{ASE} = n_\text{sp}\, h\nu\, (G - 1),
+        \qquad
+        n_\text{sp} = \frac{G\,F - 1}{2\,(G - 1)},
+
+    so :math:`S_\text{ASE} = (G F - 1)\,h\nu/2 \approx F\,h\nu\,G/2` for
+    :math:`G \gg 1`. ``F`` is the linear noise figure (``10^{NF_dB/10}``) and
+    ``ν = c/λ`` the carrier frequency. The ``n_sp``–``F`` relation is the
+    standard one for a phase-insensitive amplifier,
+    :math:`F = [1 + 2 n_\text{sp}(G-1)]/G`. The ASE in *both* polarisations
+    together is :math:`2 S_\text{ASE} \approx F h\nu G`.
+
+    In the simulation, sampled at :math:`f_s = 1/\Delta t`, each complex
+    sample of each polarisation receives noise of variance
+    :math:`\sigma^2 = S_\text{ASE} f_s` (``σ²/2`` per quadrature). A
+    single-polarisation field only receives its co-polarised ASE — the
+    orthogonal ASE does not reach a single-polarisation coherent receiver.
+
+    ``G = 1`` (``gain_db = 0``) adds no noise. Note that ``F = 1``
+    (``noise_figure_db = 0``) is *below* the quantum limit of a
+    phase-insensitive amplifier (``F ≥ 2 − 1/G``, i.e. ≈ 3 dB) but still
+    yields ASE: ``n_sp = 1/2``.
+
+    .. note::
+       Earlier conventions, per polarisation and relative to the level above
+       at high gain: pre-v1 hpcom injected ``hν(G−1)F`` in the Manakov model
+       (+3 dB) and ``2hν(G−1)F`` in the scalar model (+6 dB); hpcom
+       0.2.0.dev injected ``hν(G−1)F`` in both (+3 dB). To reproduce such a
+       result here, raise ``noise_figure_db`` by that amount.
     """
 
     gain_db: float = Field(ge=0)
@@ -74,16 +109,37 @@ class EDFA(Amplifier):
 
     @property
     def gain_linear(self) -> float:
-        return float(10.0 ** (self.gain_db / 10.0))
+        """Power gain ``G = 10^(gain_db/10)``."""
+        return db_to_linear(self.gain_db)
 
     @property
     def noise_figure_linear(self) -> float:
-        return float(10.0 ** (self.noise_figure_db / 10.0))
+        """Noise figure ``F = 10^(noise_figure_db/10)``."""
+        return db_to_linear(self.noise_figure_db)
 
-    def ase_noise_density_w_per_hz(self) -> float:
-        """One-sided ASE PSD per polarization, in W/Hz."""
-        f_c = _C_LIGHT_M_PER_S / self.wavelength_m
-        return _H_PLANCK_J_S * f_c * (self.gain_linear - 1.0) * self.noise_figure_linear
+    @property
+    def spontaneous_emission_factor(self) -> float:
+        """Population-inversion factor ``n_sp = (G F − 1) / (2 (G − 1))``.
+
+        Undefined (returned as ``nan``) for ``G = 1``, where no ASE is emitted.
+        """
+        g = self.gain_linear
+        if g == 1.0:
+            return float("nan")
+        return (g * self.noise_figure_linear - 1.0) / (2.0 * (g - 1.0))
+
+    @property
+    def ase_psd_per_polarization_w_per_hz(self) -> float:
+        """One-sided ASE power spectral density per polarisation, ``n_sp h ν (G−1)``, in W/Hz."""
+        g = self.gain_linear
+        if g == 1.0:
+            return 0.0
+        h_nu = PLANCK_J_S * wavelength_to_frequency_hz(self.wavelength_m)
+        return (g * self.noise_figure_linear - 1.0) * h_nu / 2.0
+
+    def ase_variance_per_sample(self, dt_s: float) -> float:
+        """Complex noise variance added to each sample of each polarisation, ``S_ASE / Δt``."""
+        return self.ase_psd_per_polarization_w_per_hz / dt_s
 
     def amplify(
         self,
@@ -92,28 +148,14 @@ class EDFA(Amplifier):
         *,
         rng: np.random.Generator | None = None,
     ) -> ComplexArray:
-        if field.ndim not in (1, 2):
-            raise ValueError(f"EDFA expects 1-D or 2-D field, got {field.ndim}-D")
-        if field.ndim == 2 and field.shape[0] != 2:
-            raise ValueError(
-                f"EDFA expects 2-D field with leading axis 2 (dual pol); got shape {field.shape}"
-            )
-
-        sqrt_gain = float(np.sqrt(self.gain_linear))
-        amplified = field * sqrt_gain
-
-        if self.gain_db == 0.0:
-            # G = 1 → ASE PSD = 0, regardless of NF. Skip RNG entirely.
-            return amplified.astype(np.complex128, copy=False)
-
+        field = np.asarray(field, dtype=np.complex128)
+        amplified: ComplexArray = field * np.sqrt(self.gain_linear)
+        variance = self.ase_variance_per_sample(dt_s)
+        if variance == 0.0:
+            return amplified
         if rng is None:
             rng = np.random.default_rng()
-
-        sample_rate_hz = 1.0 / dt_s
-        sigma_per_quadrature = float(
-            np.sqrt(self.ase_noise_density_w_per_hz() * sample_rate_hz / 2.0)
-        )
-        # Independent ASE per polarization (and per sample). For dual-pol the
-        # broadcast over field.shape produces a (2, N) noise array natively.
+        sigma = np.sqrt(variance / 2.0)
         noise = rng.standard_normal(field.shape) + 1j * rng.standard_normal(field.shape)
-        return (amplified + sigma_per_quadrature * noise).astype(np.complex128, copy=False)
+        amplified += sigma * noise
+        return amplified

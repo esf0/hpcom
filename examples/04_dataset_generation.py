@@ -1,18 +1,23 @@
-"""04 — Bulk dataset generation for ML / data-mining workflows.
+"""04 — Dataset generation for ML / data-mining workflows.
 
-Loops a single scenario across many random seeds and writes the (sent, received)
-symbol pairs to ``.npz`` files. This is the primary on-ramp for the strategic
-ML/data-mining audience — once you have a scenario you trust, this script
-turns it into a labelled corpus for training nonlinearity-compensation,
-equalization, or denoising models.
+Runs one scenario over many seeds and launch powers and stores, per
+realisation, the transmitted and received symbols, the received field and the
+metrics — plus the full scenario configuration as JSON, from which any
+realisation can be regenerated exactly::
+
+    sim = Simulation.model_validate_json(Path("config.json").read_text())
+    result = sim.replace(seed=<seed>, transmitter=...).run()
 
 Run::
 
-    python examples/04_dataset_generation.py
+    python examples/04_dataset_generation.py [output-directory]
 """
 
 from __future__ import annotations
 
+import json
+import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -20,56 +25,55 @@ import numpy as np
 from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierReceiver, SingleCarrierTransmitter
 
 
-def main(out_dir: str = "_dataset", n_realizations: int = 4) -> None:
-    out_path = Path(out_dir)
-    out_path.mkdir(exist_ok=True)
-
-    fiber = Fiber.ssmf(length_km=80.0, n_steps=20, backend="tensorflow")
-    edfa = EDFA(gain_db=fiber.alpha_db_per_km * fiber.length_km, noise_figure_db=5.0)
-    link = Link.from_spans(n_spans=3, fiber=fiber, amplifier=edfa)
-
-    rx = SingleCarrierReceiver(
-        modulation_order=16,
-        samples_per_symbol=4,
-        roll_off=0.1,
-        pulse_span_symbols=16,
-        equalize="unit_power",
-        cd_compensation_s2=link.total_dispersion_s2,
+def main(out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fiber = Fiber.ssmf(length_km=80.0, n_steps=20)
+    link = Link.from_spans(
+        n_spans=5, fiber=fiber, amplifier=EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0)
     )
-
-    for seed in range(n_realizations):
-        tx = SingleCarrierTransmitter(
+    base = Simulation(
+        transmitter=SingleCarrierTransmitter(
+            modulation_order=16, symbol_rate_hz=32e9, n_symbols=2048, samples_per_symbol=4
+        ),
+        link=link,
+        receiver=SingleCarrierReceiver(
             modulation_order=16,
-            symbol_rate_hz=32e9,
-            n_symbols=4096,
             samples_per_symbol=4,
-            roll_off=0.1,
-            pulse_span_symbols=16,
-            seed=seed,
-        )
-        sent = tx.generate()
-        result = Simulation(
-            transmitter=tx,
-            link=link,
-            receiver=rx,
-            seed=seed,
-            launch_power_dbm=-3.0,
-        ).run()
+            equalize="data_aided",
+            cd_compensation_s2=link.total_dispersion_s2,
+        ),
+    )
+    (out_dir / "config.json").write_text(base.model_dump_json(indent=2))
 
-        path = out_path / f"realization_{seed:04d}.npz"
-        np.savez_compressed(
-            path,
-            sent_symbols=sent.symbols,
-            sent_bits=sent.bits,
-            decoded_symbols=result.decoded_symbols,
-            decoded_bits=result.decoded_bits,
-            ber=result.metrics.ber,
-            evm_rms=result.metrics.evm_rms,
-        )
-        print(f"  wrote {path}  (BER={result.metrics.ber:.2e})")
-
-    print(f"Done. {n_realizations} realisations under {out_path}/")
+    index = []
+    for power_dbm in (-2.0, 0.0, 2.0):
+        for seed in range(3):
+            sim = base.replace(
+                transmitter=base.transmitter.with_launch_power(per_channel_dbm=power_dbm), seed=seed
+            )
+            result = sim.run()
+            name = f"p{power_dbm:+.0f}dBm_seed{seed}.npz"
+            np.savez_compressed(
+                out_dir / name,
+                tx_symbols=result.transmitted.symbols,
+                tx_bits=result.transmitted.bits,
+                rx_symbols=result.received.symbols,
+                rx_field=result.received_field,
+            )
+            index.append(
+                {
+                    "file": name,
+                    "launch_power_dbm": power_dbm,
+                    **result.to_dict()["metrics"],
+                    "seed": seed,
+                }
+            )
+            print(f"  {name}: BER={result.metrics.ber:.2e}, SNR={result.metrics.snr_db:.2f} dB")
+    (out_dir / "index.json").write_text(json.dumps(index, indent=2))
+    print(f"Wrote {len(index)} realisations to {out_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    main(
+        Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="hpcom_dataset_"))
+    )

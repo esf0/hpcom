@@ -1,403 +1,237 @@
-"""T12.3: OFDMReceiver — noiseless B2B, pilot equalization, shape checks.
-
-Verifies that ``OFDMReceiver`` correctly demodulates OFDM-transmitted fields:
-CP removal, FFT, power de-normalisation, data extraction, optional one-tap
-pilot-based channel equalisation, and hard-decision demap.
-
-All noiseless B2B tests assert BER == 0: any non-zero BER indicates a
-normalisation or indexing bug in the Tx → Rx round-trip.
-"""
+"""OFDMReceiver: demodulation, equalisation, shapes, validation."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from hpcom.modulation import (
-    ConstantCompositionDM,
-    ConstellationConfig,
-    maxwell_boltzmann,
-    square_qam,
-)
-from hpcom.ofdm import OFDMConfig, OFDMReceivedSymbols, OFDMReceiver, OFDMTransmitter
-from hpcom.pilots import PilotConfig
-from hpcom.receiver import Receiver
+from hpcom import Fiber, OFDMConfig, OFDMReceiver, OFDMTransmitter, Receiver
+from hpcom.modulation import ConstantCompositionDM, ConstellationConfig, maxwell_boltzmann
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+PILOTS = (2, 10, 20, 26, 40, 50, 58)
 
 
-def _make_tx_rx(
+def make_pair(
     *,
     n_subcarriers: int = 64,
     cp_len: int = 16,
     n_guard: int = 4,
-    pilot_indices: tuple[int, ...] = (),
-    n_frames: int = 32,
-    modulation_order: int = 4,
-    polarization: str = "single",
-    seed: int = 0,
-    constellation: ConstellationConfig | None = None,
-    dm: ConstantCompositionDM | None = None,
+    pilots: tuple[int, ...] = (),
+    oversampling: int = 1,
+    n_frames: int = 16,
+    rx_kwargs: dict | None = None,
+    **tx_kw,
 ) -> tuple[OFDMTransmitter, OFDMReceiver]:
     ofdm = OFDMConfig(
         n_subcarriers=n_subcarriers,
         cp_len=cp_len,
         n_guard=n_guard,
-        pilot_subcarrier_indices=pilot_indices,
+        pilot_subcarrier_indices=pilots,
+        oversampling=oversampling,
     )
-    tx_kwargs: dict = dict(
-        symbol_rate_hz=32e9,
-        n_symbols=n_frames,
-        ofdm=ofdm,
-        polarization=polarization,
-        seed=seed,
+    tx_kw.setdefault("seed", 0)
+    if "constellation" not in tx_kw:
+        tx_kw.setdefault("modulation_order", 16)
+    tx = OFDMTransmitter(subcarrier_spacing_hz=500e6, n_frames=n_frames, ofdm=ofdm, **tx_kw)
+    rx_kw = {k: getattr(tx, k) for k in ("modulation_order", "constellation", "dm", "polarization")}
+    rx = OFDMReceiver(
+        ofdm=ofdm, **{k: v for k, v in rx_kw.items() if v is not None}, **(rx_kwargs or {})
     )
-    rx_kwargs: dict = dict(
-        ofdm=ofdm,
-        polarization=polarization,
-    )
-    if constellation is not None:
-        tx_kwargs["constellation"] = constellation
-        rx_kwargs["constellation"] = constellation
-    else:
-        tx_kwargs["modulation_order"] = modulation_order
-        rx_kwargs["modulation_order"] = modulation_order
-    if dm is not None:
-        tx_kwargs["dm"] = dm
-        rx_kwargs["dm"] = dm
-
-    tx = OFDMTransmitter(**tx_kwargs)
-    rx = OFDMReceiver(**rx_kwargs)
     return tx, rx
 
 
-def _ber(sent_bits: np.ndarray, recv_bits: np.ndarray) -> float:
-    """Bit error rate between two bit arrays."""
-    return float(np.mean(sent_bits != recv_bits))
+def apply_per_subcarrier_channel(
+    tx: OFDMTransmitter, field: np.ndarray, h: np.ndarray
+) -> np.ndarray:
+    """Multiply every frame's L·N-point spectrum by ``h`` (a channel within the CP)."""
+    cfg = tx.ofdm
+    cp = cfg.cp_len * cfg.oversampling
+    frames = field.reshape(*field.shape[:-1], tx.n_frames, cfg.samples_per_frame)[..., cp:]
+    out = np.fft.ifft(np.fft.fft(frames, axis=-1) * h, axis=-1)
+    return (
+        np.concatenate([out[..., -cp:], out], axis=-1).reshape(field.shape)
+        if cp
+        else out.reshape(field.shape)
+    )
 
 
-# ---------------------------------------------------------------------------
-# Inheritance and construction
-# ---------------------------------------------------------------------------
+# ---- structure and validation --------------------------------------------------------
 
 
-def test_ofdm_receiver_is_a_receiver():
-    """Polymorphism: an OFDMReceiver satisfies the Receiver API."""
-    _, rx = _make_tx_rx()
+def test_is_a_receiver_without_pulse_fields():
+    _, rx = make_pair()
     assert isinstance(rx, Receiver)
+    assert "samples_per_symbol" not in type(rx).model_fields
 
 
-def test_ofdm_received_symbols_carries_ofdm_config():
-    tx, rx = _make_tx_rx()
+def test_output_carries_its_receiver():
+    tx, rx = make_pair()
     sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert isinstance(rcv, OFDMReceivedSymbols)
-    assert rcv.ofdm == tx.ofdm
+    assert rx.receive(sent.field, sent.dt_s).receiver.ofdm == tx.ofdm
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+def test_time_domain_pilots_keyword_is_rejected():
+    with pytest.raises(ValidationError, match="pilots"):
+        OFDMReceiver(modulation_order=4, ofdm=OFDMConfig(n_subcarriers=16), pilots=None)
 
 
-def test_rejects_base_pilots():
-    """Base-class PilotConfig is for time-domain SC pilots; OFDM uses
-    frequency-domain pilots via OFDMConfig instead."""
-    ofdm = OFDMConfig(n_subcarriers=64)
-    with pytest.raises(ValueError, match="OFDMReceiver does not accept"):
-        OFDMReceiver(
-            modulation_order=4,
-            ofdm=ofdm,
-            pilots=PilotConfig(symbol=1.0 + 0j, period=8),
-        )
+def test_pilot_equaliser_needs_pilot_subcarriers():
+    with pytest.raises(ValidationError, match="pilot_subcarrier_indices"):
+        OFDMReceiver(modulation_order=4, ofdm=OFDMConfig(n_subcarriers=16), equalize="pilot")
 
 
-def test_rejects_wrong_field_length():
-    """Field whose length isn't a multiple of samples_per_ofdm_symbol."""
-    _, rx = _make_tx_rx(n_subcarriers=64, cp_len=16, n_frames=4)
-    bad_field = np.zeros(100, dtype=np.complex128)  # not a multiple of 80
-    with pytest.raises(ValueError, match="not a multiple"):
-        rx.receive(bad_field)
+def test_field_length_must_be_whole_frames():
+    tx, rx = make_pair()
+    with pytest.raises(ValueError, match="not a multiple of 80 samples/frame"):
+        rx.receive(np.zeros(81, complex), tx.dt_s)
 
 
-def test_rejects_wrong_pol_shape():
-    """Single-pol receiver rejects 2-D field; dual-pol rejects 1-D."""
-    _, rx_single = _make_tx_rx(polarization="single", n_frames=4)
-    tx, _ = _make_tx_rx(polarization="single", n_frames=4)
+@pytest.mark.parametrize(
+    ("polarization", "shape"), [("single", (2, 160)), ("dual", (160,)), ("dual", (3, 160))]
+)
+def test_polarisation_shape_is_checked(polarization, shape):
+    _, rx = make_pair(polarization=polarization)
+    with pytest.raises(ValueError, match="expects"):
+        rx.receive(np.zeros(shape, complex), 1e-11)
+
+
+# ---- noiseless back-to-back ------------------------------------------------------
+
+
+@pytest.mark.parametrize("oversampling", [1, 2])
+@pytest.mark.parametrize("order", [4, 16, 64, 256])
+def test_b2b_is_exact(order, oversampling):
+    """Raw subcarrier values equal √P·symbol (absolute calibration); bits are error-free."""
+    tx, rx = make_pair(modulation_order=order, oversampling=oversampling)
     sent = tx.generate()
-    with pytest.raises(ValueError, match="1-D field"):
-        rx_single.receive(np.stack([sent.field, sent.field]))
-
-    _, rx_dual = _make_tx_rx(polarization="dual", n_frames=4)
-    with pytest.raises(ValueError, match="leading axis 2"):
-        rx_dual.receive(sent.field)
-
-
-# ---------------------------------------------------------------------------
-# Noiseless B2B: BER == 0 (single-pol)
-# ---------------------------------------------------------------------------
+    np.testing.assert_array_equal(rx.receive(sent.field, sent.dt_s).bits, sent.bits)
+    raw = rx.replace(equalize="none").receive(sent.field, sent.dt_s).symbols
+    np.testing.assert_allclose(
+        raw / np.sqrt(tx.launch_power_per_polarization_w), sent.symbols, rtol=0, atol=1e-12
+    )
 
 
-@pytest.mark.parametrize("mod_order", [4, 16, 64])
-def test_noiseless_b2b_single_pol(mod_order: int):
-    """Noiseless back-to-back: IFFT→CP→field→stripCP→FFT→demap recovers
-    all transmitted bits for QPSK, 16-QAM, 64-QAM."""
-    tx, rx = _make_tx_rx(
-        modulation_order=mod_order,
-        n_subcarriers=64,
-        cp_len=16,
-        n_guard=4,
-        n_frames=16,
+@pytest.mark.parametrize(("cp_len", "n_guard"), [(0, 4), (16, 0), (0, 0)])
+def test_b2b_without_prefix_or_guard(cp_len, n_guard):
+    tx, rx = make_pair(cp_len=cp_len, n_guard=n_guard)
+    sent = tx.generate()
+    np.testing.assert_array_equal(rx.receive(sent.field, sent.dt_s).bits, sent.bits)
+
+
+@pytest.mark.parametrize("equalize", ["unit_power", "pilot", "data_aided"])
+def test_b2b_dual_polarisation(equalize):
+    tx, rx = make_pair(polarization="dual", pilots=PILOTS, rx_kwargs={"equalize": equalize})
+    sent = tx.generate()
+    received = rx.receive(sent.field, sent.dt_s, reference=sent)
+    np.testing.assert_array_equal(received.bits, sent.bits)
+    assert received.symbols.shape == sent.symbols.shape == (2, 16 * tx.ofdm.n_data)
+    assert received.gain.shape == (2,)
+
+
+def test_b2b_with_distribution_matcher():
+    base = ConstellationConfig.from_square_qam(16)
+    pmf = maxwell_boltzmann(base.points, 0.2)
+    cfg = base.with_probabilities(pmf)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=56)
+    tx, rx = make_pair(constellation=cfg, dm=dm, n_frames=8)
+    sent = tx.generate()
+    received = rx.receive(sent.field, sent.dt_s)
+    np.testing.assert_array_equal(received.bits, sent.bits)
+    assert received.dm_block_valid.all()
+
+
+def test_b2b_with_constellation_config():
+    tx, rx = make_pair(constellation=ConstellationConfig.from_square_qam(16), n_frames=8)
+    sent = tx.generate()
+    np.testing.assert_array_equal(rx.receive(sent.field, sent.dt_s).bits, sent.bits)
+
+
+# ---- channel equalisation --------------------------------------------------------
+
+
+@pytest.mark.parametrize("oversampling", [1, 2])
+def test_pilot_equaliser_removes_a_flat_complex_gain_exactly(oversampling):
+    tx, rx = make_pair(pilots=PILOTS, oversampling=oversampling, rx_kwargs={"equalize": "pilot"})
+    sent = tx.generate()
+    received = rx.receive(sent.field * (0.3 * np.exp(1j * 2.0)), sent.dt_s)
+    np.testing.assert_allclose(received.symbols, sent.symbols, rtol=0, atol=1e-12)
+
+
+def test_pilot_equaliser_tracks_a_delay_across_dc():
+    """A delay τ gives H(f) = e^{−2πifτ}, smooth across DC. Interpolating in
+    frequency order keeps the error small everywhere — including the negative-
+    frequency subcarriers just below DC, which index-order interpolation
+    (the pre-v1-hardening behaviour) extrapolated from the far band edge."""
+    tx, rx = make_pair(
+        pilots=(0, 8, 16, 24, 40, 48, 56), modulation_order=4, rx_kwargs={"equalize": "pilot"}
+    )
+    cfg = tx.ofdm
+    f = np.fft.fftfreq(cfg.fft_size, tx.dt_s)
+    tau = 0.05 / tx.bandwidth_hz
+    sent = tx.generate()
+    received = rx.receive(
+        apply_per_subcarrier_channel(tx, sent.field, np.exp(-2j * np.pi * f * tau)), sent.dt_s
+    )
+    err = np.abs(received.symbols - sent.symbols).reshape(tx.n_frames, -1).max(axis=0)
+    assert err.max() < 0.02, f"worst subcarrier error {err.max():.3f}"
+    np.testing.assert_array_equal(received.bits, sent.bits)
+
+
+def test_channel_interpolation_is_exact_for_a_channel_linear_in_frequency():
+    _, rx = make_pair(pilots=(0, 8, 16, 24, 40, 48, 56))
+    cfg = rx.ofdm
+    f_pil = cfg.subcarrier_frequency_index(cfg.pilot_subcarrier_indices).astype(float)
+    f_dat = cfg.subcarrier_frequency_index(cfg.data_subcarrier_indices()).astype(float)
+    h_pil = (1 + 0.01 * f_pil) * np.exp(1j * 0.3) + 0j
+    h_dat = rx._interpolate_channel(h_pil[None, None, :])[0, 0]
+    inside = (f_dat >= f_pil.min()) & (f_dat <= f_pil.max())
+    np.testing.assert_allclose(
+        h_dat[inside], ((1 + 0.01 * f_dat) * np.exp(1j * 0.3))[inside], atol=1e-14
+    )
+
+
+def test_cd_compensation_restores_an_ofdm_signal_beyond_its_prefix():
+    """80 km of SSMF spreads ~10× longer than the CP; receiver CD compensation undoes it."""
+    tx, rx0 = make_pair(cp_len=4, oversampling=2, n_frames=32)
+    fiber = Fiber.ssmf(80.0, backend="numpy-linear").replace(alpha_db_per_km=0.0)
+    rx = rx0.replace(cd_compensation_s2=fiber.accumulated_dispersion_s2, equalize="data_aided")
+    sent = tx.generate()
+    out = fiber.propagate(sent.field, sent.dt_s)
+    assert np.mean(rx0.receive(out, sent.dt_s).bits != sent.bits) > 0.05
+    received = rx.receive(out, sent.dt_s, reference=sent)
+    np.testing.assert_allclose(received.symbols, sent.symbols, rtol=0, atol=1e-9)
+
+
+def test_without_equalisation_a_frequency_selective_channel_causes_errors():
+    tx, rx = make_pair(modulation_order=4)
+    h = 0.8 * np.exp(1j * 0.05 * np.arange(tx.ofdm.fft_size))
+    sent = tx.generate()
+    received = rx.receive(apply_per_subcarrier_channel(tx, sent.field, h), sent.dt_s)
+    assert np.mean(received.bits != sent.bits) > 0.0
+
+
+# ---- shapes and reproducibility --------------------------------------------------
+
+
+@pytest.mark.parametrize("polarization", ["single", "dual"])
+def test_output_shapes(polarization):
+    tx, rx = make_pair(
+        pilots=PILOTS, polarization=polarization, n_frames=8, rx_kwargs={"equalize": "pilot"}
     )
     sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits, rcv.bits) == 0.0
-
-
-def test_noiseless_b2b_no_cp():
-    """BER == 0 with cp_len=0."""
-    tx, rx = _make_tx_rx(cp_len=0, n_guard=4, n_frames=16)
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits, rcv.bits) == 0.0
-
-
-def test_noiseless_b2b_no_guard():
-    """BER == 0 with n_guard=0 (all subcarriers are data or pilot)."""
-    tx, rx = _make_tx_rx(n_guard=0, n_frames=16)
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits, rcv.bits) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Noiseless B2B: dual-pol
-# ---------------------------------------------------------------------------
-
-
-def test_noiseless_b2b_dual_pol():
-    """Dual-pol noiseless B2B: BER == 0 on both polarisations."""
-    tx, rx = _make_tx_rx(
-        polarization="dual",
-        modulation_order=16,
-        n_frames=8,
-    )
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits[0], rcv.bits[0]) == 0.0
-    assert _ber(sent.bits[1], rcv.bits[1]) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Noiseless B2B: with frequency-domain pilots
-# ---------------------------------------------------------------------------
-
-
-def test_noiseless_b2b_with_pilots():
-    """Pilots in OFDMConfig; noiseless B2B should still recover BER == 0.
-    (One-tap eq on a noiseless identity channel is a no-op.)"""
-    tx, rx = _make_tx_rx(
-        n_subcarriers=64,
-        cp_len=16,
-        n_guard=4,
-        pilot_indices=(5, 11, 25, 50),
-        n_frames=16,
-        modulation_order=16,
-    )
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits, rcv.bits) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Noiseless B2B: with DM (probabilistic shaping)
-# ---------------------------------------------------------------------------
-
-
-def test_noiseless_b2b_with_dm():
-    """Probabilistic shaping via DM: noiseless B2B recovers shaped bits."""
-    points, _ = square_qam(16)
-    pmf = maxwell_boltzmann(points, nu=0.5)
-    cfg = ConstellationConfig.from_points(points, probabilities=pmf)
-    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
-    # N=64, n_guard=4 → n_data=56. n_frames=4 → total=224 = 7*32 ✓
-    tx, rx = _make_tx_rx(
-        n_subcarriers=64,
-        n_guard=4,
-        n_frames=4,
-        constellation=cfg,
-        dm=dm,
-    )
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits, rcv.bits) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Output shapes
-# ---------------------------------------------------------------------------
-
-
-def test_single_pol_output_shapes():
-    tx, rx = _make_tx_rx(
-        n_subcarriers=64,
-        n_guard=4,
-        n_frames=10,
-        modulation_order=16,
-    )
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    n_data = tx.ofdm.n_data  # 56
-    assert rcv.symbols.shape == (10 * n_data,)
-    assert rcv.bits.shape == (10 * n_data * 4,)  # 16-QAM → 4 bits/symbol
-    assert rcv.decisions.shape == (10 * n_data,)
-
-
-def test_dual_pol_output_shapes():
-    tx, rx = _make_tx_rx(
-        n_subcarriers=64,
-        n_guard=4,
-        n_frames=8,
-        modulation_order=16,
-        polarization="dual",
-    )
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
+    r = rx.receive(sent.field, sent.dt_s)
+    lead = (2,) if polarization == "dual" else ()
     n_data = tx.ofdm.n_data
-    assert rcv.symbols.shape == (2, 8 * n_data)
-    assert rcv.bits.shape == (2, 8 * n_data * 4)
-    assert rcv.decisions.shape == (2, 8 * n_data)
-    assert rcv.polarization == "dual"
+    assert r.symbols.shape == r.decisions.shape == (*lead, 8 * n_data)
+    assert r.bits.shape == (*lead, 8 * n_data * 4)
+    assert r.pilot_symbols.shape == (*lead, 8 * len(PILOTS))
+    assert r.polarization == polarization
 
 
-# ---------------------------------------------------------------------------
-# One-tap pilot equalization under known channel
-# ---------------------------------------------------------------------------
-
-
-def test_pilot_eq_recovers_flat_fading_channel():
-    """Apply a known per-subcarrier flat-fading channel (constant amplitude,
-    linear phase across subcarriers) to the Tx field. With pilots, the
-    one-tap equalizer should recover BER == 0. Without pilots, BER > 0."""
-    n_sub = 64
-    cp_len = 16
-    n_guard = 4
-    n_frames = 32
-    mod = 4  # QPSK — robust to small estimation errors
-
-    # Place pilots at well-spaced positions for good interpolation.
-    pilot_idx = (2, 10, 20, 26, 40, 50, 60)
-
-    ofdm_with_pilots = OFDMConfig(
-        n_subcarriers=n_sub,
-        cp_len=cp_len,
-        n_guard=n_guard,
-        pilot_subcarrier_indices=pilot_idx,
+def test_same_seed_same_result():
+    (tx1, rx1), (tx2, rx2) = make_pair(seed=77), make_pair(seed=77)
+    s1, s2 = tx1.generate(), tx2.generate()
+    np.testing.assert_array_equal(
+        rx1.receive(s1.field, s1.dt_s).bits, rx2.receive(s2.field, s2.dt_s).bits
     )
-    ofdm_no_pilots = OFDMConfig(
-        n_subcarriers=n_sub,
-        cp_len=cp_len,
-        n_guard=n_guard,
-    )
-
-    # Build Tx with pilots and generate.
-    tx_p = OFDMTransmitter(
-        modulation_order=mod,
-        symbol_rate_hz=32e9,
-        n_symbols=n_frames,
-        ofdm=ofdm_with_pilots,
-        seed=42,
-    )
-    sent_p = tx_p.generate()
-
-    # Apply a flat-fading channel: H(k) = A * exp(j*θ*k) per subcarrier.
-    # This simulates a simple delay + attenuation.
-    sps = n_sub + cp_len
-    faded_field = np.empty_like(sent_p.field)
-    amplitude = 0.8
-    phase_slope = 0.05  # radians per subcarrier
-    for f in range(n_frames):
-        block = sent_p.field[f * sps : (f + 1) * sps]
-        useful = block[cp_len:]
-        spectrum = np.fft.fft(useful)
-        # Apply channel in frequency domain.
-        h = amplitude * np.exp(1j * phase_slope * np.arange(n_sub))
-        spectrum *= h
-        useful_faded = np.fft.ifft(spectrum)
-        # Reconstruct with CP.
-        if cp_len > 0:
-            cp = useful_faded[-cp_len:]
-            faded_block = np.concatenate([cp, useful_faded])
-        else:
-            faded_block = useful_faded
-        faded_field[f * sps : (f + 1) * sps] = faded_block
-
-    # With pilots → equalizer should recover BER == 0.
-    rx_p = OFDMReceiver(modulation_order=mod, ofdm=ofdm_with_pilots)
-    rcv_p = rx_p.receive(faded_field)
-    assert _ber(sent_p.bits, rcv_p.bits) == 0.0
-
-    # Without pilots on the same (faded) field → BER > 0 (channel distorts).
-    # We need a Tx without pilots to get the reference bits.
-    tx_np = OFDMTransmitter(
-        modulation_order=mod,
-        symbol_rate_hz=32e9,
-        n_symbols=n_frames,
-        ofdm=ofdm_no_pilots,
-        seed=42,
-    )
-    sent_np = tx_np.generate()
-
-    # Apply the same channel.
-    faded_field_np = np.empty_like(sent_np.field)
-    sps_np = n_sub + cp_len
-    for f in range(n_frames):
-        block = sent_np.field[f * sps_np : (f + 1) * sps_np]
-        useful = block[cp_len:]
-        spectrum = np.fft.fft(useful)
-        h = amplitude * np.exp(1j * phase_slope * np.arange(n_sub))
-        spectrum *= h
-        useful_faded = np.fft.ifft(spectrum)
-        if cp_len > 0:
-            cp = useful_faded[-cp_len:]
-            faded_block = np.concatenate([cp, useful_faded])
-        else:
-            faded_block = useful_faded
-        faded_field_np[f * sps_np : (f + 1) * sps_np] = faded_block
-
-    rx_np = OFDMReceiver(modulation_order=mod, ofdm=ofdm_no_pilots)
-    rcv_np = rx_np.receive(faded_field_np)
-    assert _ber(sent_np.bits, rcv_np.bits) > 0.0
-
-
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
-
-
-def test_same_seed_same_output():
-    """Two Tx/Rx pairs with the same seed produce identical receive results."""
-    tx1, rx1 = _make_tx_rx(seed=77)
-    tx2, rx2 = _make_tx_rx(seed=77)
-    sent1 = tx1.generate()
-    sent2 = tx2.generate()
-    rcv1 = rx1.receive(sent1.field)
-    rcv2 = rx2.receive(sent2.field)
-    np.testing.assert_array_equal(rcv1.bits, rcv2.bits)
-    np.testing.assert_allclose(rcv1.symbols, rcv2.symbols, atol=1e-15)
-
-
-# ---------------------------------------------------------------------------
-# ConstellationConfig path
-# ---------------------------------------------------------------------------
-
-
-def test_custom_constellation_b2b():
-    """OFDMReceiver with ConstellationConfig (not modulation_order)."""
-    cfg = ConstellationConfig.from_square_qam(16)
-    tx, rx = _make_tx_rx(constellation=cfg, n_frames=8)
-    sent = tx.generate()
-    rcv = rx.receive(sent.field)
-    assert _ber(sent.bits, rcv.bits) == 0.0

@@ -1,293 +1,232 @@
-"""Distribution matchers for probabilistic shaping.
+"""Probabilistic shaping: Maxwell–Boltzmann PMFs and constant-composition matching.
 
-Provides a constant-composition distribution matcher (CC-DM): a bijective
-encoder that maps uniform input bits to N-symbol blocks of a fixed composition
-matching a target PMF. By construction, the *empirical* symbol distribution
-equals the composition exactly, so the achieved PMF matches the target up to
-the largest-remainder rounding error and is independent of how many blocks
-are encoded.
+:class:`ConstantCompositionDM` is a bijective map from uniform bits to blocks
+of ``N`` symbol indices that all have the same composition — ``n_i``
+occurrences of symbol ``i`` with ``n_i ≈ N·p_i`` (largest-remainder rounding
+of the target PMF). Block ``b`` encodes ``bits_per_block = ⌊log₂ C⌋`` bits
+as its lexicographic rank among the ``C = N!/Π n_i!`` permutations of the
+multiset. The emitted distribution is therefore exactly ``n_i/N`` over any
+whole number of blocks, independent of the data.
 
-This is the standard textbook predecessor to CCDM (Schulte & Böcherer,
-2016). It uses combinatorial unrank/rank over multiset permutations rather
-than arithmetic coding, which keeps the implementation small and obvious at
-the cost of a few bits of rate (block-end overhead). Suitable for v1
-shaping-gain experiments; a real CCDM would replace this transparently.
-
-TODO(v2): vectorise _unrank_multiset/_rank_multiset with numpy; the current
-Python loops are O(N × M) per block and will become a bottleneck for large
-block lengths (N ≳ 256) or high-throughput simulations.
+This is the enumerative (rank/unrank) form of constant-composition
+distribution matching (CCDM; Schulte & Böcherer, *IEEE Trans. Inf. Theory*
+62(1), 2016, use arithmetic coding for the same map). The rate loss relative
+to the entropy vanishes as ``N`` grows (≈ ``(M/2)·log₂N / N``).
 """
 
 from __future__ import annotations
 
-import math
-from functools import lru_cache
+from functools import cached_property
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import Field, model_validator
+from scipy.optimize import brentq
 
+from hpcom._model import FloatArrayField, HpcomModel
 from hpcom._typing import ComplexArray
-
-# ---------------------------------------------------------------------------
-# Maxwell–Boltzmann PMF
-# ---------------------------------------------------------------------------
+from hpcom.backends.kernels import get_kernels
 
 
-def maxwell_boltzmann(constellation: ComplexArray, nu: float) -> npt.NDArray[np.float64]:
-    """Maxwell–Boltzmann PMF over a constellation.
+def maxwell_boltzmann(points: npt.ArrayLike, nu: float) -> npt.NDArray[np.float64]:
+    r"""Maxwell–Boltzmann PMF :math:`p_i \propto e^{-\nu |s_i|^2}` over ``points``.
 
-    For symbol energies ``E_i = |s_i|²`` the PMF is
-
-    .. math:: p_i = \\frac{e^{-\\nu E_i}}{\\sum_j e^{-\\nu E_j}}
-
-    This is the distribution that minimises ``E[E]`` (mean symbol energy)
-    among all distributions on the constellation with the given entropy
-    ``H = -Σ p_i log p_i`` — i.e., the AWGN-optimal shaping distribution.
-    ``nu=0`` recovers the uniform distribution; larger ``nu`` concentrates
-    probability on low-energy points.
+    For a given entropy this is the distribution that minimises the mean
+    symbol energy — the AWGN-optimal shaping distribution. ``nu = 0`` is
+    uniform; larger ``nu`` concentrates probability on low-energy points.
     """
     if nu < 0:
         raise ValueError(f"nu must be >= 0, got {nu}")
-    energies = np.abs(np.asarray(constellation, dtype=np.complex128)) ** 2
-    if nu == 0.0:
-        n = energies.shape[0]
-        return np.full(n, 1.0 / n, dtype=np.float64)
-    log_p = -nu * energies
-    log_p -= log_p.max()  # numerical stability
+    energy = np.abs(np.asarray(points, dtype=np.complex128)) ** 2
+    log_p = -nu * energy
+    log_p -= log_p.max()
     p = np.exp(log_p)
-    p /= p.sum()
-    return p
-
-
-# ---------------------------------------------------------------------------
-# Composition (target PMF → integer counts summing to N)
-# ---------------------------------------------------------------------------
-
-
-def _composition_from_pmf(pmf: npt.NDArray[np.float64], n: int) -> npt.NDArray[np.int64]:
-    """Largest-remainder rounding: integer counts ``n_i`` with ``Σn_i = N``
-    and ``n_i ≈ N·p_i``. Returns a length-M int64 array."""
-    raw = pmf * n
-    floor = np.floor(raw).astype(np.int64)
-    deficit = int(n - floor.sum())
-    if deficit > 0:
-        remainders = raw - floor
-        top = np.argsort(-remainders, kind="stable")[:deficit]
-        floor[top] += 1
-    return floor
-
-
-# ---------------------------------------------------------------------------
-# Multiset rank / unrank
-# ---------------------------------------------------------------------------
-
-
-@lru_cache(maxsize=4096)
-def _multinomial_with_counts(total: int, counts: tuple[int, ...]) -> int:
-    """``total! / Π(c_i!)`` with cache. ``sum(counts) == total`` is required."""
-    if sum(counts) != total:
-        raise ValueError(f"counts sum {sum(counts)} != total {total}")
-    num = math.factorial(total)
-    den = 1
-    for c in counts:
-        if c > 0:
-            den *= math.factorial(c)
-    return num // den
-
-
-def _unrank_multiset(rank: int, composition: list[int]) -> list[int]:
-    """Return the ``rank``-th multiset permutation (0-indexed, lex order).
-
-    ``composition`` is mutated/copied internally; the caller should pass a
-    fresh list. The returned list has length ``sum(composition_in)``.
-    """
-    comp = list(composition)
-    n_left = sum(comp)
-    total = _multinomial_with_counts(n_left, tuple(comp))
-    if not (0 <= rank < total):
-        raise ValueError(f"rank {rank} is out of range [0, {total})")
-    result: list[int] = []
-    while n_left > 0:
-        for j in range(len(comp)):
-            if comp[j] == 0:
-                continue
-            comp[j] -= 1
-            count = _multinomial_with_counts(n_left - 1, tuple(comp))
-            if rank < count:
-                result.append(j)
-                n_left -= 1
-                break
-            rank -= count
-            comp[j] += 1
-    return result
-
-
-def _rank_multiset(perm: list[int], composition: list[int]) -> int:
-    """Inverse of :func:`_unrank_multiset`."""
-    m = len(composition)
-    for sym in perm:
-        if sym < 0 or sym >= m:
-            raise ValueError(f"symbol index {sym} is out of range [0, {m})")
-    comp = list(composition)
-    n_left = sum(comp)
-    rank = 0
-    for sym in perm:
-        for j in range(sym):
-            if comp[j] == 0:
-                continue
-            comp[j] -= 1
-            rank += _multinomial_with_counts(n_left - 1, tuple(comp))
-            comp[j] += 1
-        comp[sym] -= 1
-        n_left -= 1
-    return rank
-
-
-# ---------------------------------------------------------------------------
-# Bit ↔ int packing (MSB-first)
-# ---------------------------------------------------------------------------
-
-
-def _bits_to_int(bits: npt.NDArray[np.uint8]) -> int:
-    """MSB-first bit array → Python int."""
-    value = 0
-    for b in bits:
-        value = (value << 1) | int(b)
-    return value
-
-
-def _int_to_bits(value: int, k: int) -> npt.NDArray[np.uint8]:
-    """Python int → MSB-first length-k bit array."""
-    out = np.empty(k, dtype=np.uint8)
-    for i in range(k - 1, -1, -1):
-        out[i] = value & 1
-        value >>= 1
-    if value != 0:
-        raise ValueError(f"value does not fit in {k} bits")
+    out: npt.NDArray[np.float64] = p / p.sum()
     return out
 
 
-# ---------------------------------------------------------------------------
-# CC-DM
-# ---------------------------------------------------------------------------
+def maxwell_boltzmann_for_entropy(
+    points: npt.ArrayLike, entropy_bits: float
+) -> npt.NDArray[np.float64]:
+    """Maxwell–Boltzmann PMF over ``points`` with the requested entropy (bits/symbol).
+
+    ``entropy_bits`` must lie in ``(0, log₂M]``; ``log₂M`` returns the
+    uniform PMF. The rate parameter ν is found by root bracketing (the
+    entropy is monotonically decreasing in ν).
+    """
+    pts = np.asarray(points, dtype=np.complex128)
+    h_max = float(np.log2(pts.size))
+    if not 0 < entropy_bits <= h_max + 1e-12:
+        raise ValueError(f"entropy_bits must be in (0, {h_max}], got {entropy_bits}")
+    if entropy_bits >= h_max - 1e-12:
+        return maxwell_boltzmann(pts, 0.0)
+
+    def excess(nu: float) -> float:
+        p = maxwell_boltzmann(pts, nu)
+        nz = p[p > 0]
+        return float(-np.sum(nz * np.log2(nz))) - entropy_bits
+
+    hi = 1.0
+    while excess(hi) > 0:
+        hi *= 2.0
+        if hi > 1e6:
+            raise ValueError(f"entropy {entropy_bits} is not reachable for this constellation")
+    return maxwell_boltzmann(pts, brentq(excess, 0.0, hi, xtol=1e-14, rtol=1e-14))
 
 
-class ConstantCompositionDM(BaseModel):
-    """Bijective bit↔symbol-index encoder with a fixed per-block composition.
+def composition_from_pmf(pmf: npt.ArrayLike, block_length: int) -> npt.NDArray[np.int64]:
+    """Integer counts ``n_i`` with ``Σ n_i = N`` and ``n_i ≈ N·p_i`` (largest remainder)."""
+    pmf = np.asarray(pmf, dtype=np.float64)
+    raw = pmf * block_length
+    counts: npt.NDArray[np.int64] = np.floor(raw).astype(np.int64)
+    deficit = int(block_length - counts.sum())
+    if deficit > 0:
+        order = np.argsort(-(raw - counts), kind="stable")
+        counts[order[:deficit]] += 1
+    return counts
 
-    Constructed from a target PMF and a block length ``N``. The composition
-    ``(n_0, …, n_{M-1})`` with ``Σ n_i = N`` is chosen by largest-remainder
-    rounding so that ``n_i ≈ N·p_i``. Each N-symbol block is one of the
-    ``C = N! / Π n_i!`` multiset permutations; ``bits_per_block =
-    ⌊log₂ C⌋`` bits encode the rank.
 
-    Encoding: split the input bit stream into ``bits_per_block``-sized chunks,
-    interpret each as an integer rank, unrank to a multiset permutation.
-    Decoding rank↔permutation is the inverse.
+class ConstantCompositionDM(HpcomModel):
+    """Constant-composition distribution matcher (see module docstring).
 
-    Empirical PMF over any whole number of blocks equals
-    ``composition / N`` exactly, independent of the input bits.
+    Attributes
+    ----------
+    target_pmf
+        Desired symbol PMF (length ``M``, sums to 1). Must match the
+        ``probabilities`` of the constellation it is used with.
+    block_length
+        Symbols per block ``N``.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    target_pmf: npt.NDArray[np.float64]
-    block_length: int
-    # Derived fields, populated in model_validator. Defaults are sentinels
-    # only — they are always overwritten before the model is returned.
-    composition: npt.NDArray[np.int64] = None  # type: ignore[assignment]
-    bits_per_block: int = 0
-
-    @field_validator("target_pmf", mode="before")
-    @classmethod
-    def _coerce_pmf(cls, v: object) -> np.ndarray:
-        return np.asarray(v, dtype=np.float64)
+    target_pmf: FloatArrayField
+    block_length: int = Field(ge=2)
 
     @model_validator(mode="after")
-    def _validate_and_compute(self) -> ConstantCompositionDM:
-        pmf = self.target_pmf
-        if pmf.ndim != 1 or pmf.size < 2:
-            raise ValueError(f"target_pmf must be 1-D with ≥2 entries, got shape {pmf.shape}")
-        if not np.isclose(pmf.sum(), 1.0, atol=1e-12):
-            raise ValueError(f"target_pmf must sum to 1, got {pmf.sum():.6e}")
-        if (pmf < 0).any():
-            raise ValueError("target_pmf entries must be non-negative")
-        if self.block_length < pmf.size:
+    def _validate(self) -> ConstantCompositionDM:
+        p = self.target_pmf
+        if p.ndim != 1 or p.size < 2:
+            raise ValueError(f"target_pmf must be 1-D with >= 2 entries, got shape {p.shape}")
+        if np.any(p < 0) or not np.all(np.isfinite(p)):
+            raise ValueError("target_pmf entries must be finite and non-negative")
+        if abs(float(p.sum()) - 1.0) > 1e-9:
+            raise ValueError(f"target_pmf must sum to 1, got {p.sum():.12g}")
+        n_support = int(np.count_nonzero(p))
+        if self.block_length < n_support:
             raise ValueError(
-                f"block_length ({self.block_length}) must be ≥ number of symbols "
-                f"({pmf.size}) to support a non-trivial composition"
+                f"block_length ({self.block_length}) must be >= the number of symbols with "
+                f"non-zero target probability ({n_support}); shorter blocks cannot contain them all"
             )
-
-        composition = _composition_from_pmf(pmf, self.block_length)
-        total = _multinomial_with_counts(self.block_length, tuple(int(c) for c in composition))
-        if total < 2:
+        if self.bits_per_block < 1:
             raise ValueError(
-                "block has a single permutation (composition is degenerate); "
-                "increase block_length or use a less peaked PMF"
+                f"composition {self.composition.tolist()} admits a single permutation "
+                "(zero rate); increase block_length or use a less peaked PMF"
             )
-        # Assign derived state through __dict__ — model_validator runs before
-        # pydantic enforces frozen on setattr.
-        self.__dict__["composition"] = composition
-        self.__dict__["bits_per_block"] = math.floor(math.log2(total))
         return self
 
+    # ---- derived quantities --------------------------------------------
+
+    @cached_property
+    def composition(self) -> npt.NDArray[np.int64]:
+        """Symbol counts ``n_i`` per block (read-only)."""
+        counts = composition_from_pmf(self.target_pmf, self.block_length)
+        counts.flags.writeable = False
+        return counts
+
+    @cached_property
+    def n_permutations(self) -> int:
+        """Number of distinct blocks ``C = N! / Π n_i!`` (exact integer)."""
+        total = 1
+        n = 0
+        for c in self.composition.tolist():
+            for k in range(1, c + 1):
+                n += 1
+                total = total * n // k
+        return total
+
     @property
-    def _composition_list(self) -> list[int]:
-        """Python-list copy of composition (cached at first access)."""
-        # Memoise via __dict__ since the model is frozen.
-        cached = self.__dict__.get("_composition_list_cache")
-        if cached is None:
-            cached = self.composition.tolist()
-            self.__dict__["_composition_list_cache"] = cached
-        return cached  # type: ignore[no-any-return]
+    def bits_per_block(self) -> int:
+        """Information bits per block, ``⌊log₂ C⌋``."""
+        return self.n_permutations.bit_length() - 1
 
     @property
     def empirical_pmf(self) -> npt.NDArray[np.float64]:
-        """``composition / block_length`` — the exact distribution emitted."""
+        """Distribution actually emitted, ``n_i / N``."""
         return self.composition.astype(np.float64) / self.block_length
 
     @property
     def rate_bits_per_symbol(self) -> float:
-        """Information rate the encoder achieves (bits per emitted symbol)."""
+        """Information rate ``bits_per_block / N`` in bits per symbol."""
         return self.bits_per_block / self.block_length
 
-    def encode(self, bits: npt.NDArray[np.uint8]) -> npt.NDArray[np.intp]:
-        """Encode a bit stream → symbol-index stream.
+    @property
+    def rate_loss_bits_per_symbol(self) -> float:
+        """``H(empirical_pmf) − rate``: the matcher's rate loss."""
+        p = self.empirical_pmf[self.empirical_pmf > 0]
+        return float(-np.sum(p * np.log2(p))) - self.rate_bits_per_symbol
 
-        ``bits.size`` must be a multiple of :attr:`bits_per_block`. Output
-        length is ``(bits.size / bits_per_block) * block_length``.
+    # ---- encode / decode ------------------------------------------------
+
+    def encode(self, bits: npt.ArrayLike) -> npt.NDArray[np.intp]:
+        """Bits (a multiple of :attr:`bits_per_block`) → symbol indices."""
+        return get_kernels().ccdm_encode(
+            np.asarray(bits, dtype=np.uint8).reshape(-1), self.composition, self.bits_per_block
+        )
+
+    def decode(self, indices: npt.ArrayLike) -> npt.NDArray[np.uint8]:
+        """Symbol indices (a multiple of ``block_length``) → bits.
+
+        Raises ``ValueError`` if any block is not a codeword (wrong
+        composition, or rank ≥ 2^bits_per_block) — e.g. after decision
+        errors. Use :meth:`decode_with_errors` on noisy decisions.
         """
-        bits = np.asarray(bits, dtype=np.uint8)
-        if bits.size % self.bits_per_block != 0:
-            raise ValueError(
-                f"bits.size {bits.size} is not a multiple of bits_per_block {self.bits_per_block}"
-            )
-        n_blocks = bits.size // self.bits_per_block
-        out = np.empty(n_blocks * self.block_length, dtype=np.intp)
-        for i in range(n_blocks):
-            chunk = bits[i * self.bits_per_block : (i + 1) * self.bits_per_block]
-            rank = _bits_to_int(chunk)
-            perm = _unrank_multiset(rank, self._composition_list)
-            out[i * self.block_length : (i + 1) * self.block_length] = perm
-        return out
+        return get_kernels().ccdm_decode(
+            np.asarray(indices, dtype=np.intp).reshape(-1), self.composition, self.bits_per_block
+        )
 
-    def decode(self, indices: npt.NDArray[np.intp]) -> npt.NDArray[np.uint8]:
-        """Inverse of :meth:`encode`."""
-        indices = np.asarray(indices, dtype=np.intp)
-        if indices.size % self.block_length != 0:
-            raise ValueError(
-                f"indices.size {indices.size} is not a multiple of block_length {self.block_length}"
-            )
-        n_blocks = indices.size // self.block_length
-        out = np.empty(n_blocks * self.bits_per_block, dtype=np.uint8)
-        for i in range(n_blocks):
-            perm = indices[i * self.block_length : (i + 1) * self.block_length].tolist()
-            rank = _rank_multiset(perm, self._composition_list)
-            out[i * self.bits_per_block : (i + 1) * self.bits_per_block] = _int_to_bits(
-                rank, self.bits_per_block
-            )
-        return out
+    def decode_with_errors(
+        self, indices: npt.ArrayLike
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.bool_]]:
+        """Decode noisy decisions block by block.
+
+        Returns ``(bits, valid)``: blocks that are not codewords cannot be
+        inverted — their bits are set to 0 and ``valid[b]`` is ``False``.
+        (A real system runs FEC before the DM decoder; pre-FEC, a corrupted
+        block is simply lost.)
+        """
+        idx = np.asarray(indices, dtype=np.intp).reshape(-1)
+        n = self.block_length
+        if idx.size % n:
+            raise ValueError(f"indices.size {idx.size} is not a multiple of block_length {n}")
+        blocks = idx.reshape(-1, n)
+        m = self.composition.size
+        valid = np.array(
+            [
+                b.min() >= 0
+                and b.max() < m
+                and np.array_equal(np.bincount(b, minlength=m), self.composition)
+                for b in blocks
+            ],
+            dtype=bool,
+        )
+        k = self.bits_per_block
+        bits = np.zeros((blocks.shape[0], k), dtype=np.uint8)
+        kernels = get_kernels()
+        for i in np.flatnonzero(valid):
+            try:
+                bits[i] = kernels.ccdm_decode(blocks[i], self.composition, k)
+            except ValueError:  # right composition but rank ≥ 2^k: not a codeword
+                valid[i] = False
+        return bits.reshape(-1), valid
 
 
-__all__ = ["ConstantCompositionDM", "maxwell_boltzmann"]
+def empirical_symbol_energy(points: ComplexArray, pmf: npt.ArrayLike) -> float:
+    """``Σ p_i |s_i|²``."""
+    return float(np.dot(np.asarray(pmf, dtype=np.float64), np.abs(points) ** 2))
+
+
+__all__ = [
+    "ConstantCompositionDM",
+    "composition_from_pmf",
+    "maxwell_boltzmann",
+    "maxwell_boltzmann_for_entropy",
+]

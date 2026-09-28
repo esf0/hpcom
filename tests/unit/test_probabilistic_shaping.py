@@ -130,24 +130,31 @@ def test_dm_rate_bounded_by_entropy():
     assert dm.rate_bits_per_symbol <= h + 1e-9  # add epsilon for floating-point
 
 
-def test_dm_unrank_out_of_range_raises():
-    """_unrank_multiset must raise ValueError for rank >= total permutations."""
-    from hpcom.modulation.dm import _unrank_multiset
-
-    # composition [2, 2] → total = 4!/(2!2!) = 6 valid ranks (0..5)
-    with pytest.raises(ValueError, match="out of range"):
-        _unrank_multiset(6, [2, 2])
-    with pytest.raises(ValueError, match="out of range"):
-        _unrank_multiset(-1, [2, 2])
+def test_dm_decode_rejects_non_codeword_blocks():
+    """A block with the right composition but a rank ≥ 2^bits_per_block is not a codeword."""
+    dm = ConstantCompositionDM(target_pmf=[0.5, 0.5], block_length=4)  # C = 6, 2 bits
+    assert dm.n_permutations == 6 and dm.bits_per_block == 2
+    with pytest.raises(ValueError, match="not a codeword"):
+        dm.decode(np.array([1, 1, 0, 0]))  # lexicographically last → rank 5
 
 
-def test_dm_rank_out_of_range_sym_raises():
-    """_rank_multiset must raise ValueError for a symbol index out of composition range."""
-    from hpcom.modulation.dm import _rank_multiset
+def test_dm_decode_rejects_out_of_range_symbol_index():
+    dm = ConstantCompositionDM(target_pmf=np.full(3, 1 / 3), block_length=6)
+    with pytest.raises(ValueError, match="outside"):
+        dm.decode(np.array([0, 3, 2, 1, 0, 1]))
 
-    # composition has 3 symbols (indices 0, 1, 2); index 3 is invalid
-    with pytest.raises(ValueError, match="out of range"):
-        _rank_multiset([0, 3, 2], [2, 2, 2])
+
+def test_dm_decode_with_errors_flags_invalid_blocks_and_zeroes_their_bits():
+    dm = ConstantCompositionDM(target_pmf=np.full(4, 0.25), block_length=8)
+    bits = np.random.default_rng(0).integers(0, 2, dm.bits_per_block * 3, dtype=np.uint8)
+    idx = dm.encode(bits).copy()
+    idx[dm.block_length] = (idx[dm.block_length] + 1) % 4  # corrupt block 1
+    decoded, valid = dm.decode_with_errors(idx)
+    np.testing.assert_array_equal(valid, [True, False, True])
+    k = dm.bits_per_block
+    np.testing.assert_array_equal(decoded[:k], bits[:k])
+    np.testing.assert_array_equal(decoded[k : 2 * k], 0)
+    np.testing.assert_array_equal(decoded[2 * k :], bits[2 * k :])
 
 
 # ---------------------------------------------------------------------------

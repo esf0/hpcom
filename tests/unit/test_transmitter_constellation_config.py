@@ -69,7 +69,7 @@ def test_constellation_config_b2b_matches_modulation_order(m):
     np.testing.assert_array_equal(sig_int.bits, sig_cfg.bits)
     np.testing.assert_array_equal(sig_int.symbols, sig_cfg.symbols)
     np.testing.assert_allclose(sig_int.field, sig_cfg.field, atol=0.0)
-    assert sig_cfg.modulation_order == m
+    assert sig_cfg.transmitter.effective_modulation_order == m
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ def test_b2b_noiseless_recovers_bits_via_constellation_config(m):
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     k = int(np.log2(m))
     np.testing.assert_array_equal(
@@ -124,13 +124,13 @@ def test_b2b_with_8psk_constellation():
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     np.testing.assert_array_equal(
         _trim_rrc_edges(received.bits, 3, span),
         _trim_rrc_edges(sent.bits, 3, span),
     )
-    assert sent.modulation_order == 8
+    assert sent.transmitter.effective_modulation_order == 8
 
 
 def test_b2b_dual_pol_with_constellation_config():
@@ -150,7 +150,7 @@ def test_b2b_dual_pol_with_constellation_config():
     )
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     for pol in (0, 1):
         np.testing.assert_array_equal(

@@ -42,7 +42,7 @@ def test_pilot_indices_must_be_unique():
 
 
 def test_pilot_index_out_of_range_raises():
-    with pytest.raises(ValueError, match="out of range"):
+    with pytest.raises(ValueError, match="outside"):
         OFDMConfig(n_subcarriers=64, pilot_subcarrier_indices=(64,))
 
 
@@ -90,9 +90,9 @@ def test_pilot_indices_canonicalised_sorted():
     assert cfg.pilot_subcarrier_indices == (1, 4, 7)
 
 
-def test_samples_per_ofdm_symbol_includes_cp():
+def test_samples_per_frame_includes_cp():
     cfg = OFDMConfig(n_subcarriers=64, cp_len=16)
-    assert cfg.samples_per_ofdm_symbol == 80
+    assert cfg.samples_per_frame == 80
 
 
 # ---------------------------------------------------------------------------

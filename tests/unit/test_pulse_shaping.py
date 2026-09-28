@@ -109,3 +109,84 @@ def test_rejects_out_of_range_roll_off():
 def test_rejects_invalid_sps():
     with pytest.raises(ValueError, match="samples_per_symbol"):
         root_raised_cosine(n_taps=33, samples_per_symbol=0, roll_off=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Frequency-domain (exact) RRC and the three shaping modes
+# ---------------------------------------------------------------------------
+
+from hpcom._pulse import matched_filter, pulse_shape, raised_cosine_spectrum  # noqa: E402
+
+MODES = [(None, "circular"), (32, "circular"), (32, "linear")]
+
+
+@pytest.mark.parametrize("roll_off", [0.0, 0.05, 0.1, 0.5, 1.0])
+def test_raised_cosine_satisfies_the_nyquist_folding_identity(roll_off: float):
+    f = np.linspace(0.0, 1.0, 1001)
+    np.testing.assert_allclose(
+        raised_cosine_spectrum(f, roll_off) + raised_cosine_spectrum(f - 1.0, roll_off),
+        1.0,
+        atol=1e-15,
+    )
+
+
+@pytest.mark.parametrize("roll_off", [0.0, 0.25, 1.0])
+def test_raised_cosine_support_and_peak(roll_off: float):
+    f = np.linspace(-2, 2, 4001)
+    rc = raised_cosine_spectrum(f, roll_off)
+    assert rc.max() == 1.0
+    assert np.all(rc[np.abs(f) > (1 + roll_off) / 2 + 1e-12] == 0.0)
+
+
+@pytest.mark.parametrize(("span", "conv"), MODES)
+@pytest.mark.parametrize("sps", [2, 3, 8])
+def test_transmit_normalisation_and_receive_unit_gain(span, conv, sps):
+    """Tx output power = E|a|² (for i.i.d. symbols); a single impulse comes back with gain 1."""
+    rng = np.random.default_rng(0)
+    a = (rng.choice([-1, 1], 8192) + 1j * rng.choice([-1, 1], 8192)) / np.sqrt(2)
+    x = pulse_shape(a, sps, 0.1, span, conv)
+    np.testing.assert_allclose(np.mean(np.abs(x) ** 2), 1.0, rtol=0.02)
+    impulse = np.zeros(256, complex)
+    impulse[128] = 1.0
+    y = matched_filter(pulse_shape(impulse, sps, 0.1, span, conv), sps, 0.1, span, conv)
+    assert abs(y[128] - 1.0) < 1e-12
+
+
+@pytest.mark.parametrize(("span", "conv"), MODES)
+def test_matched_filter_noise_gain_is_one_over_sps(span, conv):
+    rng = np.random.default_rng(1)
+    noise = (rng.standard_normal(1 << 20) + 1j * rng.standard_normal(1 << 20)) / np.sqrt(2)
+    np.testing.assert_allclose(
+        np.var(matched_filter(noise, 4, 0.1, span, conv)) * 4, 1.0, rtol=0.01
+    )
+
+
+def test_exact_rrc_cascade_is_isi_free_to_rounding():
+    a = np.exp(2j * np.pi * np.random.default_rng(2).random(1024))
+    for sps in (2, 5, 16):
+        y = matched_filter(pulse_shape(a, sps, 0.2, None, "circular"), sps, 0.2, None, "circular")
+        np.testing.assert_allclose(y, a, rtol=0, atol=1e-13)
+
+
+def test_shaping_works_along_the_last_axis_of_any_shape():
+    a = np.exp(2j * np.pi * np.random.default_rng(3).random((2, 3, 64)))
+    x = pulse_shape(a, 4, 0.1, None, "circular")
+    assert x.shape == (2, 3, 256)
+    np.testing.assert_allclose(x[1, 2], pulse_shape(a[1, 2], 4, 0.1, None, "circular"))
+
+
+def test_linear_mode_requires_a_finite_span():
+    with pytest.raises(ValueError, match="finite"):
+        pulse_shape(np.ones(8), 4, 0.1, None, "linear")
+    with pytest.raises(ValueError, match="finite"):
+        matched_filter(np.ones(32), 4, 0.1, None, "linear")
+
+
+def test_fir_longer_than_the_signal_is_rejected():
+    with pytest.raises(ValueError, match="needs 257 taps"):
+        pulse_shape(np.ones(8), 8, 0.1, 32, "circular")
+
+
+def test_matched_filter_needs_whole_symbols():
+    with pytest.raises(ValueError, match="multiple of samples_per_symbol"):
+        matched_filter(np.ones(33), 4, 0.1, None, "circular")

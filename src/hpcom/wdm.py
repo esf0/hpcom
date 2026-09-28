@@ -1,289 +1,203 @@
-"""WDM (wavelength-division multiplexing) configuration, transmitter, signal.
+r"""Wavelength-division multiplexing: grid, transmitter, receiver.
 
-A :class:`WDMConfig` describes a uniform grid of ``n_channels`` channels with
-constant ``spacing_hz`` between adjacent channel centers, centered on the
-optical carrier (baseband 0 Hz). :class:`WDMTransmitter` superimposes
-per-channel RRC-shaped baseband fields onto this grid; the receiver
-(:class:`hpcom.receiver.WDMReceiver`) downshifts a single selected channel
-back to baseband before its matched filter.
+A :class:`WDMConfig` is a uniform grid of ``n_channels`` channels spaced by
+``spacing_hz`` and centred on the carrier (baseband 0 Hz):
 
-For ``n_channels = N`` and spacing :math:`\\Delta f`, the channel center
-frequencies (Hz, baseband) are
+.. math:: f_i = \left(i - \tfrac{N-1}{2}\right)\Delta f, \qquad i = 0, …, N-1.
 
-.. math:: f_i = (i - (N-1)/2) \\cdot \\Delta f, \\quad i = 0, ..., N-1
+(For odd ``N`` the centre channel sits at 0 Hz.) Frequencies are baseband
+offsets in NumPy's FFT convention; with hpcom's NLSE convention a positive
+offset corresponds to a *lower* optical frequency (see :doc:`/physics`).
 
-so the grid straddles 0 Hz symmetrically (with a center channel exactly at 0
-for odd ``N``).
-
-:class:`WDMTransmitter` inherits from :class:`SingleCarrierTransmitter`
-because every per-channel stream is itself a single-carrier RRC-shaped
-signal; WDM only adds the frequency-shift + sum composition on top.
+:class:`WDMTransmitter` builds one RRC-shaped stream per channel (and
+polarisation), shifts stream ``i`` by :math:`e^{2\pi i f_i t}` and sums them.
+:class:`WDMReceiver` compensates dispersion on the composite field, then
+shifts each selected channel back to baseband and matched-filters it.
 """
 
 from __future__ import annotations
 
+import math
+from fractions import Fraction
+
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
+from hpcom._model import HpcomModel, Polymorphic
 from hpcom._typing import ComplexArray
-from hpcom.receiver import (
-    ReceivedSymbols,
-    SingleCarrierReceivedSymbols,
-    SingleCarrierReceiver,
-)
-from hpcom.transmitter import (
-    Polarization,
-    SingleCarrierSignal,
-    SingleCarrierTransmitter,
-    _seed_seq_from,
-)
+from hpcom.receiver import PulseShapedReceiver, ReceivedSymbols
+from hpcom.transmitter import PulseShapedTransmitter, TransmittedSignal, Transmitter
+
+__all__ = ["WDMConfig", "WDMReceivedSymbols", "WDMReceiver", "WDMSignal", "WDMTransmitter"]
 
 
-class WDMConfig(BaseModel):
-    """Uniform WDM grid: ``n_channels`` channels at constant ``spacing_hz``."""
-
-    model_config = ConfigDict(frozen=True)
+class WDMConfig(HpcomModel):
+    """Uniform WDM grid of ``n_channels`` channels at constant ``spacing_hz``."""
 
     n_channels: int = Field(
-        ge=2,
-        description="Number of WDM channels (>= 2; use SingleCarrierTransmitter for one channel).",
+        ge=2, description="Number of channels (>= 2; use SingleCarrier* for one)."
     )
-    spacing_hz: float = Field(gt=0, description="Inter-channel spacing in Hz.")
+    spacing_hz: float = Field(gt=0, description="Centre-to-centre channel spacing in Hz.")
 
     def channel_frequencies_hz(self) -> npt.NDArray[np.float64]:
-        """Per-channel center frequencies (Hz, baseband), centered on 0 Hz."""
-        idx = np.arange(self.n_channels, dtype=np.float64)
-        return (idx - (self.n_channels - 1) / 2.0) * self.spacing_hz
+        """Baseband centre frequency of every channel, ``(i − (N−1)/2)·Δf``."""
+        freqs: npt.NDArray[np.float64] = (
+            np.arange(self.n_channels, dtype=np.float64) - (self.n_channels - 1) / 2.0
+        ) * self.spacing_hz
+        return freqs
 
     @property
     def total_bandwidth_hz(self) -> float:
-        """Outer-to-outer channel-center span, in Hz. (Channel bandwidth is
-        added separately by the caller based on symbol rate and roll-off.)"""
-        return float((self.n_channels - 1) * self.spacing_hz)
+        """Outer-to-outer channel-centre span ``(N−1)·Δf`` (excludes the channel bandwidth)."""
+        return (self.n_channels - 1) * self.spacing_hz
 
 
-# ---------------------------------------------------------------------------
-# WDMSignal
-# ---------------------------------------------------------------------------
+def _check_grid(tx: PulseShapedTransmitter, wdm: WDMConfig) -> None:
+    """Validate that the sampled band holds the grid and (if circular) is periodic."""
+    fs = tx.symbol_rate_hz * tx.samples_per_symbol
+    edge = abs(wdm.channel_frequencies_hz()[0]) + tx.symbol_rate_hz * (1.0 + tx.roll_off) / 2.0
+    if fs < 2.0 * edge:
+        raise ValueError(
+            f"sample rate {fs:.4g} Hz cannot hold {wdm.n_channels} channels spaced "
+            f"{wdm.spacing_hz:.4g} Hz (band edge ±{edge:.4g} Hz): increase samples_per_symbol "
+            f"to at least {math.ceil(2.0 * edge / tx.symbol_rate_hz)}"
+        )
+    if tx.convolution != "circular":
+        return
+    # Periodicity: every carrier must complete an integer number of cycles in
+    # the n_symbols/R_s window, i.e. lie on the DFT grid of the signal.
+    half = 1 if wdm.n_channels % 2 else 2
+    cycles = wdm.spacing_hz * tx.n_symbols / (half * tx.symbol_rate_hz)
+    if abs(cycles - round(cycles)) > 1e-6 * max(1.0, abs(cycles)):
+        ratio = Fraction(wdm.spacing_hz / (half * tx.symbol_rate_hz)).limit_denominator(10**6)
+        raise ValueError(
+            f"channel carriers are not periodic over the {tx.n_symbols}-symbol window "
+            f"(spacing·T = {cycles:.6g} cycles is not an integer), so the circular "
+            f"(periodic) signal would be discontinuous. Use n_symbols that is a multiple of "
+            f"{ratio.denominator}, or convolution='linear'."
+        )
 
 
-class WDMSignal(SingleCarrierSignal):
-    """Wideband WDM signal: composite field carrying multiple QAM channels.
+class WDMSignal(TransmittedSignal):
+    """Output of :class:`WDMTransmitter`.
 
-    Shape conventions:
-
-    * Single-pol: ``field=(n_samples,)`` composite,
-      ``bits=(n_channels, n_symbols*k)``,
-      ``symbols=(n_channels, n_symbols)``.
-    * Dual-pol:   ``field=(2, n_samples)`` composite,
-      ``bits=(2, n_channels, n_symbols*k)``,
-      ``symbols=(2, n_channels, n_symbols)``.
+    ``field``: composite, ``(n_samples,)`` or ``(2, n_samples)``.
+    ``symbols``/``bits``: per channel, ``(n_channels, n)`` or ``(2, n_channels, n)``.
     """
 
-    wdm: WDMConfig
+    transmitter: Polymorphic[WDMTransmitter]
+
+    @property
+    def data_indices(self) -> npt.NDArray[np.intp]:
+        return self.transmitter.data_indices
+
+    @property
+    def channel_frequencies_hz(self) -> npt.NDArray[np.float64]:
+        return self.transmitter.wdm.channel_frequencies_hz()
 
 
-# ---------------------------------------------------------------------------
-# WDMTransmitter
-# ---------------------------------------------------------------------------
+class WDMTransmitter(PulseShapedTransmitter):
+    """WDM transmitter: ``wdm.n_channels`` independent RRC-QAM channels on a grid.
 
-
-class WDMTransmitter(SingleCarrierTransmitter):
-    """Wavelength-division-multiplexed transmitter.
-
-    Generates ``wdm.n_channels`` independent QAM streams (per polarisation),
-    frequency-shifts each onto the configured grid, and sums them into a
-    composite wideband field. With ``polarization="dual"``, each polarisation
-    independently carries the full N-channel composite; X and Y streams are
-    independent (PDM-WDM).
+    All channels share the modulation, pulse, pilots and launch power
+    (``launch_power_per_channel_dbm`` is per channel; ``launch_power_total_dbm``
+    is split equally). ``samples_per_symbol`` sets the *composite* sample
+    rate and must cover the whole grid.
     """
 
     wdm: WDMConfig
 
     @model_validator(mode="after")
-    def _validate_wdm_bandwidth(self) -> WDMTransmitter:
-        # Wideband Nyquist: sample rate must cover the outer channel edges.
-        # Per-channel one-sided bandwidth is Rs · (1 + roll_off) / 2.
-        sample_rate_hz = self.symbol_rate_hz * self.samples_per_symbol
-        outer_center = abs(self.wdm.channel_frequencies_hz()[-1])
-        needed = 2.0 * (outer_center + self.symbol_rate_hz * (1.0 + self.roll_off) / 2.0)
-        if sample_rate_hz < needed:
-            raise ValueError(
-                f"WDM wideband sample rate ({sample_rate_hz:.3e} Hz) is below "
-                f"the Nyquist requirement ({needed:.3e} Hz) for "
-                f"{self.wdm.n_channels} channels at {self.wdm.spacing_hz:.3e} Hz "
-                f"spacing with roll-off {self.roll_off}. Increase "
-                f"samples_per_symbol (or reduce spacing/channel count)."
-            )
+    def _validate_wdm(self) -> WDMTransmitter:
+        _check_grid(self, self.wdm)
         return self
+
+    @property
+    def n_channels(self) -> int:
+        return self.wdm.n_channels
 
     def generate(
         self,
         *,
         rng: np.random.Generator | None = None,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
+        bits: npt.ArrayLike | None = None,
+        symbols: npt.ArrayLike | None = None,
     ) -> WDMSignal:
-        """Generate the WDM composite field.
-
-        Deterministic-input shapes (single carrier per polarisation per channel):
-
-        - single-pol: ``bits=(n_channels, n_symbols*k)``,
-          ``symbols=(n_channels, n_symbols)``.
-        - dual-pol:   ``bits=(2, n_channels, n_symbols*k)``,
-          ``symbols=(2, n_channels, n_symbols)``.
-        """
-        if bits is not None and symbols is not None:
-            raise ValueError("pass at most one of `bits` or `symbols`, not both")
-
-        n_ch = self.wdm.n_channels
-        bps = self._bits_per_stream()
-        n_pol = 2 if self.polarization == "dual" else 1
-
-        # Validate deterministic-input shapes.
-        if bits is not None:
-            b = np.asarray(bits, dtype=np.uint8)
-            expected = (2, n_ch, bps) if n_pol == 2 else (n_ch, bps)
-            if b.shape != expected:
-                raise ValueError(f"`bits` must have shape {expected}, got {b.shape}")
-        if symbols is not None:
-            s = np.asarray(symbols, dtype=np.complex128)
-            expected_s = (2, n_ch, self.n_symbols) if n_pol == 2 else (n_ch, self.n_symbols)
-            if s.shape != expected_s:
-                raise ValueError(f"`symbols` must have shape {expected_s}, got {s.shape}")
-
-        # Seed tree: root → per-pol → per-channel.
-        seed_seq = _seed_seq_from(rng, self.seed)
-        pol_seqs = seed_seq.spawn(n_pol) if n_pol == 2 else [seed_seq]
-
-        n_samples = self.n_symbols * self.samples_per_symbol
-        t = np.arange(n_samples) * self.dt_s
-        freqs = self.wdm.channel_frequencies_hz()
-
-        per_pol_field: list[ComplexArray] = []
-        per_pol_bits: list[npt.NDArray[np.uint8]] = []
-        per_pol_syms: list[ComplexArray] = []
-
-        for pol_idx, pol_seq in enumerate(pol_seqs):
-            ch_sub_seqs = pol_seq.spawn(n_ch)
-            composite = np.zeros(n_samples, dtype=np.complex128)
-            this_pol_bits: list[npt.NDArray[np.uint8]] = []
-            this_pol_syms: list[ComplexArray] = []
-            for ch_idx, (f_ch, sub_seq) in enumerate(zip(freqs, ch_sub_seqs, strict=True)):
-                ch_rng = np.random.default_rng(sub_seq)
-                if bits is not None:
-                    b_in = bits[pol_idx, ch_idx] if n_pol == 2 else bits[ch_idx]
-                else:
-                    b_in = None
-                if symbols is not None:
-                    s_in = symbols[pol_idx, ch_idx] if n_pol == 2 else symbols[ch_idx]
-                else:
-                    s_in = None
-                ch_bits, ch_syms, field_ch = self._generate_one_channel(
-                    ch_rng, bits=b_in, symbols=s_in
-                )
-                this_pol_bits.append(ch_bits)
-                this_pol_syms.append(ch_syms)
-                composite += field_ch * np.exp(2j * np.pi * float(f_ch) * t)
-            per_pol_field.append(composite)
-            per_pol_bits.append(np.stack(this_pol_bits, axis=0))
-            per_pol_syms.append(np.stack(this_pol_syms, axis=0))
-
-        if n_pol == 1:
-            return self._make_wdm_signal(
-                field=per_pol_field[0],
-                symbols=per_pol_syms[0],
-                bits=per_pol_bits[0],
-                polarization="single",
-            )
-
-        return self._make_wdm_signal(
-            field=np.stack(per_pol_field, axis=0),
-            symbols=np.stack(per_pol_syms, axis=0),
-            bits=np.stack(per_pol_bits, axis=0),
-            polarization="dual",
-        )
-
-    def _make_wdm_signal(
-        self,
-        *,
-        field: ComplexArray,
-        symbols: ComplexArray,
-        bits: npt.NDArray[np.uint8],
-        polarization: Polarization,
-    ) -> WDMSignal:
-        return WDMSignal(
-            field=field,
-            dt_s=self.dt_s,
-            symbols=symbols,
-            bits=bits,
-            samples_per_symbol=self.samples_per_symbol,
-            modulation_order=self.effective_modulation_order,
-            roll_off=self.roll_off,
-            pulse_span_symbols=self.pulse_span_symbols,
-            n_symbols=self.n_symbols,
-            polarization=polarization,
-            pilots=self.pilots,
-            wdm=self.wdm,
-        )
+        out_bits, data = self._draw_data(rng, bits, symbols)
+        slots = self._slot_stream(data)  # (*pol, n_ch, n_symbols)
+        channels = self._shape_streams(slots)  # (*pol, n_ch, n_samples)
+        t = np.arange(self.n_samples) * self.dt_s
+        carriers = np.exp(2j * np.pi * self.wdm.channel_frequencies_hz()[:, None] * t)
+        field = np.sum(channels * carriers, axis=-2)
+        return WDMSignal(transmitter=self, field=field, symbols=slots, bits=out_bits)
 
 
-# ---------------------------------------------------------------------------
-# WDMReceivedSymbols
-# ---------------------------------------------------------------------------
+class WDMReceivedSymbols(ReceivedSymbols):
+    """Output of :class:`WDMReceiver`; the channel axis holds :attr:`channels` in order."""
+
+    channels: tuple[int, ...]
 
 
-class WDMReceivedSymbols(SingleCarrierReceivedSymbols):
-    """Output of :class:`WDMReceiver` — single demuxed channel's bits / symbols,
-    annotated with which channel was scored."""
+class WDMReceiver(PulseShapedReceiver):
+    """Demultiplexes and demodulates the selected WDM ``channels`` (all by default).
 
-    wdm_channel: int
-
-
-# ---------------------------------------------------------------------------
-# WDMReceiver
-# ---------------------------------------------------------------------------
-
-
-class WDMReceiver(SingleCarrierReceiver):
-    """WDM-aware receiver: downshifts the selected channel to baseband, then
-    runs the single-carrier matched-filter pipeline.
-
-    Pair with :class:`WDMTransmitter`. Works for both ``polarization="single"``
-    (1-D input) and ``"dual"`` (``(2, N)`` input). The output carries the
-    bits / symbols / decisions of the *single* demuxed channel — to score all
-    channels, instantiate one WDMReceiver per channel.
+    Output shapes: ``(n_selected, n)`` single-pol, ``(2, n_selected, n)``
+    dual-pol — also when a single channel is selected.
     """
 
     wdm: WDMConfig
-    wdm_channel: int = 0
+    channels: tuple[int, ...] | None = None
 
     @model_validator(mode="after")
-    def _validate_wdm_channel(self) -> WDMReceiver:
-        if not 0 <= self.wdm_channel < self.wdm.n_channels:
-            raise ValueError(
-                f"wdm_channel must be in [0, {self.wdm.n_channels}), got {self.wdm_channel}"
-            )
+    def _validate_channels(self) -> WDMReceiver:
+        if self.channels is not None:
+            if not self.channels:
+                raise ValueError("`channels` must be non-empty (or None for all channels)")
+            bad = [c for c in self.channels if not 0 <= c < self.wdm.n_channels]
+            if bad:
+                raise ValueError(f"channels {bad} are outside [0, {self.wdm.n_channels})")
+            if len(set(self.channels)) != len(self.channels):
+                raise ValueError(f"channels must be unique, got {self.channels}")
         return self
 
-    def receive(self, field: ComplexArray, dt_s: float | None = None) -> WDMReceivedSymbols:
-        if dt_s is None:
-            raise ValueError(
-                "dt_s is required for WDMReceiver (needed to downshift the "
-                "selected channel to baseband)"
-            )
-        f_ch = float(self.wdm.channel_frequencies_hz()[self.wdm_channel])
-        t = np.arange(field.shape[-1]) * dt_s
-        downshifted = field * np.exp(-2j * np.pi * f_ch * t)
-        base: ReceivedSymbols = super().receive(downshifted, dt_s)
-        return WDMReceivedSymbols(
-            symbols=base.symbols,
-            bits=base.bits,
-            decisions=base.decisions,
-            modulation_order=base.modulation_order,
-            polarization=base.polarization,
-            pilots=base.pilots,
-            pilot_symbols=base.pilot_symbols,
-            wdm_channel=self.wdm_channel,
+    @property
+    def selected_channels(self) -> tuple[int, ...]:
+        return self.channels if self.channels is not None else tuple(range(self.wdm.n_channels))
+
+    def compatibility_issues(self, transmitter: Transmitter) -> list[str]:
+        if not isinstance(transmitter, WDMTransmitter):
+            return [f"WDMReceiver cannot receive a {type(transmitter).__name__}"]
+        issues = self._base_issues(transmitter) + self._pulse_issues(transmitter)
+        if transmitter.wdm != self.wdm:
+            issues.append(f"wdm: transmitter {transmitter.wdm!r}, receiver {self.wdm!r}")
+        return issues
+
+    def reference(
+        self, sent: TransmittedSignal
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.complex128]]:
+        sel = list(self.selected_channels)
+        return (
+            np.take(np.asarray(sent.bits), sel, axis=-2),
+            np.take(np.asarray(sent.data_symbols()), sel, axis=-2),
         )
+
+    def receive(
+        self,
+        field: ComplexArray,
+        dt_s: float,
+        *,
+        reference: TransmittedSignal | None = None,
+    ) -> WDMReceivedSymbols:
+        x = self._compensate_dispersion(self._check_field(field), dt_s)
+        freqs = self.wdm.channel_frequencies_hz()[list(self.selected_channels)]
+        t = np.arange(x.shape[-1]) * dt_s
+        downshift = np.exp(-2j * np.pi * freqs[:, None] * t)  # (n_sel, n)
+        streams = x[..., None, :] * downshift  # (*pol, n_sel, n)
+        ref = self.reference(reference)[1] if reference is not None else None
+        out = self._demodulate(streams, ref)
+        return WDMReceivedSymbols(receiver=self, channels=self.selected_channels, **out)
+
+
+WDMSignal.model_rebuild()
+WDMReceivedSymbols.model_rebuild()

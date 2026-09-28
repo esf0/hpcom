@@ -113,7 +113,7 @@ def test_apsk_16_b2b_noiseless_recovers_bits():
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     k = cfg.bits_per_symbol
     sent_trim = sent.bits.reshape(-1, k)[span:-span].ravel()
@@ -135,7 +135,7 @@ def test_apsk_32_b2b_noiseless_recovers_bits():
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     k = cfg.bits_per_symbol
     sent_trim = sent.bits.reshape(-1, k)[span:-span].ravel()
@@ -175,7 +175,7 @@ def test_apsk_single_ring_b2b_noiseless():
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     k = cfg.bits_per_symbol
     sent_trim = sent.bits.reshape(-1, k)[span:-span].ravel()

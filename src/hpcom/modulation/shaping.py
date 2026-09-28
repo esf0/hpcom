@@ -1,109 +1,89 @@
-"""Constellation-shaping primitives.
+"""Constellations: points, bit labels, and (optional) symbol probabilities.
 
-Provides :class:`ConstellationConfig` — a validated, immutable container for
-``(points, bit_labels, probabilities)`` that the rest of the modulation API
-can consume in place of a bare ``modulation_order``. Geometric shaping
-plugs in through arbitrary ``points``; probabilistic shaping through a
-non-uniform ``probabilities`` vector.
-
-This module is pure NumPy; framework-specific code lives in
-``hpcom.backends``.
+:class:`ConstellationConfig` is the one object the transmitter and receiver
+use to map between bits, symbol indices, and complex points. Square QAM is
+built with :meth:`ConstellationConfig.from_square_qam`; geometric shaping
+through arbitrary points (:meth:`~ConstellationConfig.from_points`,
+:func:`apsk`); probabilistic shaping through ``probabilities`` (see
+:mod:`hpcom.modulation.dm`).
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from functools import cache, cached_property
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import model_validator
 
+from hpcom._model import ComplexArrayField, FloatArrayField, HpcomModel, UInt8ArrayField
 from hpcom._typing import ComplexArray, _is_power_of_two
-from hpcom.modulation.constellations import bits_per_symbol, square_qam
-from hpcom.modulation.mapping import _pack_bit_groups_msb_first, nearest_symbol_indices
+from hpcom.modulation.constellations import square_qam
+from hpcom.modulation.mapping import nearest_symbol_indices, pack_bits_msb_first
 
-_POWER_TOL = 1e-9
+#: Tolerance on ``E[|s|²] = 1`` and on ``Σ p = 1``.
+_UNIT_TOL = 1e-9
 
 
 def _expected_power(points: ComplexArray, probabilities: npt.NDArray[np.float64] | None) -> float:
-    """E[|s|²] under the symbol distribution (uniform if probabilities is None)."""
-    sq = np.abs(points) ** 2
+    """``E[|s|²]`` under ``probabilities`` (uniform if ``None``)."""
+    energy = np.abs(points) ** 2
     if probabilities is None:
-        return float(sq.mean())
-    return float(np.dot(probabilities, sq))
+        return float(energy.mean())
+    return float(np.dot(probabilities, energy))
 
 
-class ConstellationConfig(BaseModel):
-    """Validated constellation: points, bit→symbol labels, optional priors.
+class ConstellationConfig(HpcomModel):
+    """Validated constellation.
 
-    Invariants enforced at construction:
+    Invariants (checked at construction):
 
-    * ``points`` has shape ``(M,)``, complex, with ``M`` a power of 2.
-    * ``bit_labels`` has shape ``(M, log₂ M)`` ``uint8`` with all-unique rows.
-    * ``probabilities`` (if given) has shape ``(M,)``, is non-negative, and
-      sums to 1.
-    * Expected symbol power ``E[|s|²]`` equals 1 within ``1e-9``. (Use the
-      ``from_*`` factories; they normalise.)
+    * ``points``: shape ``(M,)``, ``M`` a power of two, all points distinct.
+    * ``bit_labels``: shape ``(M, log₂M)``, entries 0/1, rows unique; row
+      ``i`` labels ``points[i]`` (MSB first).
+    * ``probabilities`` (optional): shape ``(M,)``, non-negative, sums to 1.
+    * ``E[|s|²] = 1`` under ``probabilities`` (uniform when ``None``). The
+      ``from_*`` factories normalise for you.
+
+    With ``probabilities`` set, a transmitter draws symbols from that PMF —
+    i.i.d. unless a distribution matcher (``dm``) is configured.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    points: ComplexArray
-    bit_labels: npt.NDArray[np.uint8]
-    probabilities: npt.NDArray[np.float64] | None = None
-
-    _SUPPORTED_QAM_ORDERS: ClassVar[tuple[int, ...]] = (4, 16, 64, 256, 1024)
-
-    @field_validator("points", mode="before")
-    @classmethod
-    def _coerce_points(cls, v: object) -> np.ndarray:
-        return np.asarray(v, dtype=np.complex128)
-
-    @field_validator("bit_labels", mode="before")
-    @classmethod
-    def _coerce_bit_labels(cls, v: object) -> np.ndarray:
-        return np.asarray(v, dtype=np.uint8)
-
-    @field_validator("probabilities", mode="before")
-    @classmethod
-    def _coerce_probabilities(cls, v: object) -> np.ndarray | None:
-        if v is None:
-            return None
-        return np.asarray(v, dtype=np.float64)
+    points: ComplexArrayField
+    bit_labels: UInt8ArrayField
+    probabilities: FloatArrayField | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> ConstellationConfig:
-        points = self.points
-        bit_labels = self.bit_labels
-
-        m = points.shape[0]
-        if points.ndim != 1 or not _is_power_of_two(m):
-            raise ValueError(f"points must be 1-D with power-of-2 length, got shape {points.shape}")
-
-        k = int(np.log2(m))
-        if bit_labels.shape != (m, k):
-            raise ValueError(f"bit_labels must have shape ({m}, {k}), got {bit_labels.shape}")
-        if ((bit_labels != 0) & (bit_labels != 1)).any():
+        m = self.points.shape[0] if self.points.ndim == 1 else -1
+        if self.points.ndim != 1 or not _is_power_of_two(m):
+            raise ValueError(
+                f"points must be 1-D with a power-of-2 length, got shape {self.points.shape}"
+            )
+        if np.unique(self.points).size != m:
+            raise ValueError("constellation points must be distinct")
+        k = m.bit_length() - 1
+        if self.bit_labels.shape != (m, k):
+            raise ValueError(f"bit_labels must have shape ({m}, {k}), got {self.bit_labels.shape}")
+        if np.any(self.bit_labels > 1):
             raise ValueError("bit_labels must contain only 0/1 entries")
-
-        packed = _pack_bit_groups_msb_first(bit_labels)
-        if np.unique(packed).size != m:
+        if np.unique(pack_bits_msb_first(self.bit_labels)).size != m:
             raise ValueError("bit_labels rows must be unique (one label per symbol)")
 
-        probabilities = self.probabilities
-        if probabilities is not None:
-            if probabilities.shape != (m,):
-                raise ValueError(f"probabilities must have shape ({m},), got {probabilities.shape}")
-            if (probabilities < 0).any():
-                raise ValueError("probabilities must be non-negative")
-            if not np.isclose(probabilities.sum(), 1.0, atol=1e-12):
-                raise ValueError(f"probabilities must sum to 1, got {probabilities.sum():.6e}")
+        p = self.probabilities
+        if p is not None:
+            if p.shape != (m,):
+                raise ValueError(f"probabilities must have shape ({m},), got {p.shape}")
+            if np.any(p < 0) or not np.all(np.isfinite(p)):
+                raise ValueError("probabilities must be finite and non-negative")
+            if abs(float(p.sum()) - 1.0) > _UNIT_TOL:
+                raise ValueError(f"probabilities must sum to 1, got {p.sum():.12g}")
 
-        power = _expected_power(points, probabilities)
-        if not np.isclose(power, 1.0, atol=_POWER_TOL):
+        power = _expected_power(self.points, p)
+        if abs(power - 1.0) > _UNIT_TOL:
             raise ValueError(
-                f"expected symbol power must be 1.0 (got {power:.6e}); use "
-                "ConstellationConfig.from_points to auto-normalise"
+                f"expected symbol power E[|s|²] must be 1 (got {power:.12g}); "
+                "use ConstellationConfig.from_points to normalise automatically"
             )
         return self
 
@@ -111,90 +91,117 @@ class ConstellationConfig(BaseModel):
 
     @property
     def modulation_order(self) -> int:
+        """Number of points ``M``."""
         return int(self.points.shape[0])
 
     @property
     def bits_per_symbol(self) -> int:
+        """``log₂ M``."""
         return int(self.bit_labels.shape[1])
 
     @property
     def is_uniform(self) -> bool:
+        """``True`` when no ``probabilities`` are set (equiprobable points)."""
         return self.probabilities is None
+
+    @property
+    def pmf(self) -> npt.NDArray[np.float64]:
+        """Symbol probabilities (uniform when ``probabilities`` is ``None``)."""
+        if self.probabilities is None:
+            return np.full(self.modulation_order, 1.0 / self.modulation_order)
+        return self.probabilities
+
+    @property
+    def entropy_bits(self) -> float:
+        """Source entropy ``H(X) = −Σ p log₂ p`` in bits/symbol."""
+        p = self.pmf[self.pmf > 0]
+        return float(-np.sum(p * np.log2(p)))
+
+    @cached_property
+    def _index_of_label(self) -> npt.NDArray[np.intp]:
+        """Packed label value → point index."""
+        lut = np.empty(self.modulation_order, dtype=np.intp)
+        lut[pack_bits_msb_first(self.bit_labels)] = np.arange(self.modulation_order)
+        return lut
 
     # ---- factories -------------------------------------------------------
 
     @classmethod
     def from_square_qam(cls, modulation_order: int) -> ConstellationConfig:
-        """Build the Gray-coded square-QAM config, bit-compatible with
-        :func:`hpcom.modulation.bits_to_symbols`."""
-        points, bit_labels = square_qam(modulation_order)
-        return cls(points=points, bit_labels=bit_labels)
+        """Gray-coded square QAM (shared, cached instance)."""
+        return _square_qam_config(modulation_order)
 
     @classmethod
     def from_points(
         cls,
-        points: ComplexArray,
-        bit_labels: npt.NDArray[np.uint8] | None = None,
-        probabilities: npt.NDArray[np.float64] | None = None,
+        points: npt.ArrayLike,
+        bit_labels: npt.ArrayLike | None = None,
+        probabilities: npt.ArrayLike | None = None,
     ) -> ConstellationConfig:
-        """Build a config from arbitrary points (geometric shaping).
+        """Build a constellation from arbitrary points (geometric shaping).
 
-        Auto-normalises ``points`` to unit expected power. If ``bit_labels``
-        is None, assigns labels by index in MSB-first binary — valid but not
-        Gray-optimal; pass explicit labels for best BER.
+        ``points`` are rescaled to ``E[|s|²] = 1`` under ``probabilities``.
+        Without ``bit_labels`` the natural binary labelling (row ``i`` =
+        binary of ``i``) is used — valid, but not Gray; pass labels for good
+        BER.
         """
-        points = np.asarray(points, dtype=np.complex128)
-        m = points.shape[0]
-        if points.ndim != 1 or not _is_power_of_two(m):
-            raise ValueError(f"points must be 1-D with power-of-2 length, got shape {points.shape}")
-
-        if probabilities is not None:
-            probabilities = np.asarray(probabilities, dtype=np.float64)
-            if probabilities.shape != (m,):
-                raise ValueError(f"probabilities must have shape ({m},), got {probabilities.shape}")
-            if (probabilities < 0).any() or not np.isclose(probabilities.sum(), 1.0, atol=1e-12):
-                raise ValueError("probabilities must be non-negative and sum to 1")
-
-        power = _expected_power(points, probabilities)
-        if power <= 0:
+        pts = np.asarray(points, dtype=np.complex128)
+        prob = None if probabilities is None else np.asarray(probabilities, dtype=np.float64)
+        if pts.ndim != 1 or not _is_power_of_two(pts.shape[0]):
+            raise ValueError(f"points must be 1-D with a power-of-2 length, got shape {pts.shape}")
+        if prob is not None and prob.shape != pts.shape:
+            raise ValueError(f"probabilities must have shape {pts.shape}, got {prob.shape}")
+        power = _expected_power(pts, prob)
+        if not power > 0:
             raise ValueError("constellation has zero expected power")
-        points = points / np.sqrt(power)
+        labels = (
+            natural_labels(pts.shape[0]) if bit_labels is None else np.asarray(bit_labels, np.uint8)
+        )
+        return cls(points=pts / np.sqrt(power), bit_labels=labels, probabilities=prob)
 
-        if bit_labels is None:
-            k = int(np.log2(m))
-            bit_labels = _default_bit_labels(m, k)
-
-        return cls(points=points, bit_labels=bit_labels, probabilities=probabilities)
+    def with_probabilities(self, probabilities: npt.ArrayLike | None) -> ConstellationConfig:
+        """Same geometry and labels with a new PMF (points re-normalised to unit power)."""
+        return ConstellationConfig.from_points(self.points, self.bit_labels, probabilities)
 
     # ---- mapping ---------------------------------------------------------
 
-    def map(self, bits: npt.NDArray[np.uint8]) -> ComplexArray:
-        """Map a flat bit stream to symbols using this constellation."""
+    def indices_from_bits(self, bits: npt.ArrayLike) -> npt.NDArray[np.intp]:
+        """Split ``bits`` (flat, length multiple of ``log₂M``) into labels → point indices."""
+        bits = np.asarray(bits, dtype=np.uint8).reshape(-1)
         k = self.bits_per_symbol
-        bits = np.asarray(bits, dtype=np.uint8)
-        if bits.size % k != 0:
-            raise ValueError(f"bits length {bits.size} is not a multiple of {k}")
-        groups = bits.reshape(-1, k)
-        packed = _pack_bit_groups_msb_first(groups)
+        if bits.size % k:
+            raise ValueError(f"number of bits ({bits.size}) is not a multiple of {k}")
+        if np.any(bits > 1):
+            raise ValueError("bits must be 0/1")
+        return self._index_of_label[pack_bits_msb_first(bits.reshape(-1, k))]
 
-        label_keys = _pack_bit_groups_msb_first(self.bit_labels)
-        lut = np.empty(self.modulation_order, dtype=np.complex128)
-        lut[label_keys] = self.points
-        return lut[packed]
+    def bits_from_indices(self, indices: npt.ArrayLike) -> npt.NDArray[np.uint8]:
+        """Concatenated labels of ``indices`` (flat, MSB first)."""
+        return self.bit_labels[np.asarray(indices, dtype=np.intp)].reshape(-1)
+
+    def map(self, bits: npt.ArrayLike) -> ComplexArray:
+        """Bits → symbols."""
+        return self.points[self.indices_from_bits(bits)]
+
+    def nearest(self, received: ComplexArray) -> npt.NDArray[np.intp]:
+        """Minimum-Euclidean-distance decisions (point indices), any input shape."""
+        return nearest_symbol_indices(received, self.points)
 
     def demap(self, received: ComplexArray) -> npt.NDArray[np.uint8]:
-        """Hard-decision demap. Ignores ``probabilities`` (uniform-prior decision)."""
-        idx = nearest_symbol_indices(np.asarray(received, dtype=np.complex128), self.points)
-        return self.bit_labels[idx].ravel()
+        """Hard-decision demap to bits (flat). Uses minimum distance, not MAP."""
+        return self.bits_from_indices(self.nearest(np.asarray(received).reshape(-1)))
 
 
-def _default_bit_labels(m: int, k: int) -> npt.NDArray[np.uint8]:
-    """Identity labels: row ``i`` → MSB-first ``k``-bit binary of ``i``."""
-    out = np.empty((m, k), dtype=np.uint8)
-    for i in range(m):
-        for b in range(k):
-            out[i, k - 1 - b] = (i >> b) & 1
-    return out
+@cache
+def _square_qam_config(modulation_order: int) -> ConstellationConfig:
+    points, labels = square_qam(modulation_order)
+    return ConstellationConfig(points=points, bit_labels=labels)
+
+
+def natural_labels(m: int) -> npt.NDArray[np.uint8]:
+    """Natural binary labels: row ``i`` is the ``log₂m``-bit binary of ``i`` (MSB first)."""
+    k = m.bit_length() - 1
+    return ((np.arange(m)[:, None] >> np.arange(k - 1, -1, -1)) & 1).astype(np.uint8)
 
 
 def apsk(
@@ -202,28 +209,17 @@ def apsk(
     ring_radii: tuple[float, ...] | list[float],
     ring_phases: tuple[float, ...] | list[float] | None = None,
 ) -> ConstellationConfig:
-    """Amplitude-phase shift keying constellation: concentric rings.
+    """Amplitude-phase shift keying: concentric rings of equally spaced points.
 
-    Each ring carries ``ring_sizes[i]`` equally-spaced points at radius
-    ``ring_radii[i]``, optionally rotated by ``ring_phases[i]`` (radians).
-    Total constellation size ``M = sum(ring_sizes)`` must be a power of 2.
-
-    Points are laid out ring-by-ring starting from the innermost. Within
-    each ring, points are emitted at angles ``ring_phases[i] + 2π k / M_i``
-    for ``k = 0..M_i-1``.
+    Ring ``i`` carries ``ring_sizes[i]`` points at radius ``ring_radii[i]``
+    and angles ``ring_phases[i] + 2πk/ring_sizes[i]``. ``sum(ring_sizes)``
+    must be a power of two. Points are ordered ring by ring.
 
     .. warning::
-        Bit labels use MSB-first binary indexing (label[i] = binary(i)),
-        **not** Gray coding. BER simulations over AWGN will be suboptimal
-        without custom Gray labels. Pass explicit ``bit_labels`` to
-        :meth:`ConstellationConfig.from_points` when BER accuracy matters.
+       Labels are natural binary, **not** Gray; pass explicit labels to
+       :meth:`ConstellationConfig.from_points` when BER matters.
 
-    Examples
-    --------
-    Canonical DVB-S2 16-APSK (4 inner + 12 outer):
-
-    >>> cfg = apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85))
-    >>> cfg.modulation_order
+    >>> apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85)).modulation_order
     16
     """
     if len(ring_sizes) != len(ring_radii):
@@ -231,29 +227,21 @@ def apsk(
             f"ring_sizes and ring_radii must have the same length, "
             f"got {len(ring_sizes)} and {len(ring_radii)}"
         )
-    if ring_phases is None:
-        ring_phases = [0.0] * len(ring_sizes)
-    elif len(ring_phases) != len(ring_sizes):
-        raise ValueError(f"ring_phases must have length {len(ring_sizes)}, got {len(ring_phases)}")
+    phases = [0.0] * len(ring_sizes) if ring_phases is None else list(ring_phases)
+    if len(phases) != len(ring_sizes):
+        raise ValueError(f"ring_phases must have length {len(ring_sizes)}, got {len(phases)}")
     if any(n < 1 for n in ring_sizes):
         raise ValueError(f"all ring_sizes must be >= 1, got {ring_sizes}")
     if any(r <= 0 for r in ring_radii):
         raise ValueError(f"all ring_radii must be > 0, got {ring_radii}")
-
     total = int(sum(ring_sizes))
     if not _is_power_of_two(total):
-        raise ValueError(
-            f"sum(ring_sizes) must be a power of 2, got {total} (ring_sizes={ring_sizes})"
-        )
-
-    points_list: list[complex] = []
-    for n_ring, radius, phase in zip(ring_sizes, ring_radii, ring_phases, strict=True):
-        angles = phase + 2.0 * np.pi * np.arange(n_ring) / n_ring
-        ring = radius * np.exp(1j * angles)
-        points_list.extend(ring.tolist())
-
-    points = np.array(points_list, dtype=np.complex128)
-    return ConstellationConfig.from_points(points)
+        raise ValueError(f"sum(ring_sizes) must be a power of 2, got {total}")
+    rings = [
+        r * np.exp(1j * (ph + 2.0 * np.pi * np.arange(n) / n))
+        for n, r, ph in zip(ring_sizes, ring_radii, phases, strict=True)
+    ]
+    return ConstellationConfig.from_points(np.concatenate(rings))
 
 
-__all__ = ["ConstellationConfig", "apsk", "bits_per_symbol"]
+__all__ = ["ConstellationConfig", "apsk", "natural_labels"]

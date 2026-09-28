@@ -1,277 +1,412 @@
-"""Optical receiver hierarchy: matched filter + downsample + symbol demap.
+r"""Optical receivers: abstract base, pulse-shaped base, single-carrier QAM.
 
-Mirrors :mod:`hpcom.transmitter`:
+Mirrors :mod:`hpcom.transmitter`::
 
-* :class:`Receiver` and :class:`ReceivedSymbols` are abstract bases that fix
-  the cross-carrier vocabulary (modulation order, polarisation, pilots) — they
-  carry no signal-shape-specific machinery.
-* :class:`SingleCarrierReceiver` is the concrete RRC matched-filter
-  implementation; :class:`SingleCarrierReceivedSymbols` is its output.
-* :class:`hpcom.wdm.WDMReceiver` extends :class:`SingleCarrierReceiver` to
-  downshift the selected channel before delegating to the single-carrier
-  pipeline.
-* :class:`hpcom.ofdm.OFDMReceiver` (deferred) will subclass :class:`Receiver`
-  directly — no RRC.
+    Receiver (abstract)                          — CD compensation, equaliser, decisions
+    ├── PulseShapedReceiver (abstract)           — RRC matched filter, pilots
+    │   ├── SingleCarrierReceiver
+    │   └── WDMReceiver      (hpcom.wdm)         — demultiplexes selected channels
+    └── OFDMReceiver         (hpcom.ofdm)
+
+Processing chain of every receiver:
+
+1. **Chromatic-dispersion compensation** of the whole received field (before
+   any channel selection): multiply the spectrum by
+   :math:`\exp[-i\,\beta_2L\,\omega^2/2 + i\,\beta_3L\,\omega^3/6]`, the
+   inverse of the fiber's dispersive phase (see :doc:`/physics`). Set
+   ``cd_compensation_s2 = link.total_dispersion_s2`` (and ``_s3``).
+2. **Waveform-specific demodulation** to symbol-rate samples (matched
+   filter, or FFT for OFDM).
+3. **Equalisation** by one complex gain ``g`` per stream (polarisation ×
+   channel), ``y = raw / g``, chosen by ``equalize``:
+
+   ``"none"``
+       ``g = 1`` — raw samples (in √W, including launch power and link gain).
+   ``"unit_power"``
+       ``g = sqrt(mean|raw|² / E_s)`` — blind amplitude normalisation to the
+       constellation energy ``E_s``. Does not correct phase.
+   ``"pilot"``
+       Least-squares gain and phase from the known pilots,
+       ``g = Σ p̄ r / Σ |p|²``.
+   ``"data_aided"``
+       Least-squares gain and phase against the *transmitted* data symbols
+       (a genie; needs ``reference=`` in :meth:`Receiver.receive`). This is
+       the classic removal of the mean nonlinear phase rotation used in
+       fiber-nonlinearity studies (pre-v1 hpcom's ``nonlinear_shift``).
+4. **Hard decision** to the nearest constellation point, then bit labels —
+   or distribution-matcher decoding when ``dm`` is set.
 """
 
 from __future__ import annotations
 
-from abc import abstractmethod
-from typing import Literal
+from abc import ABC, abstractmethod
+from typing import Literal, TypedDict
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import Field, model_validator
 
-from hpcom._pulse import root_raised_cosine
-from hpcom._typing import ComplexArray
-from hpcom.modulation import (
-    ConstantCompositionDM,
-    ConstellationConfig,
-    bits_per_symbol,
-    nearest_symbol_indices,
+from hpcom._model import (
+    BoolArrayView,
+    ComplexArrayView,
+    HpcomModel,
+    IndexArrayView,
+    Polymorphic,
+    UInt8ArrayView,
 )
+from hpcom._pulse import Convolution, matched_filter
+from hpcom._typing import ComplexArray, Polarization
+from hpcom.modulation.spec import ModulationSpec
 from hpcom.pilots import PilotConfig
-from hpcom.transmitter import Polarization
+from hpcom.transmitter import (
+    PulseShapedTransmitter,
+    SingleCarrierTransmitter,
+    TransmittedSignal,
+    Transmitter,
+)
 
-#: How (or whether) to rescale received-symbol amplitudes before hard decision.
-EqualizerMode = Literal["none", "unit_power"]
+#: Per-stream complex-gain equaliser applied before decisions.
+EqualizerMode = Literal["none", "unit_power", "pilot", "data_aided"]
 
 
-class ReceivedSymbols(BaseModel):
-    """Abstract output of :meth:`Receiver.receive` — concrete subclasses live
-    next to their receiver implementations."""
+class Detection(TypedDict):
+    """Fields of :class:`ReceivedSymbols` produced by :meth:`Receiver._detect`."""
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    symbols: ComplexArray
-    bits: npt.NDArray[np.uint8]
+    symbols: npt.NDArray[np.complex128]
     decisions: npt.NDArray[np.intp]
-    modulation_order: int
-    polarization: Polarization = "single"
-    pilots: PilotConfig | None = None
-    pilot_symbols: ComplexArray | None = None
+    bits: npt.NDArray[np.uint8]
+    gain: npt.NDArray[np.complex128]
+    pilot_symbols: npt.NDArray[np.complex128] | None
+    dm_block_valid: npt.NDArray[np.bool_] | None
 
-    def data_bits(self) -> npt.NDArray[np.uint8]:
-        """Bits at data positions only (Option α — pilots stripped).
 
-        Preserves the leading dims of :attr:`bits` (e.g. polarisation axis).
-        """
-        if self.pilots is None:
-            return self.bits
-        k = bits_per_symbol(self.modulation_order)
-        n_symbols = self.symbols.shape[-1]
-        data_idx = self.pilots.data_indices(n_symbols)
-        if self.bits.ndim == 1:
-            return self.bits.reshape(-1, k)[data_idx].ravel()
-        per_stream = self.bits.reshape(self.bits.shape[0], -1, k)
-        return per_stream[:, data_idx, :].reshape(self.bits.shape[0], -1)
+__all__ = [
+    "EqualizerMode",
+    "PulseShapedReceiver",
+    "ReceivedSymbols",
+    "Receiver",
+    "SingleCarrierReceivedSymbols",
+    "SingleCarrierReceiver",
+]
 
-    def data_symbols(self) -> ComplexArray:
-        if self.pilots is None:
-            return self.symbols
-        n_symbols = self.symbols.shape[-1]
-        return self.symbols[..., self.pilots.data_indices(n_symbols)]
+
+# ---------------------------------------------------------------------------
+# Received symbols
+# ---------------------------------------------------------------------------
+
+
+class ReceivedSymbols(HpcomModel):
+    """Output of :meth:`Receiver.receive` (one subclass per waveform).
+
+    Leading axes follow the transmitter's ``stream_shape`` (for WDM: the
+    *selected* channels).
+
+    Attributes
+    ----------
+    receiver
+        The configuration that produced this output.
+    symbols
+        Equalised data symbols, ``(*streams, n_data)``.
+    decisions
+        Index of the decided constellation point for every data symbol.
+    bits
+        Decoded information bits, ``(*streams, n_bits)``.
+    gain
+        Complex gain removed per stream (``symbols = raw / gain``), ``(*streams,)``.
+        With ``equalize="data_aided"`` its phase is the mean (e.g. nonlinear)
+        phase rotation of the link.
+    pilot_symbols
+        Equalised received pilots, ``(*streams, n_pilots)``, when pilots exist.
+    dm_block_valid
+        With a DM: whether each received block was a valid codeword,
+        ``(*streams, n_blocks)``. Invalid blocks decode to zero bits.
+    """
+
+    receiver: Polymorphic[Receiver]
+    symbols: ComplexArrayView
+    decisions: IndexArrayView
+    bits: UInt8ArrayView
+    gain: ComplexArrayView
+    pilot_symbols: ComplexArrayView | None = None
+    dm_block_valid: BoolArrayView | None = None
+
+    @property
+    def polarization(self) -> Polarization:
+        return self.receiver.polarization
 
 
 class SingleCarrierReceivedSymbols(ReceivedSymbols):
-    """Output of :class:`SingleCarrierReceiver` — no extra fields, distinct
-    type for downstream isinstance checks."""
+    """Output of :class:`SingleCarrierReceiver`."""
 
 
-class Receiver(BaseModel):
-    """Abstract receiver base — defines the cross-carrier vocabulary every
-    concrete receiver must expose.
+# ---------------------------------------------------------------------------
+# Receiver base
+# ---------------------------------------------------------------------------
 
-    Concrete subclasses (:class:`SingleCarrierReceiver`,
-    :class:`hpcom.wdm.WDMReceiver`, :class:`hpcom.ofdm.OFDMReceiver`) implement
-    :meth:`receive` for their specific signal shape.
+
+class Receiver(ModulationSpec, ABC):
+    """Abstract receiver (see the module docstring for the processing chain).
+
+    Attributes
+    ----------
+    polarization
+        Must match the transmitter.
+    equalize
+        Per-stream complex-gain equaliser: ``"none"``, ``"unit_power"``
+        (default), ``"pilot"``, or ``"data_aided"``.
+    cd_compensation_s2
+        Accumulated ``Σ β₂L`` (s²) to remove; ``link.total_dispersion_s2``.
+    cd_compensation_s3
+        Accumulated ``Σ β₃L`` (s³) to remove; ``link.total_beta3_s3``.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    modulation_order: int | None = None
-    constellation: ConstellationConfig | None = None
-    dm: ConstantCompositionDM | None = None
-    samples_per_symbol: int = 16
     polarization: Polarization = "single"
+    equalize: EqualizerMode = "unit_power"
+    cd_compensation_s2: float = 0.0
+    cd_compensation_s3: float = 0.0
+
+    @abstractmethod
+    def receive(
+        self,
+        field: ComplexArray,
+        dt_s: float,
+        *,
+        reference: TransmittedSignal | None = None,
+    ) -> ReceivedSymbols:
+        """Demodulate ``field`` (sample period ``dt_s``).
+
+        ``reference`` (the transmitted signal) is used only by
+        ``equalize="data_aided"``.
+        """
+
+    @abstractmethod
+    def compatibility_issues(self, transmitter: Transmitter) -> list[str]:
+        """Reasons this receiver cannot demodulate ``transmitter``'s signal (empty if none)."""
+
+    @abstractmethod
+    def reference(
+        self, sent: TransmittedSignal
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.complex128]]:
+        """Transmitted ``(bits, data_symbols)`` aligned with :meth:`receive`'s output."""
+
+    @property
+    def transient_symbols(self) -> int:
+        """Data symbols at each block edge affected by filter transients."""
+        return 0
+
+    # ---- shared helpers ----------------------------------------------------
+
+    def _base_issues(self, transmitter: Transmitter) -> list[str]:
+        issues = []
+        if transmitter.polarization != self.polarization:
+            issues.append(
+                f"polarization: transmitter {transmitter.polarization!r}, "
+                f"receiver {self.polarization!r}"
+            )
+        mismatch = self.modulation_mismatch(transmitter)
+        if mismatch:
+            issues.append(mismatch)
+        return issues
+
+    def _check_field(self, field: ComplexArray) -> npt.NDArray[np.complex128]:
+        x = np.asarray(field, dtype=np.complex128)
+        if self.polarization == "single" and x.ndim != 1:
+            raise ValueError(f"single-polarisation receiver expects a 1-D field, got {x.shape}")
+        if self.polarization == "dual" and (x.ndim != 2 or x.shape[0] != 2):
+            raise ValueError(f"dual-polarisation receiver expects shape (2, n), got {x.shape}")
+        return x
+
+    def _compensate_dispersion(
+        self, field: npt.NDArray[np.complex128], dt_s: float
+    ) -> npt.NDArray[np.complex128]:
+        if self.cd_compensation_s2 == 0.0 and self.cd_compensation_s3 == 0.0:
+            return field
+        omega = 2.0 * np.pi * np.fft.fftfreq(field.shape[-1], d=dt_s)
+        phase = -self.cd_compensation_s2 / 2.0 * omega**2 + self.cd_compensation_s3 / 6.0 * omega**3
+        out: npt.NDArray[np.complex128] = np.fft.ifft(
+            np.fft.fft(field, axis=-1) * np.exp(1j * phase), axis=-1
+        )
+        return out
+
+    def _detect(
+        self,
+        raw_data: npt.NDArray[np.complex128],
+        *,
+        raw_pilots: npt.NDArray[np.complex128] | None = None,
+        pilot_values: npt.NDArray[np.complex128] | None = None,
+        reference_data: npt.NDArray[np.complex128] | None = None,
+        gain: npt.NDArray[np.complex128] | None = None,
+    ) -> Detection:
+        """Equalise, decide and decode ``(*streams, n)`` symbol-rate samples.
+
+        ``gain`` overrides the estimate of :attr:`equalize` (used by receivers
+        that equalise per subcarrier themselves).
+        """
+        if gain is None:
+            gain = self._estimate_gain(raw_data, raw_pilots, pilot_values, reference_data)
+        data = raw_data / gain[..., None]
+        pilots = None if raw_pilots is None else raw_pilots / gain[..., None]
+        cfg = self.resolved_constellation
+        decisions = cfg.nearest(data)
+        lead, n = decisions.shape[:-1], decisions.shape[-1]
+        flat = decisions.reshape(-1, n)
+        dm_valid = None
+        if self.dm is not None:
+            decoded = [self.dm.decode_with_errors(row) for row in flat]
+            bits = np.stack([b for b, _ in decoded])
+            dm_valid = np.stack([v for _, v in decoded]).reshape(*lead, -1)
+        else:
+            bits = cfg.bit_labels[flat].reshape(flat.shape[0], -1)
+        return Detection(
+            symbols=data,
+            decisions=decisions,
+            bits=bits.reshape(*lead, -1),
+            gain=gain,
+            pilot_symbols=pilots,
+            dm_block_valid=dm_valid,
+        )
+
+    def _estimate_gain(
+        self,
+        raw: npt.NDArray[np.complex128],
+        raw_pilots: npt.NDArray[np.complex128] | None,
+        pilot_values: npt.NDArray[np.complex128] | None,
+        reference: npt.NDArray[np.complex128] | None,
+    ) -> npt.NDArray[np.complex128]:
+        mode = self.equalize
+        gain: npt.NDArray[np.complex128]
+        if mode == "none":
+            return np.ones(raw.shape[:-1], dtype=np.complex128)
+        if mode == "unit_power":
+            power = np.mean(np.abs(raw) ** 2, axis=-1)
+            gain = np.sqrt(power / self.data_symbol_energy).astype(np.complex128)
+            return gain
+        if mode == "pilot":
+            if raw_pilots is None or pilot_values is None or raw_pilots.shape[-1] == 0:
+                raise ValueError('equalize="pilot" needs pilots')
+            num = np.sum(np.conj(pilot_values) * raw_pilots, axis=-1)
+            gain = num / np.sum(np.abs(pilot_values) ** 2, axis=-1)
+            return gain
+        if mode == "data_aided":
+            if reference is None:
+                raise ValueError(
+                    'equalize="data_aided" needs the transmitted signal: '
+                    "receive(field, dt_s, reference=sent)"
+                )
+            if reference.shape != raw.shape:
+                raise ValueError(
+                    f"reference data symbols have shape {reference.shape}, received {raw.shape}"
+                )
+            num = np.sum(np.conj(reference) * raw, axis=-1)
+            gain = num / np.sum(np.abs(reference) ** 2, axis=-1)
+            return gain
+        raise ValueError(f"unknown equalize mode {mode!r}")
+
+
+# ---------------------------------------------------------------------------
+# Pulse-shaped receivers
+# ---------------------------------------------------------------------------
+
+
+class PulseShapedReceiver(Receiver, ABC):
+    """Common base of :class:`SingleCarrierReceiver` and :class:`~hpcom.wdm.WDMReceiver`.
+
+    The pulse fields (``samples_per_symbol``, ``roll_off``,
+    ``pulse_span_symbols``, ``convolution``) and ``pilots`` must equal the
+    transmitter's; see :class:`~hpcom.transmitter.PulseShapedTransmitter`.
+    """
+
+    samples_per_symbol: int = Field(default=8, ge=2)
+    roll_off: float = Field(default=0.1, ge=0.0, le=1.0)
+    pulse_span_symbols: int | None = Field(default=None, ge=1)
+    convolution: Convolution = "circular"
     pilots: PilotConfig | None = None
 
-    @field_validator("polarization", mode="before")
-    @classmethod
-    def _check_polarization(cls, v: object) -> object:
-        if v not in ("single", "dual"):
-            raise ValueError(f"polarization must be 'single' or 'dual', got {v!r}")
-        return v
-
     @model_validator(mode="after")
-    def _validate_base(self) -> Receiver:
-        if (self.modulation_order is None) == (self.constellation is None):
-            raise ValueError("exactly one of `modulation_order` or `constellation` must be set")
-        if self.modulation_order is not None:
-            resolved = ConstellationConfig.from_square_qam(self.modulation_order)
-        else:
-            assert self.constellation is not None
-            resolved = self.constellation
-        # Cache resolved constellation on the instance — bypass frozen.
-        self.__dict__["_constellation"] = resolved
-
-        if self.dm is not None:
-            if self.pilots is not None:
-                raise ValueError("`pilots` and `dm` are mutually exclusive on the Receiver")
-            if self.constellation is None or self.constellation.probabilities is None:
-                raise ValueError("`dm` requires `constellation` with non-None probabilities")
-            if self.dm.target_pmf.shape != self.constellation.probabilities.shape or not (
-                np.allclose(self.dm.target_pmf, self.constellation.probabilities, atol=1e-12)
-            ):
-                raise ValueError("dm.target_pmf must match constellation.probabilities elementwise")
+    def _validate_pulse_rx(self) -> PulseShapedReceiver:
+        if self.convolution == "linear" and self.pulse_span_symbols is None:
+            raise ValueError('convolution="linear" needs a finite `pulse_span_symbols`')
+        if self.equalize == "pilot" and self.pilots is None:
+            raise ValueError('equalize="pilot" requires `pilots`')
+        if self.dm is not None and self.pilots is not None:
+            raise ValueError("`pilots` and `dm` cannot be combined")
         return self
 
     @property
-    def effective_modulation_order(self) -> int:
-        """Constellation size — always defined, even when ``modulation_order`` is None."""
-        return self._resolved_constellation().modulation_order
+    def transient_symbols(self) -> int:
+        return (self.pulse_span_symbols or 0) if self.convolution == "linear" else 0
 
-    def _resolved_constellation(self) -> ConstellationConfig:
-        return self.__dict__["_constellation"]  # type: ignore[no-any-return]
+    def _pulse_issues(self, transmitter: Transmitter) -> list[str]:
+        if not isinstance(transmitter, PulseShapedTransmitter):
+            return [f"{type(self).__name__} cannot receive a {type(transmitter).__name__}"]
+        issues = []
+        for name in (
+            "samples_per_symbol",
+            "roll_off",
+            "pulse_span_symbols",
+            "convolution",
+            "pilots",
+        ):
+            if getattr(transmitter, name) != getattr(self, name):
+                issues.append(
+                    f"{name}: transmitter {getattr(transmitter, name)!r}, "
+                    f"receiver {getattr(self, name)!r}"
+                )
+        return issues
 
-    @abstractmethod
-    def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
-        """Demodulate a received field. Subclasses define the pipeline."""
-        raise NotImplementedError
+    def _demodulate(
+        self,
+        streams: npt.NDArray[np.complex128],
+        reference_data: npt.NDArray[np.complex128] | None,
+    ) -> Detection:
+        """Matched filter → split data/pilot slots → :meth:`_detect`."""
+        slots = matched_filter(
+            streams,
+            self.samples_per_symbol,
+            self.roll_off,
+            self.pulse_span_symbols,
+            self.convolution,
+        )
+        n_slots = slots.shape[-1]
+        if self.pilots is None:
+            return self._detect(slots, reference_data=reference_data)
+        p_idx = self.pilots.pilot_indices(n_slots)
+        d_idx = self.pilots.data_indices(n_slots)
+        pilot_values = np.full(p_idx.size, self.pilots.symbol, dtype=np.complex128)
+        return self._detect(
+            slots[..., d_idx],
+            raw_pilots=slots[..., p_idx],
+            pilot_values=pilot_values,
+            reference_data=reference_data,
+        )
 
 
-class SingleCarrierReceiver(Receiver):
-    """Single-carrier QAM receiver (optionally dual-polarisation).
+class SingleCarrierReceiver(PulseShapedReceiver):
+    """Single-carrier RRC matched-filter receiver (optionally dual-polarisation)."""
 
-    Applies the matched RRC filter, downsamples at the symbol rate, optionally
-    equalises amplitude, then hard-decodes to nearest constellation point.
+    def compatibility_issues(self, transmitter: Transmitter) -> list[str]:
+        if not isinstance(transmitter, SingleCarrierTransmitter):
+            return [f"SingleCarrierReceiver cannot receive a {type(transmitter).__name__}"]
+        return self._base_issues(transmitter) + self._pulse_issues(transmitter)
 
-    ``equalize`` is explicit: ``"unit_power"`` rescales post-downsample symbols
-    so their measured average power equals 1 (handy for noiseless benchmarks
-    but masks gain/loss errors); ``"none"`` (default) surfaces gain/loss as BER
-    (required for any meaningful AWGN BER curve).
-    """
-
-    roll_off: float = 0.1
-    pulse_span_symbols: int = 64
-    equalize: EqualizerMode = "none"
-    cd_compensation_s2: float = 0.0
-    """Accumulated dispersion ``β₂ · L_total`` (in s²) to undo before the
-    matched filter. Set to ``fiber.beta2_s2_per_m * fiber.length_km * 1e3 * n_spans``
-    to remove the chromatic dispersion of an EDFA-compensated link. Leave at
-    ``0.0`` for back-to-back / dispersion-free scenarios."""
-
-    @field_validator("equalize", mode="before")
-    @classmethod
-    def _check_equalize(cls, v: object) -> object:
-        if v not in ("none", "unit_power"):
-            raise ValueError(f"equalize must be 'none' or 'unit_power', got {v!r}")
-        return v
+    def reference(
+        self, sent: TransmittedSignal
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.complex128]]:
+        return np.asarray(sent.bits), np.asarray(sent.data_symbols())
 
     def receive(
-        self, field: ComplexArray, dt_s: float | None = None
-    ) -> SingleCarrierReceivedSymbols:
-        """Demodulate a received field.
-
-        For ``polarization="single"`` the input is 1-D ``(n_samples,)``; for
-        ``"dual"`` it is ``(2, n_samples)`` and each polarisation is
-        demodulated independently. ``dt_s`` is required only when
-        :attr:`cd_compensation_s2` is non-zero (for the frequency grid).
-        """
-        if self.polarization == "single":
-            if field.ndim != 1:
-                raise ValueError(f"single-pol receiver expects 1-D field, got shape {field.shape}")
-            return self._receive_one_stream(field, dt_s)
-
-        if field.ndim != 2 or field.shape[0] != 2:
-            raise ValueError(
-                f"dual-pol receiver expects 2-D field with leading axis 2, got shape {field.shape}"
-            )
-        per_pol = [self._receive_one_stream(field[i], dt_s) for i in (0, 1)]
-        pilot_syms: ComplexArray | None
-        if per_pol[0].pilot_symbols is not None:
-            pilot_syms = np.stack(
-                [p.pilot_symbols for p in per_pol],
-                axis=0,  # type: ignore[misc]
-            )
-        else:
-            pilot_syms = None
-        return SingleCarrierReceivedSymbols(
-            symbols=np.stack([p.symbols for p in per_pol], axis=0),
-            bits=np.stack([p.bits for p in per_pol], axis=0),
-            decisions=np.stack([p.decisions for p in per_pol], axis=0),
-            modulation_order=self.effective_modulation_order,
-            polarization="dual",
-            pilots=self.pilots,
-            pilot_symbols=pilot_syms,
-        )
-
-    def _receive_one_stream(
         self,
         field: ComplexArray,
-        dt_s: float | None,
+        dt_s: float,
+        *,
+        reference: TransmittedSignal | None = None,
     ) -> SingleCarrierReceivedSymbols:
-        """Single 1-D demodulation pipeline."""
-        if self.cd_compensation_s2 != 0.0:
-            if dt_s is None:
-                raise ValueError(
-                    "dt_s is required when cd_compensation_s2 != 0 (needed for the frequency grid)"
-                )
-            field = self._undo_dispersion(field, dt_s)
+        x = self._compensate_dispersion(self._check_field(field), dt_s)
+        ref = self.reference(reference)[1] if reference is not None else None
+        out = self._demodulate(x, ref)
+        return SingleCarrierReceivedSymbols(receiver=self, **out)
 
-        n_taps = self.pulse_span_symbols * self.samples_per_symbol + 1
-        rrc = root_raised_cosine(n_taps, self.samples_per_symbol, self.roll_off)
-        n_samples = field.shape[-1]
-        full = np.convolve(field, rrc, mode="full")
-        delay = (n_taps - 1) // 2
-        filtered = full[delay : delay + n_samples]
 
-        symbols_rx = filtered[:: self.samples_per_symbol]
-
-        if self.equalize == "unit_power":
-            avg_power = float(np.mean(np.abs(symbols_rx) ** 2))
-            if avg_power > 0:
-                symbols_rx = symbols_rx / np.sqrt(avg_power)
-
-        cfg = self._resolved_constellation()
-        decisions = nearest_symbol_indices(symbols_rx, cfg.points)
-        if self.dm is not None:
-            if decisions.size % self.dm.block_length != 0:
-                raise ValueError(
-                    f"received {decisions.size} symbols, which is not a multiple of "
-                    f"dm.block_length ({self.dm.block_length}); pass a field whose "
-                    "sample count is n_symbols * samples_per_symbol"
-                )
-            bits = self.dm.decode(decisions.astype(np.intp))
-        else:
-            bits = cfg.demap(symbols_rx)
-
-        pilot_symbols: ComplexArray | None = None
-        if self.pilots is not None:
-            n_sym = symbols_rx.shape[-1]
-            pilot_symbols = symbols_rx[self.pilots.pilot_indices(n_sym)]
-
-        return SingleCarrierReceivedSymbols(
-            symbols=symbols_rx,
-            bits=bits,
-            decisions=decisions,
-            modulation_order=self.effective_modulation_order,
-            polarization="single",
-            pilots=self.pilots,
-            pilot_symbols=pilot_symbols,
-        )
-
-    def _undo_dispersion(self, field: ComplexArray, dt_s: float) -> ComplexArray:
-        """Undo accumulated linear chromatic dispersion (β₂ · L) on the field.
-
-        Forward dispersion in :class:`hpcom.backends.numpy.linear.LinearNumpyPropagator`
-        applies ``exp(+i β₂/2 ω² L)`` in the frequency domain (NumPy FFT
-        convention); the inverse is ``exp(-i β₂/2 ω² L)``.
-        """
-        n = field.shape[-1]
-        omega = 2.0 * np.pi * np.fft.fftfreq(n, d=dt_s)
-        spectrum = np.fft.fft(field, axis=-1)
-        spectrum = spectrum * np.exp(-1j * self.cd_compensation_s2 / 2.0 * omega**2)
-        out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
-        return out
+# Resolve forward references (``ReceivedSymbols.receiver`` refers to ``Receiver``).
+ReceivedSymbols.model_rebuild()
+SingleCarrierReceivedSymbols.model_rebuild()

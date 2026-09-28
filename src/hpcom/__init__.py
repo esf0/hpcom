@@ -1,40 +1,46 @@
-"""hpcom — High-performance optical communication library.
+"""hpcom — high-performance simulation of coherent optical communication links.
 
-The v1 public API::
+Building blocks (all immutable, validated pydantic models)::
 
     from hpcom import (
-        # Abstract bases
-        Transmitter, Receiver, TransmittedSignal, ReceivedSymbols,
-        # Single-carrier concrete classes
-        SingleCarrierTransmitter, SingleCarrierReceiver,
-        SingleCarrierSignal, SingleCarrierReceivedSymbols,
-        # WDM
-        WDMConfig, WDMTransmitter, WDMReceiver,
-        WDMSignal, WDMReceivedSymbols,
-        # OFDM
-        OFDMTransmitter, OFDMReceiver, OFDMSignal, OFDMReceivedSymbols,
-        # Infrastructure
-        Fiber, EDFA, Amplifier, Link,
-        Simulation, Result, Metrics,
+        SingleCarrierTransmitter, SingleCarrierReceiver,   # RRC-shaped QAM
+        WDMConfig, WDMTransmitter, WDMReceiver,             # multi-channel
+        OFDMConfig, OFDMTransmitter, OFDMReceiver,          # CP-OFDM
+        PilotConfig, ConstellationConfig,                   # pilots, shaping
+        Fiber, EDFA, AdditiveNoise, Link,                   # the channel
+        Simulation, Result, Metrics,                        # run + score
     )
 
-See ``docs/spec/hpcom-v1.md`` for the design and ``examples/`` for runnable
-scenarios. Pre-v1 modules (``channel``, ``signal``, …) remain reachable for
-one release via :mod:`hpcom._legacy`; importing them emits a
-``DeprecationWarning``.
+Physics conventions (NLSE/Manakov form, launch power, ASE, pulse shaping,
+metric definitions) are documented in ``docs/physics.rst``. Importing
+``hpcom`` loads neither TensorFlow nor the pre-v1 code; the TensorFlow
+propagator is imported the first time a fiber uses ``backend="tensorflow"``.
+
+Pre-v1 modules remain importable for one release — ``hpcom.channel``,
+``hpcom.signal``, … resolve to :mod:`hpcom._legacy` on first use and emit a
+:class:`DeprecationWarning` then.
 """
 
 from __future__ import annotations
 
-import importlib as _importlib
-import sys as _sys
-
+from hpcom import _legacy_alias
+from hpcom._version import __version__
 from hpcom.amplifier import EDFA, Amplifier
 from hpcom.fiber import Fiber
 from hpcom.link import Link
-from hpcom.metrics import Metrics
-from hpcom.ofdm import OFDMReceivedSymbols, OFDMReceiver, OFDMSignal, OFDMTransmitter
+from hpcom.metrics import Metrics, StreamMetrics
+from hpcom.modulation import ConstantCompositionDM, ConstellationConfig
+from hpcom.noise import AdditiveNoise
+from hpcom.ofdm import (
+    OFDMConfig,
+    OFDMReceivedSymbols,
+    OFDMReceiver,
+    OFDMSignal,
+    OFDMTransmitter,
+)
+from hpcom.pilots import PilotConfig
 from hpcom.receiver import (
+    PulseShapedReceiver,
     ReceivedSymbols,
     Receiver,
     SingleCarrierReceivedSymbols,
@@ -43,54 +49,33 @@ from hpcom.receiver import (
 from hpcom.result import Result, SimulationMetadata
 from hpcom.simulation import Simulation
 from hpcom.transmitter import (
+    PulseShapedTransmitter,
     SingleCarrierSignal,
     SingleCarrierTransmitter,
     TransmittedSignal,
     Transmitter,
 )
-from hpcom.wdm import (
-    WDMConfig,
-    WDMReceivedSymbols,
-    WDMReceiver,
-    WDMSignal,
-    WDMTransmitter,
-)
+from hpcom.wdm import WDMConfig, WDMReceivedSymbols, WDMReceiver, WDMSignal, WDMTransmitter
 
-from . import _legacy
-
-
-def _install_legacy_shim() -> None:
-    """Re-expose legacy submodules at the top level so pre-v1 code keeps importing.
-
-    Skip any name where the v1 tree now owns a real submodule — the new
-    implementation must win. Only swallow ``ModuleNotFoundError`` when the
-    missing module is the v1 name itself; other missing-import errors
-    (e.g. a typo *inside* ``hpcom.fiber``) must propagate.
-    """
-    for name in _legacy.__all__:
-        v1_name = f"{__name__}.{name}"
-        try:
-            _importlib.import_module(v1_name)
-        except ModuleNotFoundError as exc:
-            if exc.name != v1_name:
-                raise
-            _sys.modules[v1_name] = getattr(_legacy, name)
-
-
-_install_legacy_shim()
-
-__version__ = "0.2.0.dev0"
+_legacy_alias.install()
 
 __all__ = [
     "EDFA",
+    "AdditiveNoise",
     "Amplifier",
+    "ConstantCompositionDM",
+    "ConstellationConfig",
     "Fiber",
     "Link",
     "Metrics",
+    "OFDMConfig",
     "OFDMReceivedSymbols",
     "OFDMReceiver",
     "OFDMSignal",
     "OFDMTransmitter",
+    "PilotConfig",
+    "PulseShapedReceiver",
+    "PulseShapedTransmitter",
     "ReceivedSymbols",
     "Receiver",
     "Result",
@@ -100,6 +85,7 @@ __all__ = [
     "SingleCarrierReceiver",
     "SingleCarrierSignal",
     "SingleCarrierTransmitter",
+    "StreamMetrics",
     "TransmittedSignal",
     "Transmitter",
     "WDMConfig",
@@ -109,3 +95,10 @@ __all__ = [
     "WDMTransmitter",
     "__version__",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """``hpcom.channel`` etc. as attributes (pre-v1 style), loaded lazily."""
+    if name in _legacy_alias.LEGACY_ALIASES:
+        return _legacy_alias.load(name)
+    raise AttributeError(f"module 'hpcom' has no attribute {name!r}")

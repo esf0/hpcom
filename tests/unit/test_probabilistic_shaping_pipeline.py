@@ -186,7 +186,7 @@ def test_b2b_round_trip_with_dm(shaped_cfg_and_dm):
     )
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     # RRC truncation at the edges flips a few outer-ring symbols, which
     # propagates a whole block of DM-decoded bits per affected block. Trim
@@ -222,7 +222,7 @@ def test_b2b_round_trip_with_dm_dual_pol(shaped_cfg_and_dm):
     )
 
     sent = tx.generate()
-    received = rx.receive(sent.field)
+    received = rx.receive(sent.field, sent.dt_s)
 
     bits_per_block = dm.bits_per_block
     skip_blocks = max(1, span // dm.block_length + 1)
@@ -305,7 +305,7 @@ def test_receiver_dm_raises_on_partial_block(shaped_cfg_and_dm):
     # Append sps samples → receiver sees n_symbols+1 decisions; 129 % 32 = 1 ≠ 0
     bad_field = np.concatenate([sent.field, np.zeros(sps)])
     with pytest.raises(ValueError, match="block_length"):
-        rx.receive(bad_field)
+        rx.receive(bad_field, sent.dt_s)
 
 
 # ---------------------------------------------------------------------------
@@ -362,12 +362,77 @@ def test_wdm_b2b_round_trip_with_dm(shaped_cfg_and_dm):
             constellation=cfg,
             dm=dm,
             wdm=wdm,
-            wdm_channel=ch,
+            channels=(ch,),
             samples_per_symbol=8,
             pulse_span_symbols=span,
         )
         received = rx.receive(sent.field, dt_s=sent.dt_s)
 
         sent_trim = sent.bits[ch, skip_bits:-skip_bits]
-        rx_trim = received.bits[skip_bits:-skip_bits]
+        rx_trim = received.bits[0, skip_bits:-skip_bits]
         np.testing.assert_array_equal(rx_trim, sent_trim)
+
+
+# ---------------------------------------------------------------------------
+# i.i.d. shaping (probabilities without a DM), power, noisy DM decoding
+# ---------------------------------------------------------------------------
+
+
+def test_iid_shaping_draws_symbols_from_the_pmf(shaped_cfg_and_dm):
+    """Without a DM, symbols are i.i.d. from the PMF and `bits` are their labels."""
+    from scipy.stats import chisquare
+
+    cfg, _ = shaped_cfg_and_dm
+    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=40_000, seed=0)
+    sent = tx.generate()
+    idx = cfg.nearest(sent.symbols)
+    counts = np.bincount(idx, minlength=cfg.modulation_order)
+    assert chisquare(counts, cfg.probabilities * idx.size).pvalue > 1e-3
+    np.testing.assert_array_equal(sent.bits, cfg.bits_from_indices(idx))
+
+
+@pytest.mark.parametrize("with_dm", [False, True])
+def test_shaped_signal_has_the_launch_power(shaped_cfg_and_dm, with_dm):
+    cfg, dm = shaped_cfg_and_dm
+    tx = SingleCarrierTransmitter(
+        constellation=cfg,
+        dm=dm if with_dm else None,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 256,
+        seed=0,
+        launch_power_per_channel_dbm=0.0,
+    )
+    np.testing.assert_allclose(tx.generate().mean_power_w, 1e-3, rtol=0.03)
+
+
+def test_receiver_flags_dm_blocks_corrupted_by_noise():
+    cfg, dm = _make_16qam_shaped()
+    tx = SingleCarrierTransmitter(
+        constellation=cfg, dm=dm, symbol_rate_hz=32e9, n_symbols=32 * 64, seed=0
+    )
+    rx = SingleCarrierReceiver(constellation=cfg, dm=dm, equalize="data_aided")
+    sent = tx.generate()
+    rng = np.random.default_rng(1)
+    noisy = sent.field + 0.55 * np.sqrt(tx.launch_power_per_polarization_w / 2) * (
+        rng.standard_normal(sent.field.shape) + 1j * rng.standard_normal(sent.field.shape)
+    )
+    received = rx.receive(noisy, sent.dt_s, reference=sent)
+    valid = received.dm_block_valid
+    assert valid.shape == (64,)
+    assert 0 < valid.sum() < 64  # some blocks hit by decision errors, some clean
+    k = dm.bits_per_block
+    for b in np.flatnonzero(valid):
+        np.testing.assert_array_equal(
+            received.bits[b * k : (b + 1) * k], sent.bits[b * k : (b + 1) * k]
+        )
+    for b in np.flatnonzero(~valid):
+        np.testing.assert_array_equal(received.bits[b * k : (b + 1) * k], 0)
+
+
+def test_probabilities_without_dm_are_accepted_on_both_ends(shaped_cfg_and_dm):
+    cfg, _ = shaped_cfg_and_dm
+    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=256, seed=0)
+    rx = SingleCarrierReceiver(constellation=cfg)
+    assert rx.compatibility_issues(tx) == []
+    sent = tx.generate()
+    np.testing.assert_array_equal(rx.receive(sent.field, sent.dt_s).bits, sent.bits)

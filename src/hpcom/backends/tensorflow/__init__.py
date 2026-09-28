@@ -1,4 +1,4 @@
-"""TensorFlow propagator backend (wraps the vendored ``ssfm-gpu``)."""
+"""TensorFlow propagator backend (requires ``pip install "hpcom[tf]"``)."""
 
 from hpcom.backends.tensorflow.propagator import TensorFlowPropagator
 

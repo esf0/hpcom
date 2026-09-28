@@ -1,63 +1,72 @@
-"""Back-to-back transmitter→receiver tests (no fiber, no noise)."""
+"""Noiseless back-to-back transmitter → receiver (no fiber, no noise)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from hpcom.receiver import SingleCarrierReceiver
-from hpcom.transmitter import SingleCarrierTransmitter
+from helpers import PULSE_MODES, sc_pair, trim
+from hpcom import SingleCarrierTransmitter
 
 
+@pytest.mark.parametrize("pulse", PULSE_MODES)
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
-def test_noiseless_b2b_recovers_all_symbols(order: int):
-    tx = SingleCarrierTransmitter(
-        modulation_order=order,
-        symbol_rate_hz=32e9,
-        n_symbols=4096,
-        samples_per_symbol=8,
-        roll_off=0.1,
-        pulse_span_symbols=32,
-        seed=0,
-    )
+def test_noiseless_b2b_recovers_every_bit(order, pulse):
+    tx, rx = sc_pair(modulation_order=order, n_symbols=4096, samples_per_symbol=8, seed=0, **pulse)
     sent = tx.generate()
-
-    rx = SingleCarrierReceiver(
-        modulation_order=order,
-        samples_per_symbol=tx.samples_per_symbol,
-        roll_off=tx.roll_off,
-        pulse_span_symbols=tx.pulse_span_symbols,
-    )
-    received = rx.receive(sent.field)
-
-    # Skip pulse-shaping transients at the edges; the steady state must be
-    # bit-perfect because the cascaded RRC pair is Nyquist with this config.
-    skip = tx.pulse_span_symbols
-    bps = int(np.log2(order))
-    sent_bits = sent.bits.reshape(-1, bps)[skip:-skip]
-    rx_bits = received.bits.reshape(-1, bps)[skip:-skip]
-    n_errors = int(np.sum(sent_bits != rx_bits))
-    assert n_errors == 0, f"BER must be 0 in noiseless b2b, got {n_errors} bit errors"
+    received = rx.receive(sent.field, sent.dt_s)
+    k = tx.bits_per_symbol
+    skip = tx.transient_symbols
+    np.testing.assert_array_equal(trim(received.bits, k, skip), trim(sent.bits, k, skip))
 
 
-def test_dt_s_consistent_with_symbol_rate():
+@pytest.mark.parametrize("order", [4, 64])
+def test_exact_rrc_b2b_is_isi_free_to_rounding(order):
+    """Exact (frequency-domain) RRC: matched-filter output = √P·symbol to ~1e-14."""
+    tx, rx = sc_pair(modulation_order=order, n_symbols=2048, seed=1, rx_kwargs={"equalize": "none"})
+    sent = tx.generate()
+    received = rx.receive(sent.field, sent.dt_s)
+    scaled = received.symbols / np.sqrt(tx.launch_power_per_polarization_w)
+    np.testing.assert_allclose(scaled, sent.symbols, rtol=0, atol=1e-13)
+
+
+def test_dt_s_and_sizes_follow_the_symbol_rate():
     tx = SingleCarrierTransmitter(
         modulation_order=16, symbol_rate_hz=10e9, n_symbols=10, samples_per_symbol=4
     )
-    assert tx.dt_s == pytest.approx(1.0 / (10e9 * 4))
+    assert tx.dt_s == pytest.approx(1.0 / 40e9)
     sig = tx.generate()
-    assert sig.field.shape == (10 * 4,)
+    assert sig.field.shape == (40,)
+    assert sig.bits.shape == (40,)
+    assert sig.symbols.shape == (10,)
     assert sig.dt_s == tx.dt_s
+    assert tx.n_samples == 40
 
 
-def test_invalid_samples_per_symbol_rejected():
-    with pytest.raises(ValueError, match="samples_per_symbol"):
+@pytest.mark.parametrize("sps", [0, 1])
+def test_samples_per_symbol_below_two_is_rejected(sps):
+    with pytest.raises(ValidationError, match="samples_per_symbol"):
         SingleCarrierTransmitter(
-            modulation_order=4, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=1
+            modulation_order=4, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=sps
         )
 
 
 def test_seed_makes_generation_deterministic():
-    tx_a = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
-    tx_b = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
-    np.testing.assert_array_equal(tx_a.generate().bits, tx_b.generate().bits)
+    kw = dict(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
+    a, b = SingleCarrierTransmitter(**kw).generate(), SingleCarrierTransmitter(**kw).generate()
+    np.testing.assert_array_equal(a.bits, b.bits)
+    np.testing.assert_array_equal(a.field, b.field)
+
+
+def test_rng_argument_overrides_seed_and_is_reproducible():
+    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=64, seed=42)
+    a = tx.generate(rng=np.random.default_rng(7))
+    b = tx.generate(rng=np.random.default_rng(7))
+    np.testing.assert_array_equal(a.bits, b.bits)
+    assert not np.array_equal(a.bits, tx.generate().bits)
+
+
+def test_unseeded_transmitter_draws_fresh_data():
+    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=256)
+    assert not np.array_equal(tx.generate().bits, tx.generate().bits)

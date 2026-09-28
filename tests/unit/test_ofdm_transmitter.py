@@ -1,480 +1,262 @@
-"""T12.2: OFDMTransmitter construction, signal structure, and shape contract.
-
-Verifies that ``OFDMTransmitter`` produces a field consistent with the OFDM
-specification: IFFT-based modulation with cyclic prefix, guard subcarriers
-forced to zero in the frequency domain, pilot subcarriers carrying the
-configured pilot value, and power normalisation that puts the data-driven
-portion of the field at unit average sample power.
-
-Receive-side correctness (BER=0 noiseless B2B) lives with the
-:class:`OFDMReceiver` tests added in T12.3 — these tests only exercise the
-Tx side, using manual FFT-based inspection of the generated field.
-"""
+"""OFDMTransmitter: structure, spectrum, power normalisation, deterministic input."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from hpcom.modulation import (
-    ConstantCompositionDM,
-    ConstellationConfig,
-    maxwell_boltzmann,
-    square_qam,
-)
-from hpcom.ofdm import OFDMConfig, OFDMTransmitter
-from hpcom.pilots import PilotConfig
-from hpcom.transmitter import Transmitter
+from hpcom import OFDMConfig, OFDMTransmitter, PulseShapedTransmitter, Transmitter
+from hpcom.modulation import ConstantCompositionDM, ConstellationConfig, maxwell_boltzmann
+from hpcom.units import dbm_to_w
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+OVERSAMPLING = [pytest.param(1, id="L1"), pytest.param(2, id="L2"), pytest.param(4, id="L4")]
 
 
-def _make_tx(
+def make_tx(
     *,
     n_subcarriers: int = 64,
     cp_len: int = 16,
     n_guard: int = 4,
-    pilot_indices: tuple[int, ...] = (),
-    n_frames: int = 32,
-    modulation_order: int = 4,
-    polarization: str = "single",
-    seed: int = 0,
+    pilots: tuple[int, ...] = (),
+    oversampling: int = 1,
+    n_frames: int = 16,
+    **kw,
 ) -> OFDMTransmitter:
     ofdm = OFDMConfig(
         n_subcarriers=n_subcarriers,
         cp_len=cp_len,
         n_guard=n_guard,
-        pilot_subcarrier_indices=pilot_indices,
+        pilot_subcarrier_indices=pilots,
+        oversampling=oversampling,
     )
-    return OFDMTransmitter(
-        modulation_order=modulation_order,
-        symbol_rate_hz=32e9,
-        n_symbols=n_frames,
-        ofdm=ofdm,
-        polarization=polarization,
-        seed=seed,
-    )
+    kw.setdefault("modulation_order", 4)
+    kw.setdefault("seed", 0)
+    return OFDMTransmitter(subcarrier_spacing_hz=500e6, n_frames=n_frames, ofdm=ofdm, **kw)
 
 
-# ---------------------------------------------------------------------------
-# Inheritance and metadata
-# ---------------------------------------------------------------------------
+def frames_spectrum(tx: OFDMTransmitter, field: np.ndarray) -> np.ndarray:
+    """(…, n_frames, L·N) spectrum with the transmitter's scaling removed (√P included)."""
+    cfg = tx.ofdm
+    frames = field.reshape(*field.shape[:-1], tx.n_frames, cfg.samples_per_frame)
+    useful = frames[..., cfg.cp_len * cfg.oversampling :]
+    scale = np.sqrt(cfg.frame_energy(tx.data_symbol_energy) / tx.launch_power_per_polarization_w)
+    return np.fft.fft(useful, axis=-1) * scale / cfg.fft_size
 
 
-def test_ofdm_transmitter_is_a_transmitter():
-    """Polymorphism: an OFDMTransmitter satisfies the Transmitter API."""
-    tx = _make_tx()
+# ---- class structure ----------------------------------------------------------
+
+
+def test_is_a_transmitter_but_not_pulse_shaped():
+    tx = make_tx()
     assert isinstance(tx, Transmitter)
+    assert not isinstance(tx, PulseShapedTransmitter)
+    for field in (
+        "samples_per_symbol",
+        "roll_off",
+        "pulse_span_symbols",
+        "pilots",
+        "symbol_rate_hz",
+    ):
+        assert field not in type(tx).model_fields
 
 
-def test_dt_s_matches_inverse_bandwidth():
-    """D1 — dt_s = 1/symbol_rate_hz (OFDM symbol_rate_hz = total bandwidth)."""
-    tx = _make_tx()
-    assert tx.dt_s == pytest.approx(1.0 / tx.symbol_rate_hz, rel=1e-15)
+@pytest.mark.parametrize("oversampling", OVERSAMPLING)
+def test_sample_period_is_inverse_oversampled_bandwidth(oversampling):
+    tx = make_tx(oversampling=oversampling)
+    assert tx.bandwidth_hz == pytest.approx(64 * 500e6)
+    assert tx.dt_s == pytest.approx(1 / (oversampling * 64 * 500e6))
 
 
-def test_ofdm_transmitter_has_no_rrc_fields():
-    """OFDM subclasses Transmitter directly (not SingleCarrierTransmitter), so
-    it does NOT carry samples_per_symbol / roll_off / pulse_span_symbols."""
-    tx = _make_tx(n_subcarriers=64, cp_len=16)
-    fields = OFDMTransmitter.model_fields  # class-level, pydantic v2.11+ style
-    assert "samples_per_symbol" not in fields
-    assert "roll_off" not in fields
-    assert "pulse_span_symbols" not in fields
-    # Doubly check: OFDM Tx does not store them via __dict__ either.
-    assert "samples_per_symbol" not in tx.__dict__
-
-
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
-
-def test_rejects_base_pilots():
-    """Base-class PilotConfig is for time-domain SC pilots; OFDM uses
-    frequency-domain pilots via OFDMConfig instead."""
-    with pytest.raises(ValueError, match="OFDMTransmitter does not accept"):
+def test_time_domain_pilots_keyword_is_rejected():
+    """OFDM pilots are subcarriers (OFDMConfig), not the time-domain PilotConfig."""
+    with pytest.raises(ValidationError, match="pilots"):
         OFDMTransmitter(
             modulation_order=4,
-            symbol_rate_hz=32e9,
-            n_symbols=10,
-            ofdm=OFDMConfig(n_subcarriers=64),
-            pilots=PilotConfig(symbol=1.0 + 0j, period=8),
+            subcarrier_spacing_hz=1e9,
+            n_frames=2,
+            ofdm=OFDMConfig(n_subcarriers=16),
+            pilots=None,
         )
 
 
-def test_rejects_zero_data_subcarriers():
-    """An OFDMConfig with n_data == 0 carries no data — reject up front."""
-    # N=8, n_guard=1 leaves indices {0,1,2,5,6,7} as non-guard.
-    # Marking all 6 as pilots leaves n_data = 0.
-    ofdm = OFDMConfig(
-        n_subcarriers=8,
-        n_guard=1,
-        pilot_subcarrier_indices=(0, 1, 2, 5, 6, 7),
+def test_pilot_only_frame_cannot_be_transmitted():
+    ofdm = OFDMConfig(n_subcarriers=8, n_guard=1, pilot_subcarrier_indices=(0, 1, 2, 5, 6, 7))
+    assert ofdm.n_data == 0
+    with pytest.raises(ValidationError, match="no data symbols"):
+        OFDMTransmitter(modulation_order=4, subcarrier_spacing_hz=1e9, n_frames=4, ofdm=ofdm)
+
+
+def test_dm_blocks_must_align_with_the_data_symbols_of_all_frames():
+    pts = ConstellationConfig.from_square_qam(16).points
+    pmf = maxwell_boltzmann(pts, 0.3)
+    cfg = ConstellationConfig.from_points(
+        pts, ConstellationConfig.from_square_qam(16).bit_labels, pmf
     )
-    with pytest.raises(ValueError, match="n_data == 0"):
-        OFDMTransmitter(
-            modulation_order=4,
-            symbol_rate_hz=32e9,
-            n_symbols=10,
-            ofdm=ofdm,
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=56)
+    make_tx(constellation=cfg, dm=dm, modulation_order=None, n_frames=1)  # 56 data subcarriers
+    with pytest.raises(ValidationError, match=r"multiple of dm\.block_length"):
+        make_tx(
+            constellation=cfg, dm=dm.replace(block_length=48), modulation_order=None, n_frames=1
         )
 
 
-def test_dm_requires_block_alignment_on_data_symbols():
-    """DM block-length divides n_symbols * n_data (total QAM data symbols),
-    not just n_symbols."""
-    points, _ = square_qam(16)
-    pmf = maxwell_boltzmann(points, nu=0.5)
-    cfg = ConstellationConfig.from_points(points, probabilities=pmf)
-    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
-    # N=64, n_guard=4 → n_data=56. n_symbols=3 → total = 168.
-    # 168 % 32 = 8 != 0 → must reject.
-    ofdm = OFDMConfig(n_subcarriers=64, n_guard=4)
-    with pytest.raises(ValueError, match="must be a multiple of"):
-        OFDMTransmitter(
-            constellation=cfg,
-            dm=dm,
-            symbol_rate_hz=32e9,
-            n_symbols=3,
-            ofdm=ofdm,
-        )
-    # n_symbols=4 → total = 224. 224 % 32 = 0 → accepted.
-    tx = OFDMTransmitter(
-        constellation=cfg,
-        dm=dm,
-        symbol_rate_hz=32e9,
-        n_symbols=4,
-        ofdm=ofdm,
-    )
-    assert tx.n_symbols == 4
+# ---- shapes ---------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Output shapes (single-pol)
-# ---------------------------------------------------------------------------
-
-
-def test_single_pol_field_shape():
-    tx = _make_tx(n_subcarriers=64, cp_len=16, n_frames=10)
+@pytest.mark.parametrize("oversampling", OVERSAMPLING)
+@pytest.mark.parametrize(("order", "k"), [(4, 2), (16, 4), (64, 6)])
+def test_single_polarisation_shapes(order, k, oversampling):
+    tx = make_tx(modulation_order=order, oversampling=oversampling, n_frames=8)
     sent = tx.generate()
-    assert sent.field.shape == (10 * 80,)  # n_frames * (N + cp_len)
+    assert sent.field.shape == (8 * oversampling * (64 + 16),) == (tx.n_samples,)
+    assert sent.symbols.shape == (8 * 56,)
+    assert sent.bits.shape == (8 * 56 * k,)
 
 
-def test_single_pol_symbols_shape():
-    tx = _make_tx(n_subcarriers=64, n_guard=4, n_frames=10)
+def test_dual_polarisation_shapes_and_independence():
+    tx = make_tx(polarization="dual", n_frames=8)
     sent = tx.generate()
-    # n_data = 64 - 8 = 56; symbols are flat (n_frames * n_data,)
-    assert sent.symbols.shape == (10 * 56,)
-
-
-def test_single_pol_bits_shape_qpsk():
-    tx = _make_tx(modulation_order=4, n_subcarriers=64, n_guard=4, n_frames=10)
-    sent = tx.generate()
-    # 10 * 56 symbols * 2 bits/symbol (QPSK)
-    assert sent.bits.shape == (10 * 56 * 2,)
-
-
-def test_single_pol_bits_shape_64qam():
-    tx = _make_tx(modulation_order=64, n_subcarriers=64, n_guard=4, n_frames=4)
-    sent = tx.generate()
-    # 4 * 56 symbols * 6 bits/symbol (64-QAM)
-    assert sent.bits.shape == (4 * 56 * 6,)
-
-
-# ---------------------------------------------------------------------------
-# Output shapes (dual-pol)
-# ---------------------------------------------------------------------------
-
-
-def test_dual_pol_field_shape():
-    tx = _make_tx(polarization="dual", n_frames=10)
-    sent = tx.generate()
-    assert sent.field.shape == (2, 10 * 80)
-
-
-def test_dual_pol_symbols_and_bits_shape():
-    tx = _make_tx(polarization="dual", modulation_order=16, n_frames=8)
-    sent = tx.generate()
-    # n_data = 56, k = 4 (16-QAM)
+    assert sent.field.shape == (2, 8 * 80)
     assert sent.symbols.shape == (2, 8 * 56)
-    assert sent.bits.shape == (2, 8 * 56 * 4)
-
-
-def test_dual_pol_streams_are_independent():
-    """X and Y polarisations are seeded independently — bits should differ."""
-    tx = _make_tx(polarization="dual", n_frames=8)
-    sent = tx.generate()
-    # Statistically: probability of identical 8*56*2 = 896 bits across 2 pols
-    # is 2^-896. Just check they are not byte-identical.
+    assert sent.bits.shape == (2, 8 * 56 * 2)
     assert not np.array_equal(sent.bits[0], sent.bits[1])
 
 
-# ---------------------------------------------------------------------------
-# Cyclic prefix invariant
-# ---------------------------------------------------------------------------
+# ---- time-domain structure ------------------------------------------------------
 
 
-def test_cyclic_prefix_duplicates_tail():
-    """The first cp_len samples of each frame must equal the last cp_len
-    samples of that frame's IFFT block (the CP is the tail of the
-    N-sample useful interval, prepended). This is the OFDM identity that
-    makes the linear convolution with a CP-shorter channel look circular.
-    """
-    tx = _make_tx(n_subcarriers=64, cp_len=16, n_frames=4)
+@pytest.mark.parametrize("oversampling", OVERSAMPLING)
+def test_cyclic_prefix_repeats_the_frame_tail(oversampling):
+    tx = make_tx(cp_len=16, oversampling=oversampling, n_frames=4)
+    frames = tx.generate().field.reshape(4, tx.ofdm.samples_per_frame)
+    cp = 16 * oversampling
+    np.testing.assert_array_equal(frames[:, :cp], frames[:, -cp:])
+
+
+def test_no_cyclic_prefix():
+    tx = make_tx(cp_len=0, n_frames=4)
+    assert tx.generate().field.shape == (4 * 64,)
+
+
+# ---- frequency-domain structure -------------------------------------------------
+
+
+@pytest.mark.parametrize("oversampling", OVERSAMPLING)
+def test_every_bin_carries_what_it_should(oversampling):
+    tx = make_tx(pilots=(5, 11, 25, 40), oversampling=oversampling, n_frames=4)
+    cfg = tx.ofdm
     sent = tx.generate()
-    sps = 80  # 64 + 16
-    for frame in range(4):
-        block = sent.field[frame * sps : (frame + 1) * sps]
-        cp_part = block[:16]
-        tail = block[-16:]  # last 16 samples of the (cp + ifft) block
-        np.testing.assert_allclose(cp_part, tail, atol=1e-12)
-
-
-def test_no_cyclic_prefix_when_cp_zero():
-    """cp_len=0 means no CP is prepended; frame length == n_subcarriers."""
-    tx = _make_tx(n_subcarriers=64, cp_len=0, n_frames=4)
-    sent = tx.generate()
-    assert sent.field.shape == (4 * 64,)
-
-
-# ---------------------------------------------------------------------------
-# Frequency-domain inspection
-# ---------------------------------------------------------------------------
-
-
-def test_guard_subcarriers_zero_in_fft():
-    """Guard subcarriers must be zero in the frequency domain of each frame
-    (after CP removal, before any noise)."""
-    tx = _make_tx(n_subcarriers=64, cp_len=16, n_guard=4, n_frames=4)
-    sent = tx.generate()
-    sps = 80
-    guard_idx = tx.ofdm.guard_subcarrier_indices()
-    for frame in range(4):
-        block = sent.field[frame * sps : (frame + 1) * sps]
-        useful = block[16:]  # strip CP
-        spectrum = np.fft.fft(useful)
-        # The Tx scaled time-domain by N/sqrt(n_data); FFT of that gives
-        # N * (N/sqrt(n_data)) * X_freq, where X_freq is the original
-        # frequency-domain input. Guard entries were zero in X_freq.
-        np.testing.assert_allclose(
-            spectrum[guard_idx],
-            0.0,
-            atol=1e-9,
-            err_msg=f"frame {frame}",
-        )
-
-
-def test_pilot_subcarriers_carry_configured_value():
-    """After CP removal + FFT + power de-normalisation, pilot subcarriers
-    must carry exactly the configured pilot symbol."""
-    tx = _make_tx(
-        n_subcarriers=64,
-        cp_len=16,
-        n_guard=4,
-        pilot_indices=(5, 11, 25),
-        n_frames=4,
+    spec = frames_spectrum(tx, sent.field)
+    np.testing.assert_allclose(
+        spec[:, cfg.fft_bins(cfg.data_subcarrier_indices())],
+        sent.symbols.reshape(4, -1),
+        atol=1e-12,
     )
-    sent = tx.generate()
-    sps = 80
-    n = 64
-    n_data = tx.ofdm.n_data
-    pilot_idx = list(tx.ofdm.pilot_subcarrier_indices)
-    expected_pilot = tx.ofdm.pilot_symbol
-    # Tx scale = N / sqrt(n_data); to recover X_freq from FFT(time-domain):
-    # FFT(time) = N * X_freq * (N / sqrt(n_data)) / N = X_freq * N / sqrt(n_data)
-    # so X_freq = FFT(time) * sqrt(n_data) / N.
-    rescale = np.sqrt(n_data) / n
-    for frame in range(4):
-        block = sent.field[frame * sps : (frame + 1) * sps]
-        useful = block[16:]
-        spectrum = np.fft.fft(useful) * rescale
-        np.testing.assert_allclose(
-            spectrum[pilot_idx],
-            expected_pilot,
-            atol=1e-10,
-            err_msg=f"frame {frame}",
-        )
+    np.testing.assert_allclose(
+        spec[:, cfg.fft_bins(cfg.pilot_subcarrier_indices)], cfg.pilot_symbol, atol=1e-12
+    )
+    used = np.zeros(cfg.fft_size, dtype=bool)
+    used[cfg.fft_bins(cfg.data_subcarrier_indices())] = True
+    used[cfg.fft_bins(cfg.pilot_subcarrier_indices)] = True
+    np.testing.assert_allclose(spec[:, ~used], 0.0, atol=1e-12)  # guard + oversampling bins
 
 
-def test_data_subcarriers_round_trip_to_qam_symbols():
-    """The transmitted ``symbols`` field equals what's at the data subcarriers
-    in the frequency domain (modulo the Tx power normalisation)."""
-    tx = _make_tx(n_subcarriers=64, cp_len=16, n_guard=4, n_frames=4)
-    sent = tx.generate()
-    sps = 80
-    n = 64
-    n_data = tx.ofdm.n_data
-    data_idx = tx.ofdm.data_subcarrier_indices()
-    rescale = np.sqrt(n_data) / n
-    symbols_per_frame = sent.symbols.reshape(4, n_data)
-    for frame in range(4):
-        block = sent.field[frame * sps : (frame + 1) * sps]
-        useful = block[16:]
-        spectrum = np.fft.fft(useful) * rescale
-        np.testing.assert_allclose(
-            spectrum[data_idx],
-            symbols_per_frame[frame],
-            atol=1e-10,
-            err_msg=f"frame {frame}",
-        )
+@pytest.mark.parametrize("oversampling", [2, 4])
+def test_oversampled_spectrum_is_concentrated_in_the_subcarrier_band(oversampling):
+    """Each frame is rectangularly windowed, so CP-OFDM has sinc side lobes: it is
+    *not* strictly band-limited (unlike the exact RRC); with no guard band ≈ 98.5 % of the energy
+    lies within the N·Δf subcarrier band and the rest decays away from it."""
+    tx = make_tx(oversampling=oversampling, n_frames=64, n_guard=0, cp_len=0)
+    sig = tx.generate()
+    psd = np.abs(np.fft.fft(sig.field)) ** 2
+    af = np.abs(np.fft.fftfreq(sig.field.size, sig.dt_s))
+    half = tx.bandwidth_hz / 2
+    assert psd[af <= half].sum() / psd.sum() > 0.98
+    assert psd[af > 1.5 * half].sum() < psd[(af > half) & (af <= 1.5 * half)].sum()
 
 
-# ---------------------------------------------------------------------------
-# Power normalisation
-# ---------------------------------------------------------------------------
+# ---- power ---------------------------------------------------------------------
 
 
-def test_unit_average_power_without_pilots():
-    """With unit-power constellation and no pilots, the field has average
-    sample power ≈ 1 (D4 power norm). Statistical tolerance from many frames."""
-    tx = _make_tx(n_subcarriers=128, cp_len=16, n_guard=4, n_frames=200, seed=42)
-    sent = tx.generate()
-    avg_power = float(np.mean(np.abs(sent.field) ** 2))
-    # With 200 frames × n_data data symbols ≈ 23200 random symbols,
-    # std of avg power ≈ 1/sqrt(N_samples) ≈ 0.007. Use 0.02 for headroom.
-    assert avg_power == pytest.approx(1.0, abs=0.02)
-
-
-def test_average_power_above_one_with_pilots():
-    """Pilots add deterministic energy; field power = 1 + n_pilots/n_data
-    (with |pilot_symbol|² = 1)."""
-    pilot_idx = (3, 5, 7, 9)  # 4 pilots
-    tx = _make_tx(
+@pytest.mark.parametrize("oversampling", OVERSAMPLING)
+@pytest.mark.parametrize("pilots", [(), (3, 5, 7, 9)])
+@pytest.mark.parametrize("power_dbm", [-5.0, 0.0, 4.0])
+def test_field_power_is_the_launch_power(pilots, oversampling, power_dbm):
+    tx = make_tx(
         n_subcarriers=128,
-        cp_len=16,
-        n_guard=4,
-        pilot_indices=pilot_idx,
+        pilots=pilots,
+        oversampling=oversampling,
         n_frames=200,
         seed=42,
+        modulation_order=16,
+        launch_power_per_channel_dbm=power_dbm,
     )
-    sent = tx.generate()
-    n_data = tx.ofdm.n_data  # 128 - 8 - 4 = 116
-    expected = 1.0 + len(pilot_idx) / n_data
-    avg_power = float(np.mean(np.abs(sent.field) ** 2))
-    assert avg_power == pytest.approx(expected, abs=0.03)
+    np.testing.assert_allclose(tx.generate().mean_power_w, dbm_to_w(power_dbm), rtol=0.02)
 
 
-# ---------------------------------------------------------------------------
-# Deterministic input paths
-# ---------------------------------------------------------------------------
+def test_dual_polarisation_splits_the_power():
+    tx = make_tx(polarization="dual", n_frames=200, launch_power_per_channel_dbm=0.0)
+    np.testing.assert_allclose(
+        np.mean(np.abs(tx.generate().field) ** 2, axis=-1), 0.5e-3, rtol=0.03
+    )
 
 
-def test_deterministic_bits_input_round_trip():
-    """Caller-supplied bits flow through and appear in sent.bits unchanged."""
-    tx = _make_tx(n_subcarriers=64, n_guard=4, n_frames=4)
-    n_bits = tx._bits_per_stream()
-    rng = np.random.default_rng(7)
-    user_bits = rng.integers(0, 2, size=n_bits, dtype=np.uint8)
-    sent = tx.generate(bits=user_bits)
-    np.testing.assert_array_equal(sent.bits, user_bits)
+# ---- deterministic inputs ---------------------------------------------------------
 
 
-def test_deterministic_symbols_input_round_trip():
-    """Caller-supplied symbols flow through and appear in sent.symbols
-    unchanged; corresponding bits are recovered via demap."""
-    tx = _make_tx(n_subcarriers=64, n_guard=4, n_frames=4)
-    cfg = tx._resolved_constellation()
-    rng = np.random.default_rng(8)
-    n_total = tx._data_symbols_per_stream()
-    idx = rng.integers(0, cfg.modulation_order, size=n_total)
-    user_syms = cfg.points[idx]
-    sent = tx.generate(symbols=user_syms)
-    np.testing.assert_allclose(sent.symbols, user_syms, atol=1e-12)
+def test_fed_bits_are_transmitted():
+    tx = make_tx(n_frames=4)
+    bits = np.random.default_rng(7).integers(0, 2, tx.n_bits_per_stream, dtype=np.uint8)
+    sent = tx.generate(bits=bits)
+    np.testing.assert_array_equal(sent.bits, bits)
+    np.testing.assert_array_equal(sent.symbols, tx.resolved_constellation.map(bits))
 
 
-def test_rejects_wrong_bits_shape():
-    tx = _make_tx(n_frames=4)
-    with pytest.raises(ValueError, match="shape"):
-        tx.generate(bits=np.zeros(10, dtype=np.uint8))
+def test_fed_symbols_are_transmitted_and_demapped():
+    tx = make_tx(n_frames=4)
+    cfg = tx.resolved_constellation
+    idx = np.random.default_rng(8).integers(0, 4, tx.n_data_symbols_per_stream)
+    sent = tx.generate(symbols=cfg.points[idx])
+    np.testing.assert_array_equal(sent.symbols, cfg.points[idx])
+    np.testing.assert_array_equal(sent.bits, cfg.bits_from_indices(idx))
 
 
-def test_rejects_wrong_symbols_shape():
-    tx = _make_tx(n_frames=4)
-    with pytest.raises(ValueError, match="shape"):
-        tx.generate(symbols=np.zeros(10, dtype=np.complex128))
+@pytest.mark.parametrize(
+    ("kwarg", "value", "match"),
+    [
+        ("bits", np.zeros(7, np.uint8), "`bits` must have shape"),
+        ("symbols", np.zeros(3, complex), "`symbols` must have shape"),
+    ],
+)
+def test_wrongly_shaped_input_is_rejected(kwarg, value, match):
+    with pytest.raises(ValueError, match=match):
+        make_tx(n_frames=4).generate(**{kwarg: value})
 
 
-def test_rejects_both_bits_and_symbols():
-    tx = _make_tx(n_frames=4)
+def test_bits_and_symbols_together_are_rejected():
+    tx = make_tx(n_frames=2)
     with pytest.raises(ValueError, match="at most one"):
-        tx.generate(
-            bits=np.zeros(tx._bits_per_stream(), dtype=np.uint8),
-            symbols=np.zeros(tx._data_symbols_per_stream(), dtype=np.complex128),
-        )
+        tx.generate(bits=np.zeros(tx.n_bits_per_stream, np.uint8), symbols=np.zeros(112, complex))
 
 
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
+# ---- reproducibility, DM ---------------------------------------------------------------
 
 
-def test_same_seed_produces_identical_output():
-    tx_a = _make_tx(seed=123)
-    tx_b = _make_tx(seed=123)
-    sent_a = tx_a.generate()
-    sent_b = tx_b.generate()
-    np.testing.assert_array_equal(sent_a.bits, sent_b.bits)
-    np.testing.assert_allclose(sent_a.field, sent_b.field, atol=1e-15)
-
-
-def test_different_seed_produces_different_output():
-    tx_a = _make_tx(seed=1)
-    tx_b = _make_tx(seed=2)
-    sent_a = tx_a.generate()
-    sent_b = tx_b.generate()
-    assert not np.array_equal(sent_a.bits, sent_b.bits)
-
-
-# ---------------------------------------------------------------------------
-# DM (probabilistic shaping) integration
-# ---------------------------------------------------------------------------
-
-
-def test_dm_path_emits_correct_bit_count():
-    """With DM, sent.bits has DM-sized length (not n_data_syms * k)."""
-    points, _ = square_qam(16)
-    pmf = maxwell_boltzmann(points, nu=0.5)
-    cfg = ConstellationConfig.from_points(points, probabilities=pmf)
-    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
-    # N=64, n_guard=4 → n_data=56. n_frames=4 → 224 total = 7 DM blocks.
-    ofdm = OFDMConfig(n_subcarriers=64, n_guard=4)
-    tx = OFDMTransmitter(
-        constellation=cfg,
-        dm=dm,
-        symbol_rate_hz=32e9,
-        n_symbols=4,
-        ofdm=ofdm,
-        seed=0,
+def test_same_seed_same_field_different_seed_different_field():
+    np.testing.assert_array_equal(
+        make_tx(seed=3).generate().field, make_tx(seed=3).generate().field
     )
-    sent = tx.generate()
-    expected = 7 * dm.bits_per_block
-    assert sent.bits.shape == (expected,)
+    assert not np.allclose(make_tx(seed=3).generate().field, make_tx(seed=4).generate().field)
 
 
-def test_dm_path_empirical_pmf_matches_composition():
-    """The transmitted symbols' empirical distribution equals the DM
-    composition (one full DM block emits exactly the composition once)."""
-    points, _ = square_qam(16)
-    pmf = maxwell_boltzmann(points, nu=0.5)
-    cfg = ConstellationConfig.from_points(points, probabilities=pmf)
-    dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
-    ofdm = OFDMConfig(n_subcarriers=64, n_guard=4)
-    # 16 frames × 56 data subs = 896 = 28 DM blocks.
-    tx = OFDMTransmitter(
-        constellation=cfg,
-        dm=dm,
-        symbol_rate_hz=32e9,
-        n_symbols=16,
-        ofdm=ofdm,
-        seed=0,
-    )
+def test_dm_bit_count_and_exact_composition():
+    base = ConstellationConfig.from_square_qam(16)
+    pmf = maxwell_boltzmann(base.points, 0.3)
+    cfg = base.with_probabilities(pmf)
+    dm = ConstantCompositionDM(target_pmf=pmf, block_length=56)
+    tx = make_tx(constellation=cfg, dm=dm, modulation_order=None, n_frames=8)
     sent = tx.generate()
-    # Find nearest constellation index for each sent symbol.
-    diffs = sent.symbols[:, None] - cfg.points[None, :]
-    indices = np.argmin(np.abs(diffs), axis=1)
-    counts = np.bincount(indices, minlength=cfg.modulation_order)
-    empirical = counts / indices.size
-    np.testing.assert_allclose(empirical, dm.empirical_pmf, atol=1e-12)
+    assert sent.bits.shape == (8 * dm.bits_per_block,)
+    counts = np.bincount(cfg.nearest(sent.symbols), minlength=16)
+    np.testing.assert_array_equal(counts, 8 * dm.composition)

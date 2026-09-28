@@ -1,54 +1,45 @@
-"""Pilot-symbol configuration.
+"""Time-domain pilot symbols for pulse-shaped (single-carrier / WDM) signals.
 
-A :class:`PilotConfig` describes a uniform pilot pattern: every ``period``-th
-symbol slot carries a known reference value (``symbol``) instead of a random
-data symbol. Pilots are the foundation for downstream DSP — carrier-phase
-estimation, carrier-frequency offset, per-channel gain — though no estimator
-ships in v1. The Transmitter inserts pilots; the Receiver extracts them and
-returns the raw post-matched-filter samples at pilot positions so users (or
-later modules) can run their own estimators.
-
-Pilot positions are computed as ``0, period, 2·period, …`` (offset 0) over
-``n_symbols``. The number of pilot slots is ``ceil(n_symbols / period)``.
-
-Two BER conventions are both supported, controlled by
-:attr:`ReceivedSymbols.data_bits` vs :attr:`ReceivedSymbols.bits`:
-
-- **Option α** (default in examples): score on ``data_bits`` only — the bit
-  stream with pilot positions stripped out.
-- **Option β**: score on full ``bits`` and mask externally — kept zero-filled
-  at pilot positions on the Tx side so it round-trips structurally.
+A :class:`PilotConfig` replaces every ``period``-th symbol slot — positions
+``0, period, 2·period, …`` — with the known value ``symbol``. Pilots carry no
+information bits: a transmitter's ``bits`` cover the data slots only, and
+receivers can use the pilots to estimate the channel gain and phase
+(``equalize="pilot"``).
 """
 
 from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from hpcom._model import HpcomModel
 
 
-class PilotConfig(BaseModel):
-    """Uniform pilot schedule: every ``period``-th symbol is a reference."""
+class PilotConfig(HpcomModel):
+    """Uniform pilot schedule: slot ``k`` is a pilot iff ``k % period == 0``.
 
-    model_config = ConfigDict(frozen=True)
+    ``symbol`` is on the same scale as the unit-power constellation (the
+    default ``1 + 0j`` has unit energy).
+    """
 
-    period: int = Field(ge=2, description="Pilot insertion period; must be >= 2.")
+    period: int = Field(ge=2, description="Pilot insertion period (>= 2).")
     symbol: complex = 1.0 + 0.0j
 
     def pilot_indices(self, n_symbols: int) -> npt.NDArray[np.intp]:
-        """Symbol-grid positions where a pilot is transmitted."""
+        """Slots that carry a pilot."""
         return np.arange(0, n_symbols, self.period, dtype=np.intp)
 
     def data_indices(self, n_symbols: int) -> npt.NDArray[np.intp]:
-        """Symbol-grid positions where a data symbol is transmitted."""
-        mask = np.ones(n_symbols, dtype=bool)
-        mask[self.pilot_indices(n_symbols)] = False
-        return np.flatnonzero(mask).astype(np.intp)
+        """Slots that carry data."""
+        idx = np.arange(n_symbols, dtype=np.intp)
+        data: npt.NDArray[np.intp] = idx[idx % self.period != 0]
+        return data
 
     def n_pilots(self, n_symbols: int) -> int:
-        """Count of pilot positions in an ``n_symbols``-long stream."""
-        return int(np.ceil(n_symbols / self.period))
+        """Number of pilot slots, ``⌈n_symbols / period⌉``."""
+        return -(-n_symbols // self.period)
 
     def n_data(self, n_symbols: int) -> int:
-        """Count of data positions in an ``n_symbols``-long stream."""
+        """Number of data slots."""
         return n_symbols - self.n_pilots(n_symbols)

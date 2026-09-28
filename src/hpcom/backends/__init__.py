@@ -1,75 +1,140 @@
-"""Propagator backends and registry.
+"""Numerical backends: fiber propagators (and, in :mod:`hpcom.backends.kernels`, DSP kernels).
 
-A :class:`~hpcom.backends.base.Propagator` is the seam between the user-facing
-:class:`hpcom.fiber.Fiber` API and a concrete numerical implementation
-(NumPy, TensorFlow, JAX in v1.1+, …).
+A :class:`~hpcom.backends.base.Propagator` is the seam between the
+user-facing :class:`hpcom.fiber.Fiber` and a concrete numerical engine.
+Propagators are registered under a string name and resolved by
+:func:`get_propagator` when a fiber propagates. Built-in backends are
+registered *lazily* — as import paths — so ``import hpcom`` never imports
+TensorFlow; a backend's module is imported the first time it is requested.
 
-Backends register themselves under a string name and the
-:class:`~hpcom.fiber.Fiber` resolves them via :func:`get_propagator` at
-``propagate()`` time. This lets users swap engines without touching scenario
-code.
+Built-in propagators:
+
+========================  ===================================================
+``"numpy"``               Symmetric split-step Fourier (scalar NLSE /
+                          Manakov) in NumPy. Always available; reference
+                          implementation; default for :class:`~hpcom.Fiber`.
+``"numpy-linear"``        Exact linear solution (loss + dispersion, γ
+                          ignored) in one FFT. For linear-regime checks.
+``"tensorflow"``          Same SSFM algorithm on TensorFlow (GPU if present).
+                          Requires ``pip install "hpcom[tf]"``.
+========================  ===================================================
+
+Adding a backend: subclass :class:`Propagator`, then
+``register_propagator("name", MyPropagator)``. Every registered propagator is
+exercised by the conformance suite in ``tests/backends/``.
 """
 
 from __future__ import annotations
 
-from hpcom.backends.base import Propagator
+import importlib
+from collections.abc import Callable
+
+from hpcom.backends.base import BackendUnavailableError, Propagator
 
 __all__ = [
+    "BackendUnavailableError",
     "Propagator",
+    "available_propagators",
     "get_propagator",
     "list_propagators",
     "register_propagator",
 ]
 
-_REGISTRY: dict[str, Propagator] = {}
+#: name → (module, class name, install hint shown when the import fails)
+_BUILTIN: dict[str, tuple[str, str, str]] = {
+    "numpy": ("hpcom.backends.numpy.ssfm", "NumpySSFMPropagator", ""),
+    "numpy-linear": ("hpcom.backends.numpy.linear", "LinearNumpyPropagator", ""),
+    "tensorflow": (
+        "hpcom.backends.tensorflow.propagator",
+        "TensorFlowPropagator",
+        'install TensorFlow with `pip install "hpcom[tf]"` (or "hpcom[tf-gpu]")',
+    ),
+}
+
+_factories: dict[str, Callable[[], Propagator]] = {}
+_instances: dict[str, Propagator] = {}
 
 
-def register_propagator(name: str, propagator: Propagator | type[Propagator]) -> None:
-    """Register a propagator under ``name``.
+def _builtin_factory(module: str, cls_name: str, hint: str, name: str) -> Callable[[], Propagator]:
+    def factory() -> Propagator:
+        try:
+            cls = getattr(importlib.import_module(module), cls_name)
+        except (ImportError, OSError) as exc:
+            # OSError: broken CUDA libraries can fail inside `import tensorflow`.
+            msg = f"propagator backend {name!r} is unavailable: {exc}"
+            raise BackendUnavailableError(f"{msg}. To enable it, {hint}." if hint else msg) from exc
+        instance = cls()
+        assert isinstance(instance, Propagator)
+        return instance
 
-    Accepts either an instance or a class (instantiated with no args). Replaces
-    any prior registration at the same name silently — useful in tests.
+    return factory
+
+
+def register_propagator(
+    name: str, propagator: Propagator | type[Propagator] | Callable[[], Propagator]
+) -> None:
+    """Register ``propagator`` under ``name`` (replacing any previous entry).
+
+    ``propagator`` may be an instance, a :class:`Propagator` subclass
+    (instantiated lazily with no arguments), or a zero-argument factory.
     """
-    if isinstance(propagator, type):
-        propagator = propagator()
-    if not isinstance(propagator, Propagator):
+    if isinstance(propagator, Propagator):
+        instance = propagator
+        _factories[name] = lambda: instance
+    elif isinstance(propagator, type):
+        if not issubclass(propagator, Propagator):
+            raise TypeError(f"{propagator.__name__} is not a Propagator subclass")
+        _factories[name] = propagator
+    elif callable(propagator):
+        _factories[name] = propagator
+    else:
         raise TypeError(
-            f"propagator must be a Propagator instance or subclass, got {type(propagator).__name__}"
+            "propagator must be a Propagator instance, subclass, or zero-argument factory; "
+            f"got {type(propagator).__name__}"
         )
-    _REGISTRY[name] = propagator
+    _instances.pop(name, None)
 
 
 def get_propagator(name: str) -> Propagator:
-    """Look up a registered propagator by name. Raises :class:`KeyError` if absent."""
-    if name not in _REGISTRY:
-        available = ", ".join(sorted(_REGISTRY)) or "(none registered)"
-        raise KeyError(f"Unknown propagator backend {name!r}. Registered: {available}.")
-    return _REGISTRY[name]
+    """Return the propagator registered as ``name``, importing it on first use.
+
+    Raises
+    ------
+    KeyError
+        No backend of that name is registered.
+    BackendUnavailableError
+        The backend is registered but its dependencies are not installed.
+    """
+    if name in _instances:
+        return _instances[name]
+    if name not in _factories:
+        raise KeyError(
+            f"Unknown propagator backend {name!r}. Registered: {', '.join(list_propagators())}."
+        )
+    instance = _factories[name]()
+    if not isinstance(instance, Propagator):
+        raise TypeError(f"factory for backend {name!r} returned {type(instance).__name__}")
+    _instances[name] = instance
+    return instance
 
 
 def list_propagators() -> list[str]:
-    """Return the sorted list of registered backend names."""
-    return sorted(_REGISTRY)
+    """Sorted names of every registered backend (available or not)."""
+    return sorted(_factories)
 
 
-def _autoregister_builtin_backends() -> None:
-    """Register backends bundled with hpcom. Failures are silent (e.g. TF missing)."""
-    try:
-        from hpcom.backends.numpy import LinearNumpyPropagator
-
-        register_propagator("numpy-linear", LinearNumpyPropagator())
-    except ImportError:
-        pass
-
-    try:
-        from hpcom.backends.tensorflow import TensorFlowPropagator
-
-        register_propagator("tensorflow", TensorFlowPropagator())
-    except (ImportError, OSError):
-        # TensorFlow is an optional extra (`pip install hpcom[tf]`).
-        # Broken CUDA stubs can raise OSError from inside `import tensorflow`,
-        # so we widen the catch to keep the registry usable in those envs.
-        pass
+def available_propagators() -> list[str]:
+    """Sorted names of registered backends whose dependencies import successfully."""
+    names = []
+    for name in list_propagators():
+        try:
+            get_propagator(name)
+        except BackendUnavailableError:
+            continue
+        names.append(name)
+    return names
 
 
-_autoregister_builtin_backends()
+for _name, (_module, _cls, _hint) in _BUILTIN.items():
+    _factories[_name] = _builtin_factory(_module, _cls, _hint, _name)
+del _name, _module, _cls, _hint

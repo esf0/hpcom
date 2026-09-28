@@ -1,648 +1,314 @@
-"""OFDM (orthogonal frequency-division multiplexing) configuration and
-modulation primitives.
+r"""OFDM: frame configuration, transmitter, receiver.
 
-An :class:`OFDMConfig` describes one OFDM "symbol" — a length-``n_subcarriers``
-IFFT block — and how to slice it into guard, pilot, and data subcarriers.
-The :class:`hpcom.transmitter.OFDMTransmitter` treats the parent
-``Transmitter.n_symbols`` parameter as the number of OFDM frames, each
-carrying ``n_data`` QAM symbols on data subcarriers and ``n_pilots`` known
-symbols on pilot subcarriers, surrounded by guard bands.
+An :class:`OFDMConfig` describes one OFDM frame: ``n_subcarriers`` (``N``)
+subcarriers spaced by ``Δf``, split into data, pilot and guard subcarriers,
+plus a cyclic prefix. Subcarrier indices are in NumPy ``fftfreq`` order
+(``0 … N/2−1`` non-negative, ``N/2 … N−1`` negative frequencies); subcarrier
+``k`` sits at baseband frequency ``k·Δf`` (``(k−N)·Δf`` for ``k ≥ N/2``).
+The ``2·n_guard`` guard subcarriers straddle the band edge ``±N·Δf/2``.
 
-Subcarrier indices are in NumPy ``fftfreq`` natural order ``0, 1, …, N-1``
-(equivalently, baseband from DC up to Nyquist, then wrapping into negative
-frequencies). The two guard bands sit at the edges of that frequency range
-— ``n_guard`` subcarriers nearest Nyquist (indices ``N/2 - n_guard``
-through ``N/2 + n_guard - 1`` in fftshift order, equivalently ``N/2 ±
-n_guard`` straddling the wrap-around in natural order).
+**Oversampling.** With ``oversampling = L`` the IFFT has ``L·N`` points: the
+``N`` subcarriers occupy the central ``N·Δf`` of an ``L·N·Δf`` sample rate
+and the rest of the spectrum is empty. ``L = 1`` fills the whole simulated
+band — fine for linear channels, but in nonlinear (SSFM) propagation the
+spectral broadening then aliases; use ``L ≥ 2`` there.
 
-DC (index 0) is always treated as a data position (it can be marked as a
-pilot via ``pilot_subcarrier_indices`` if the application wants a DC pilot
-or DC null).
+**Normalisation.** Each frame's time samples are
 
-Power normalisation convention (see :func:`_ofdm_modulate_frames`): the
-time-domain field is scaled by ``N / sqrt(n_data)`` so that — with a
-unit-power constellation and no pilots — the average sample power is 1.
-This matches the single-carrier ``Transmitter`` convention and lets the
-same launch-power machinery downstream operate without OFDM-aware logic.
+.. math:: x_n = \frac{L N}{\sqrt{E_\text{frame}}}\,\sqrt{P_\text{pol}}\;
+          \text{IFFT}_{LN}\{X\}_n,
+          \qquad E_\text{frame} = n_\text{data} E_s + n_\text{pilot}|p|^2,
+
+so the expected field power is the launch power per polarisation
+:math:`P_\text{pol}`; the cyclic prefix repeats the last ``cp_len·L``
+samples. The receiver undoes the scaling up to :math:`\sqrt{P_\text{pol}}`
+and the channel, which the equaliser removes.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
+from hpcom._model import HpcomModel, Polymorphic
 from hpcom._typing import ComplexArray, _is_power_of_two
-from hpcom.modulation import nearest_symbol_indices
 from hpcom.receiver import ReceivedSymbols, Receiver
-from hpcom.transmitter import (
-    Polarization,
-    TransmittedSignal,
-    Transmitter,
-    _as_1d,
-    _seed_seq_from,
-)
+from hpcom.transmitter import TransmittedSignal, Transmitter
+
+__all__ = ["OFDMConfig", "OFDMReceivedSymbols", "OFDMReceiver", "OFDMSignal", "OFDMTransmitter"]
 
 
-class OFDMConfig(BaseModel):
-    """One OFDM symbol's structure: subcarriers, guard, cyclic prefix, pilots.
+class OFDMConfig(HpcomModel):
+    """Structure of one OFDM frame.
 
-    Parameters
+    Attributes
     ----------
     n_subcarriers
-        IFFT size; must be a power of 2 and ≥ 4.
+        Number of subcarriers ``N`` (a power of two, ≥ 4).
     cp_len
-        Cyclic-prefix length in samples. ``0 ≤ cp_len < n_subcarriers``.
+        Cyclic-prefix length in non-oversampled samples, ``0 ≤ cp_len < N``.
     n_guard
-        Number of guard subcarriers on each edge of the band. ``0 ≤ n_guard
-        < n_subcarriers/2``; total guard = ``2 * n_guard`` (the inner block
-        of high-frequency subcarriers near Nyquist).
+        Unused subcarriers on each side of the band edge, ``0 ≤ n_guard < N/2``.
     pilot_subcarrier_indices
-        Tuple of subcarrier indices (in natural ``fftfreq`` order) that
-        carry known pilot symbols. Must be disjoint from the guard set and
-        within ``[0, n_subcarriers)``.
+        Subcarriers carrying ``pilot_symbol`` in every frame (``fftfreq``
+        order, stored sorted, outside the guard band).
     pilot_symbol
-        Complex value placed on every pilot subcarrier. Defaults to
-        ``1.0 + 0j``. The same value is used on every pilot subcarrier
-        across every frame (BPSK-style reference); per-subcarrier sequences
-        (Zadoff-Chu, etc.) are out of scope for v1.
+        Pilot value on the unit-power constellation scale.
+    oversampling
+        IFFT oversampling factor ``L`` (see module docstring).
     """
-
-    model_config = ConfigDict(frozen=True)
 
     n_subcarriers: int
     cp_len: int = Field(default=0, ge=0)
     n_guard: int = Field(default=0, ge=0)
     pilot_subcarrier_indices: tuple[int, ...] = ()
     pilot_symbol: complex = 1.0 + 0.0j
+    oversampling: int = Field(default=1, ge=1)
+
+    @field_validator("pilot_subcarrier_indices", mode="after")
+    @classmethod
+    def _sort_pilots(cls, v: tuple[int, ...]) -> tuple[int, ...]:
+        if len(set(v)) != len(v):
+            raise ValueError(f"pilot_subcarrier_indices must be unique, got {v}")
+        return tuple(sorted(v))
 
     @model_validator(mode="after")
     def _validate(self) -> OFDMConfig:
-        if not _is_power_of_two(self.n_subcarriers) or self.n_subcarriers < 4:
-            raise ValueError(f"n_subcarriers must be a power of 2 ≥ 4, got {self.n_subcarriers}")
-        if not 0 <= self.cp_len < self.n_subcarriers:
-            raise ValueError(
-                f"cp_len must satisfy 0 ≤ cp_len < n_subcarriers "
-                f"({self.n_subcarriers}), got {self.cp_len}"
-            )
-        if not 0 <= self.n_guard < self.n_subcarriers // 2:
-            raise ValueError(
-                f"n_guard must satisfy 0 ≤ n_guard < n_subcarriers/2 "
-                f"({self.n_subcarriers // 2}), got {self.n_guard}"
-            )
-
-        pilots = tuple(int(p) for p in self.pilot_subcarrier_indices)
-        if len(set(pilots)) != len(pilots):
-            raise ValueError(f"pilot_subcarrier_indices must be unique, got {pilots}")
-        for p in pilots:
-            if not 0 <= p < self.n_subcarriers:
-                raise ValueError(f"pilot subcarrier {p} is out of range [0, {self.n_subcarriers})")
-        guard_set = set(int(i) for i in self.guard_subcarrier_indices())
-        bad = guard_set & set(pilots)
-        if bad:
-            raise ValueError(f"pilot subcarriers {sorted(bad)} collide with the guard band")
-        # Canonicalise the pilot tuple (sorted, ints). With frozen=True the
-        # public setattr is blocked, but model_validator can assign via
-        # __dict__ before pydantic finalises the instance.
-        self.__dict__["pilot_subcarrier_indices"] = tuple(sorted(pilots))
+        n = self.n_subcarriers
+        if not _is_power_of_two(n) or n < 4:
+            raise ValueError(f"n_subcarriers must be a power of 2 ≥ 4, got {n}")
+        if self.cp_len >= n:
+            raise ValueError(f"cp_len must be < n_subcarriers ({n}), got {self.cp_len}")
+        if self.n_guard >= n // 2:
+            raise ValueError(f"n_guard must be < n_subcarriers/2 ({n // 2}), got {self.n_guard}")
+        out_of_range = [p for p in self.pilot_subcarrier_indices if not 0 <= p < n]
+        if out_of_range:
+            raise ValueError(f"pilot subcarriers {out_of_range} are outside [0, {n})")
+        clash = set(self.pilot_subcarrier_indices) & set(self.guard_subcarrier_indices().tolist())
+        if clash:
+            raise ValueError(f"pilot subcarriers {sorted(clash)} fall in the guard band")
+        # n_data == 0 (a pilot-only frame) is a valid structure; a transmitter
+        # rejects it because it has no data to send.
         return self
 
-    # ---- subcarrier sets -------------------------------------------------
+    # ---- subcarrier sets ---------------------------------------------------
 
     def guard_subcarrier_indices(self) -> npt.NDArray[np.intp]:
-        """Indices (natural ``fftfreq`` order) that fall in the guard bands.
-
-        Guard subcarriers sit symmetrically around Nyquist (``N/2``):
-        ``N/2 - n_guard, …, N/2 + n_guard - 1``. Empty when ``n_guard == 0``.
-        """
-        if self.n_guard == 0:
-            return np.empty(0, dtype=np.intp)
+        """Guard subcarriers ``N/2 − n_guard … N/2 + n_guard − 1`` (around the band edge)."""
         half = self.n_subcarriers // 2
         return np.arange(half - self.n_guard, half + self.n_guard, dtype=np.intp)
 
     def data_subcarrier_indices(self) -> npt.NDArray[np.intp]:
-        """Indices that carry QAM data symbols."""
-        all_idx = np.arange(self.n_subcarriers, dtype=np.intp)
-        non_data = set(self.guard_subcarrier_indices().tolist()) | set(
-            self.pilot_subcarrier_indices
-        )
-        return np.array([i for i in all_idx if int(i) not in non_data], dtype=np.intp)
+        """Subcarriers carrying data, in ``fftfreq`` order."""
+        used = np.ones(self.n_subcarriers, dtype=bool)
+        used[self.guard_subcarrier_indices()] = False
+        used[list(self.pilot_subcarrier_indices)] = False
+        return np.flatnonzero(used).astype(np.intp)
+
+    def subcarrier_frequency_index(self, k: npt.ArrayLike) -> npt.NDArray[np.intp]:
+        """Signed frequency index of subcarriers ``k`` (``k``, or ``k − N`` for ``k ≥ N/2``)."""
+        k = np.asarray(k, dtype=np.intp)
+        return np.where(k < self.n_subcarriers // 2, k, k - self.n_subcarriers)
+
+    def fft_bins(self, k: npt.ArrayLike) -> npt.NDArray[np.intp]:
+        """Position of subcarriers ``k`` in the ``L·N``-point (oversampled) FFT."""
+        return np.asarray(self.subcarrier_frequency_index(k) % self.fft_size, dtype=np.intp)
 
     @property
     def n_data(self) -> int:
-        """Number of data subcarriers per OFDM symbol."""
         return self.n_subcarriers - 2 * self.n_guard - len(self.pilot_subcarrier_indices)
 
     @property
     def n_pilots(self) -> int:
-        """Number of pilot subcarriers per OFDM symbol."""
         return len(self.pilot_subcarrier_indices)
 
     @property
-    def samples_per_ofdm_symbol(self) -> int:
-        """Time-domain samples per OFDM symbol (IFFT + cyclic prefix)."""
-        return self.n_subcarriers + self.cp_len
+    def fft_size(self) -> int:
+        """IFFT/FFT length ``L·N``."""
+        return self.n_subcarriers * self.oversampling
 
+    @property
+    def samples_per_frame(self) -> int:
+        """Time samples per frame, ``L·(N + cp_len)``."""
+        return self.oversampling * (self.n_subcarriers + self.cp_len)
 
-# ---------------------------------------------------------------------------
-# OFDM signal + transmitter (importing Transmitter ABC from hpcom.transmitter)
-# ---------------------------------------------------------------------------
-
-
-def _ofdm_modulate_frames(
-    data_symbols: ComplexArray,
-    cfg: OFDMConfig,
-) -> ComplexArray:
-    """IFFT-based OFDM modulation with cyclic prefix.
-
-    Parameters
-    ----------
-    data_symbols
-        Shape ``(n_frames, n_data)``. Per-frame QAM symbols at the data
-        subcarrier positions, in the same order as
-        ``cfg.data_subcarrier_indices()``.
-    cfg
-        OFDM configuration: subcarrier count, CP length, guard size,
-        pilot positions and value.
-
-    Returns
-    -------
-    A 1-D complex field of length ``n_frames * (n_subcarriers + cp_len)``,
-    obtained by:
-    1. Building each frame's frequency-domain vector (data symbols at data
-       subcarrier indices, ``cfg.pilot_symbol`` at pilot indices, zero
-       elsewhere — including guard subcarriers).
-    2. IFFT (NumPy convention: ``x_n = (1/N) Σ_k X_k exp(2πi kn/N)``).
-    3. Scaling by ``N / sqrt(n_data)`` so the data-driven part of the
-       field has unit average sample power (pilots add a small bias).
-    4. Prepending the last ``cp_len`` samples of each IFFT block as the
-       cyclic prefix (no-op when ``cp_len == 0``).
-    5. Concatenating frames in time order.
-
-    The scale factor is derived from Parseval's theorem: for unit-power
-    data symbols X with n_data non-zero entries out of N,
-    ``E[|x_n|²] = n_data / N²``, so scaling by ``N / sqrt(n_data)`` gives
-    ``E[|x_n|²] = 1`` over the data ensemble.
-    """
-    data_symbols = np.asarray(data_symbols, dtype=np.complex128)
-    if data_symbols.ndim != 2 or data_symbols.shape[1] != cfg.n_data:
-        raise ValueError(
-            f"data_symbols must have shape (n_frames, {cfg.n_data}), got {data_symbols.shape}"
-        )
-    n_frames = data_symbols.shape[0]
-    n = cfg.n_subcarriers
-
-    # Build the frequency-domain matrix in one allocation.
-    freq = np.zeros((n_frames, n), dtype=np.complex128)
-    freq[:, cfg.data_subcarrier_indices()] = data_symbols
-    if cfg.n_pilots > 0:
-        freq[:, list(cfg.pilot_subcarrier_indices)] = cfg.pilot_symbol
-    # Guard subcarriers remain zero by construction.
-
-    # IFFT along the subcarrier axis, then scale to unit per-sample power.
-    time = np.fft.ifft(freq, axis=1)
-    time *= n / np.sqrt(cfg.n_data)
-
-    # Prepend cyclic prefix (last cp_len samples of each frame).
-    if cfg.cp_len > 0:
-        cp = time[:, -cfg.cp_len :]
-        time_with_cp = np.concatenate([cp, time], axis=1)
-    else:
-        time_with_cp = time
-
-    return time_with_cp.reshape(-1)
+    def frame_energy(self, data_symbol_energy: float) -> float:
+        """``E_frame = n_data·E_s + n_pilots·|p|²`` (see module docstring)."""
+        return self.n_data * data_symbol_energy + self.n_pilots * abs(self.pilot_symbol) ** 2
 
 
 class OFDMSignal(TransmittedSignal):
-    """OFDM transmitted signal.
+    """Output of :class:`OFDMTransmitter`.
 
-    Shape conventions (``n_symbols`` here is the number of OFDM frames):
-
-    * Single-pol: ``field=(n_symbols * (N + cp_len),)``,
-      ``symbols=(n_symbols * n_data,)``,
-      ``bits=(n_bits_per_stream,)``.
-    * Dual-pol:   ``field=(2, n_symbols * (N + cp_len))``,
-      ``symbols=(2, n_symbols * n_data)``,
-      ``bits=(2, n_bits_per_stream)``.
+    ``field``: ``(n_frames·samples_per_frame,)`` or ``(2, …)``;
+    ``symbols``: data symbols frame after frame, ``(…, n_frames·n_data)``;
+    ``bits``: ``(…, n_bits_per_stream)``.
     """
 
-    ofdm: OFDMConfig
+    transmitter: Polymorphic[OFDMTransmitter]
+
+    @property
+    def data_indices(self) -> npt.NDArray[np.intp]:
+        return np.arange(self.symbols.shape[-1], dtype=np.intp)
 
 
 class OFDMTransmitter(Transmitter):
-    """Orthogonal-frequency-division-multiplexing transmitter.
+    """CP-OFDM transmitter (optionally dual-polarisation).
 
-    Generates ``n_symbols`` OFDM frames; each frame carries ``ofdm.n_data``
-    QAM symbols on data subcarriers, ``ofdm.n_pilots`` known pilot symbols
-    on pilot subcarriers, and ``2 * ofdm.n_guard`` zero-valued guard
-    subcarriers, then IFFTs and prepends a cyclic prefix.
-
-    API conventions:
-
-    * ``symbol_rate_hz`` is the **total OFDM signal bandwidth** (= sample
-      rate of the generated field). ``dt_s = 1 / symbol_rate_hz``.
-    * ``n_symbols`` is the number of OFDM frames. The field length is
-      ``n_symbols * (n_subcarriers + cp_len)`` samples per polarisation.
-    * The base-class ``pilots`` field (time-domain periodic pilots) is
-      rejected — frequency-domain pilots are configured via
-      :class:`OFDMConfig` instead.
-
-    Power normalisation follows the unit-mean-power convention: with a
-    unit-power constellation and no pilots, the field's average sample
-    power equals 1.
-
-    Probabilistic shaping via ``dm`` is supported; the block-alignment
-    requirement is ``n_symbols * ofdm.n_data % dm.block_length == 0``.
+    Attributes
+    ----------
+    subcarrier_spacing_hz
+        ``Δf``. The subcarrier grid spans ``N·Δf``; the sample rate is ``L·N·Δf``.
+    n_frames
+        Number of OFDM frames.
+    ofdm
+        Frame structure, :class:`OFDMConfig`.
     """
 
+    subcarrier_spacing_hz: float = Field(gt=0)
+    n_frames: int = Field(ge=1)
     ofdm: OFDMConfig
-
-    @model_validator(mode="after")
-    def _validate_ofdm(self) -> OFDMTransmitter:
-        if self.pilots is not None:
-            raise ValueError(
-                "OFDMTransmitter does not accept base-class `pilots` "
-                "(time-domain periodic pilots). Configure frequency-domain "
-                "pilots via `ofdm.pilot_subcarrier_indices` instead."
-            )
-        if self.ofdm.n_data == 0:
-            raise ValueError(
-                "ofdm.n_data == 0 — no data subcarriers available. "
-                "Reduce n_guard or pilot count to leave room for data."
-            )
-        return self
 
     @property
     def dt_s(self) -> float:
-        """OFDM sample period = 1 / total bandwidth."""
-        return 1.0 / self.symbol_rate_hz
+        return 1.0 / (self.ofdm.fft_size * self.subcarrier_spacing_hz)
 
-    def _data_symbols_per_stream(self) -> int:
-        """Override: one OFDM frame carries ``ofdm.n_data`` QAM symbols."""
-        return self.n_symbols * self.ofdm.n_data
+    @property
+    def bandwidth_hz(self) -> float:
+        """Subcarrier grid width ``N·Δf``."""
+        return self.ofdm.n_subcarriers * self.subcarrier_spacing_hz
+
+    @property
+    def n_data_symbols_per_stream(self) -> int:
+        return self.n_frames * self.ofdm.n_data
+
+    @property
+    def n_samples(self) -> int:
+        return self.n_frames * self.ofdm.samples_per_frame
 
     def generate(
         self,
         *,
         rng: np.random.Generator | None = None,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
+        bits: npt.ArrayLike | None = None,
+        symbols: npt.ArrayLike | None = None,
     ) -> OFDMSignal:
-        """Generate an OFDM transmitted signal.
-
-        Shapes for deterministic inputs:
-
-        - single-pol: ``bits=(n_bits_per_stream,)``,
-          ``symbols=(n_symbols * ofdm.n_data,)``.
-        - dual-pol:   ``bits=(2, n_bits_per_stream)``,
-          ``symbols=(2, n_symbols * ofdm.n_data)``.
-        """
-        if bits is not None and symbols is not None:
-            raise ValueError("pass at most one of `bits` or `symbols`, not both")
-
-        if self.polarization == "single":
-            single_rng = rng if rng is not None else np.random.default_rng(self.seed)
-            ch_bits, ch_syms, ch_field = self._generate_one_ofdm_stream(
-                single_rng,
-                bits=_as_1d(bits, "bits") if bits is not None else None,
-                symbols=_as_1d(symbols, "symbols") if symbols is not None else None,
-            )
-            return self._make_ofdm_signal(
-                field=ch_field,
-                symbols=ch_syms,
-                bits=ch_bits,
-                polarization="single",
-            )
-
-        # Dual-pol
-        bps = self._bits_per_stream()
-        total_data_syms = self.n_symbols * self.ofdm.n_data
-        if bits is not None:
-            b2 = np.asarray(bits, dtype=np.uint8)
-            if b2.shape != (2, bps):
-                raise ValueError(f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}")
-        if symbols is not None:
-            s2 = np.asarray(symbols, dtype=np.complex128)
-            if s2.shape != (2, total_data_syms):
-                raise ValueError(
-                    f"dual-pol `symbols` must have shape (2, {total_data_syms}), got {s2.shape}"
-                )
-
-        seed_seq = _seed_seq_from(rng, self.seed)
-        pol_seqs = seed_seq.spawn(2)
-        per_pol_bits: list[npt.NDArray[np.uint8]] = []
-        per_pol_syms: list[ComplexArray] = []
-        per_pol_fields: list[ComplexArray] = []
-        for pol_idx, sub_seq in enumerate(pol_seqs):
-            pol_rng = np.random.default_rng(sub_seq)
-            p_bits, p_syms, p_field = self._generate_one_ofdm_stream(
-                pol_rng,
-                bits=bits[pol_idx] if bits is not None else None,
-                symbols=symbols[pol_idx] if symbols is not None else None,
-            )
-            per_pol_bits.append(p_bits)
-            per_pol_syms.append(p_syms)
-            per_pol_fields.append(p_field)
-
-        return self._make_ofdm_signal(
-            field=np.stack(per_pol_fields, axis=0),
-            symbols=np.stack(per_pol_syms, axis=0),
-            bits=np.stack(per_pol_bits, axis=0),
-            polarization="dual",
+        cfg = self.ofdm
+        out_bits, data = self._draw_data(rng, bits, symbols)
+        lead = data.shape[:-1]
+        grid = np.zeros((*lead, self.n_frames, cfg.fft_size), dtype=np.complex128)
+        grid[..., cfg.fft_bins(cfg.data_subcarrier_indices())] = data.reshape(
+            *lead, self.n_frames, cfg.n_data
         )
-
-    def _generate_one_ofdm_stream(
-        self,
-        rng: np.random.Generator,
-        *,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
-    ) -> tuple[npt.NDArray[np.uint8], ComplexArray, ComplexArray]:
-        """Generate (bits, data-symbols, field) for one polarisation stream."""
-        from hpcom.modulation import nearest_symbol_indices
-
-        cfg = self._resolved_constellation()
-        dm = self.dm
-        n_bits = self._bits_per_stream()
-        total_data_syms = self.n_symbols * self.ofdm.n_data
-
-        if symbols is not None:
-            ch_symbols = np.asarray(symbols, dtype=np.complex128)
-            if ch_symbols.shape != (total_data_syms,):
-                raise ValueError(
-                    f"`symbols` must have shape ({total_data_syms},), got {ch_symbols.shape}"
-                )
-            if dm is not None:
-                indices = nearest_symbol_indices(ch_symbols, cfg.points).astype(np.intp)
-                ch_bits = dm.decode(indices)
-            else:
-                ch_bits = cfg.demap(ch_symbols)
-        elif bits is not None:
-            ch_bits = np.asarray(bits, dtype=np.uint8)
-            if ch_bits.shape != (n_bits,):
-                raise ValueError(f"`bits` must have shape ({n_bits},), got {ch_bits.shape}")
-            if dm is not None:
-                indices = dm.encode(ch_bits)
-                ch_symbols = cfg.points[indices].astype(np.complex128)
-            else:
-                ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
-        else:
-            ch_bits = rng.integers(0, 2, size=n_bits, dtype=np.uint8)
-            if dm is not None:
-                indices = dm.encode(ch_bits)
-                ch_symbols = cfg.points[indices].astype(np.complex128)
-            else:
-                ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
-
-        data_matrix = ch_symbols.reshape(self.n_symbols, self.ofdm.n_data)
-        ch_field = _ofdm_modulate_frames(data_matrix, self.ofdm)
-        return ch_bits, ch_symbols, ch_field
-
-    def _make_ofdm_signal(
-        self,
-        *,
-        field: ComplexArray,
-        symbols: ComplexArray,
-        bits: npt.NDArray[np.uint8],
-        polarization: Polarization,
-    ) -> OFDMSignal:
+        if cfg.n_pilots:
+            grid[..., cfg.fft_bins(cfg.pilot_subcarrier_indices)] = cfg.pilot_symbol
+        scale = cfg.fft_size * np.sqrt(
+            self.launch_power_per_polarization_w / cfg.frame_energy(self.data_symbol_energy)
+        )
+        frames = np.fft.ifft(grid, axis=-1) * scale
+        cp = cfg.cp_len * cfg.oversampling
+        if cp:
+            frames = np.concatenate([frames[..., -cp:], frames], axis=-1)
         return OFDMSignal(
-            field=field,
-            dt_s=self.dt_s,
-            symbols=symbols,
-            bits=bits,
-            n_symbols=self.n_symbols,
-            polarization=polarization,
-            pilots=None,  # OFDM rejects base pilots; freq-domain pilots in OFDMConfig
-            ofdm=self.ofdm,
+            transmitter=self, field=frames.reshape(*lead, -1), symbols=data, bits=out_bits
         )
-
-
-# ---------------------------------------------------------------------------
-# OFDM demodulation (receiver side)
-# ---------------------------------------------------------------------------
-
-
-def _ofdm_demodulate_frames(
-    field: ComplexArray,
-    cfg: OFDMConfig,
-) -> tuple[ComplexArray, ComplexArray | None]:
-    """FFT-based OFDM demodulation: undo CP, FFT, extract data and pilots.
-
-    Parameters
-    ----------
-    field
-        1-D complex baseband field of length ``n_frames * (N + cp_len)``.
-    cfg
-        OFDM configuration matching the transmitter.
-
-    Returns
-    -------
-    data_symbols
-        Shape ``(n_frames, n_data)`` — recovered QAM symbols at data
-        subcarrier positions.
-    pilot_symbols
-        Shape ``(n_frames, n_pilots)`` when pilots are configured, else
-        ``None``.
-
-    The inverse of :func:`_ofdm_modulate_frames`: strips the cyclic prefix,
-    FFTs each frame, undoes the Tx power scaling (multiply by
-    ``sqrt(n_data) / N``), and slices out data and pilot subcarrier values.
-    """
-    field = np.asarray(field, dtype=np.complex128)
-    n = cfg.n_subcarriers
-    sps = cfg.samples_per_ofdm_symbol  # N + cp_len
-    if field.ndim != 1 or field.size % sps != 0:
-        raise ValueError(
-            f"field length {field.size} is not a multiple of samples_per_ofdm_symbol ({sps})"
-        )
-    n_frames = field.size // sps
-
-    # Reshape into frames and strip CP.
-    frames = field.reshape(n_frames, sps)
-    useful = frames[:, cfg.cp_len :]  # (n_frames, N)
-
-    # FFT along the subcarrier axis, then undo Tx power scaling.
-    spectrum = np.fft.fft(useful, axis=1)
-    spectrum *= np.sqrt(cfg.n_data) / n
-
-    # Extract data subcarrier values.
-    data_idx = cfg.data_subcarrier_indices()
-    data_symbols: ComplexArray = spectrum[:, data_idx]
-
-    # Extract pilot subcarrier values (if any).
-    pilot_symbols: ComplexArray | None = None
-    if cfg.n_pilots > 0:
-        pilot_symbols = spectrum[:, list(cfg.pilot_subcarrier_indices)]
-
-    return data_symbols, pilot_symbols
-
-
-def _pilot_equalize(
-    data_2d: ComplexArray,
-    pilot_2d: ComplexArray,
-    cfg: OFDMConfig,
-) -> ComplexArray:
-    """One-tap channel equalisation using pilot subcarriers.
-
-    For each frame, the channel is estimated at pilot positions as
-    ``H_pilot = received_pilot / known_pilot``, then linearly interpolated
-    to all data subcarrier positions, and data symbols are divided by the
-    interpolated channel estimate.
-
-    Parameters
-    ----------
-    data_2d
-        Shape ``(n_frames, n_data)`` — received (noisy) data symbols.
-    pilot_2d
-        Shape ``(n_frames, n_pilots)`` — received pilot symbols.
-    cfg
-        OFDM configuration (supplies pilot/data indices and known pilot
-        value).
-
-    Returns
-    -------
-    Equalized data symbols, same shape as *data_2d*.
-    """
-    pilot_indices = np.array(cfg.pilot_subcarrier_indices, dtype=np.float64)
-    data_indices = cfg.data_subcarrier_indices().astype(np.float64)
-
-    # Channel estimate at pilot positions.
-    h_pilot = pilot_2d / cfg.pilot_symbol  # (n_frames, n_pilots)
-
-    n_frames = data_2d.shape[0]
-    equalized = np.empty_like(data_2d)
-
-    for f in range(n_frames):
-        # Interpolate channel magnitude and phase separately would be
-        # fragile; interpolate real and imaginary parts independently.
-        h_re = np.interp(data_indices, pilot_indices, h_pilot[f].real)
-        h_im = np.interp(data_indices, pilot_indices, h_pilot[f].imag)
-        h_data = h_re + 1j * h_im
-        equalized[f] = data_2d[f] / h_data
-
-    return equalized
 
 
 class OFDMReceivedSymbols(ReceivedSymbols):
-    """Output of :class:`OFDMReceiver`.
-
-    Shape conventions (``n_symbols`` is the number of OFDM frames):
-
-    * Single-pol: ``symbols=(n_frames * n_data,)``,
-      ``bits=(n_bits_per_stream,)``.
-    * Dual-pol:   ``symbols=(2, n_frames * n_data)``,
-      ``bits=(2, n_bits_per_stream)``.
-
-    OFDM has no time-domain pilots, so :meth:`data_bits` and
-    :meth:`data_symbols` just return :attr:`bits` / :attr:`symbols` directly.
-    """
-
-    ofdm: OFDMConfig
+    """Output of :class:`OFDMReceiver`; ``symbols`` are frame after frame (``…, n_frames·n_data``)."""
 
 
 class OFDMReceiver(Receiver):
-    """Orthogonal-frequency-division-multiplexing receiver.
+    """CP-OFDM receiver.
 
-    Demodulates ``n_frames`` OFDM frames: strips the cyclic prefix, FFTs,
-    extracts data subcarriers, optionally applies one-tap pilot-based
-    channel equalisation, then hard-decodes to nearest constellation point.
+    After (optional) CD compensation, every frame's cyclic prefix is dropped,
+    the ``L·N``-point FFT taken and the subcarriers extracted. ``equalize``:
 
-    API conventions:
-
-    * ``ofdm`` must match the transmitter's ``OFDMConfig`` (subcarrier
-      count, CP length, guard/pilot layout).
-    * The base-class ``pilots`` field (time-domain periodic pilots) is
-      rejected — frequency-domain pilots are configured via
-      :class:`OFDMConfig` instead.
-    * ``samples_per_symbol`` is not used by OFDM; it is always set to the
-      default (inherited from :class:`Receiver`) and ignored.
-
-    Probabilistic shaping via ``dm`` is supported; the block-alignment
-    requirement is ``n_frames * ofdm.n_data % dm.block_length == 0``.
+    * ``"pilot"`` — one-tap per-subcarrier equaliser: the channel is measured
+      on the pilot subcarriers of each frame and linearly interpolated (real
+      and imaginary parts, in frequency order; held constant beyond the
+      outermost pilots) to the data subcarriers. Needs pilot subcarriers.
+    * ``"none"``, ``"unit_power"``, ``"data_aided"`` — one complex gain per
+      polarisation, as for the other receivers.
     """
 
     ofdm: OFDMConfig
 
     @model_validator(mode="after")
     def _validate_ofdm_rx(self) -> OFDMReceiver:
-        if self.pilots is not None:
-            raise ValueError(
-                "OFDMReceiver does not accept base-class `pilots` "
-                "(time-domain periodic pilots). Configure frequency-domain "
-                "pilots via `ofdm.pilot_subcarrier_indices` instead."
-            )
+        if self.equalize == "pilot" and self.ofdm.n_pilots == 0:
+            raise ValueError('equalize="pilot" requires ofdm.pilot_subcarrier_indices')
         return self
 
-    def receive(self, field: ComplexArray, dt_s: float | None = None) -> OFDMReceivedSymbols:
-        """Demodulate a received OFDM field.
+    def compatibility_issues(self, transmitter: Transmitter) -> list[str]:
+        if not isinstance(transmitter, OFDMTransmitter):
+            return [f"OFDMReceiver cannot receive a {type(transmitter).__name__}"]
+        issues = self._base_issues(transmitter)
+        if transmitter.ofdm != self.ofdm:
+            issues.append(f"ofdm: transmitter {transmitter.ofdm!r}, receiver {self.ofdm!r}")
+        return issues
 
-        For ``polarization="single"`` the input is 1-D; for ``"dual"`` it
-        is ``(2, n_samples)`` and each polarisation is demodulated
-        independently.
-        """
-        if self.polarization == "single":
-            if field.ndim != 1:
-                raise ValueError(f"single-pol receiver expects 1-D field, got shape {field.shape}")
-            return self._receive_one_ofdm_stream(field)
+    def reference(
+        self, sent: TransmittedSignal
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.complex128]]:
+        return np.asarray(sent.bits), np.asarray(sent.symbols)
 
-        # Dual-pol
-        if field.ndim != 2 or field.shape[0] != 2:
-            raise ValueError(
-                f"dual-pol receiver expects 2-D field with leading axis 2, got shape {field.shape}"
+    def receive(
+        self,
+        field: ComplexArray,
+        dt_s: float,
+        *,
+        reference: TransmittedSignal | None = None,
+    ) -> OFDMReceivedSymbols:
+        cfg = self.ofdm
+        x = self._compensate_dispersion(self._check_field(field), dt_s)
+        spf = cfg.samples_per_frame
+        if x.shape[-1] % spf:
+            raise ValueError(f"field length {x.shape[-1]} is not a multiple of {spf} samples/frame")
+        lead = x.shape[:-1]
+        frames = x.reshape(*lead, -1, spf)[..., cfg.cp_len * cfg.oversampling :]
+        spectrum = np.fft.fft(frames, axis=-1) * (
+            np.sqrt(cfg.frame_energy(self.data_symbol_energy)) / cfg.fft_size
+        )
+        data = spectrum[..., cfg.fft_bins(cfg.data_subcarrier_indices())]  # (*lead, F, n_data)
+        pilots = spectrum[..., cfg.fft_bins(cfg.pilot_subcarrier_indices)] if cfg.n_pilots else None
+        reference_data = self.reference(reference)[1] if reference is not None else None
+
+        if self.equalize == "pilot":
+            assert pilots is not None
+            h = self._interpolate_channel(pilots / cfg.pilot_symbol)
+            mean_gain: npt.NDArray[np.complex128] = np.asarray(
+                np.mean(h, axis=(-2, -1)), dtype=np.complex128
             )
-        per_pol = [self._receive_one_ofdm_stream(field[i]) for i in (0, 1)]
-        return OFDMReceivedSymbols(
-            symbols=np.stack([p.symbols for p in per_pol], axis=0),
-            bits=np.stack([p.bits for p in per_pol], axis=0),
-            decisions=np.stack([p.decisions for p in per_pol], axis=0),
-            modulation_order=self.effective_modulation_order,
-            polarization="dual",
-            pilots=None,
-            pilot_symbols=None,
-            ofdm=self.ofdm,
-        )
-
-    def _receive_one_ofdm_stream(self, field: ComplexArray) -> OFDMReceivedSymbols:
-        """Single 1-D OFDM demodulation pipeline."""
-        data_2d, pilot_2d = _ofdm_demodulate_frames(field, self.ofdm)
-
-        # One-tap pilot equalisation (when pilots are configured).
-        if pilot_2d is not None and self.ofdm.n_pilots > 0:
-            data_2d = _pilot_equalize(data_2d, pilot_2d, self.ofdm)
-
-        symbols_rx = data_2d.reshape(-1)
-
-        cfg = self._resolved_constellation()
-        decisions = nearest_symbol_indices(symbols_rx, cfg.points)
-
-        if self.dm is not None:
-            if decisions.size % self.dm.block_length != 0:
-                raise ValueError(
-                    f"received {decisions.size} symbols, which is not a "
-                    f"multiple of dm.block_length ({self.dm.block_length}); "
-                    "check that the field length matches the transmitter"
-                )
-            bits = self.dm.decode(decisions.astype(np.intp))
+            out = self._detect(
+                (data / h).reshape(*lead, -1), gain=np.ones(lead, dtype=np.complex128)
+            )
+            out["gain"] = mean_gain
+            out["pilot_symbols"] = (pilots / mean_gain[..., None, None]).reshape(*lead, -1)
         else:
-            bits = cfg.demap(symbols_rx)
+            out = self._detect(
+                data.reshape(*lead, -1),
+                raw_pilots=None if pilots is None else pilots.reshape(*lead, -1),
+                reference_data=reference_data,
+            )
+        return OFDMReceivedSymbols(receiver=self, **out)
 
-        return OFDMReceivedSymbols(
-            symbols=symbols_rx,
-            bits=bits,
-            decisions=decisions,
-            modulation_order=self.effective_modulation_order,
-            polarization="single",
-            pilots=None,
-            pilot_symbols=None,
-            ofdm=self.ofdm,
-        )
+    def _interpolate_channel(
+        self, h_pilot: npt.NDArray[np.complex128]
+    ) -> npt.NDArray[np.complex128]:
+        """Pilot channel estimates ``(…, F, n_pilots)`` → data subcarriers ``(…, F, n_data)``."""
+        cfg = self.ofdm
+        f_pil = cfg.subcarrier_frequency_index(cfg.pilot_subcarrier_indices)
+        f_dat = cfg.subcarrier_frequency_index(cfg.data_subcarrier_indices())
+        order = np.argsort(f_pil)
+        f_pil = f_pil[order]
+        flat = h_pilot[..., order].reshape(-1, order.size)
+        out = np.empty((flat.shape[0], f_dat.size), dtype=np.complex128)
+        for i, row in enumerate(flat):
+            out[i] = np.interp(f_dat, f_pil, row.real) + 1j * np.interp(f_dat, f_pil, row.imag)
+        return out.reshape(*h_pilot.shape[:-1], f_dat.size)
 
 
-__all__ = [
-    "OFDMConfig",
-    "OFDMReceivedSymbols",
-    "OFDMReceiver",
-    "OFDMSignal",
-    "OFDMTransmitter",
-]
+OFDMSignal.model_rebuild()
+OFDMReceivedSymbols.model_rebuild()

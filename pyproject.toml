@@ -25,14 +25,24 @@ classifiers = [
 dependencies = [
   "numpy>=1.24",
   "scipy>=1.10",
-  "matplotlib>=3.7",
-  "scikit-learn>=1.3",
-  "pydantic>=2.5",
+  "pydantic>=2.6",
 ]
 
 [project.optional-dependencies]
 tf = ["tensorflow>=2.15"]
 tf-gpu = ["tensorflow[and-cuda]>=2.15"]
+# Pre-v1 modules under hpcom._legacy (deprecated; removed in v2).
+legacy = [
+  "tensorflow>=2.15",
+  "scikit-learn>=1.3",
+  "matplotlib>=3.7",
+  "ssfm-gpu>=0.1.4",
+]
+docs = [
+  "sphinx>=7",
+  "furo>=2024.1",
+  "sphinx-autodoc-typehints>=2",
+]
 dev = [
   "pytest>=7",
   "pytest-cov>=4",
@@ -40,9 +50,6 @@ dev = [
   "ruff>=0.4",
   "mypy>=1.8",
   "build>=1",
-  "sphinx>=7",
-  "furo>=2024.1",
-  "sphinx-autodoc-typehints>=2",
 ]
 
 [project.urls]
@@ -63,7 +70,10 @@ markers = [
   "legacy: tests for the deprecated _legacy modules",
 ]
 filterwarnings = [
+  # hpcom must never warn in normal use; legacy modules warn by design.
+  "error:::hpcom",
   "ignore::DeprecationWarning:hpcom._legacy",
+  "ignore:hpcom._legacy is deprecated:DeprecationWarning",
 ]
 
 [tool.ruff]
@@ -72,7 +82,6 @@ target-version = "py310"
 src = ["src", "tests"]
 extend-exclude = [
   "src/hpcom/_legacy",
-  "src/hpcom/backends/tensorflow/_vendor",
   "notebooks",
   "tests/legacy",
   "docs",
@@ -99,9 +108,10 @@ module = "hpcom._legacy.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "hpcom.backends.tensorflow._vendor.*"
-ignore_errors = true
+module = ["tensorflow.*", "scipy.*", "ssfm_gpu.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "tensorflow.*"
-ignore_missing_imports = true
+# tf.function is untyped (TensorFlow ships no stubs).
+module = "hpcom.backends.tensorflow.*"
+disallow_untyped_decorators = false

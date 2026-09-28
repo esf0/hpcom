@@ -1,9 +1,6 @@
-"""Pure-NumPy propagator backends.
-
-These are reference implementations: simple, dependency-free, fast on CPU,
-and used as a baseline that does not need TensorFlow or a GPU.
-"""
+"""Pure-NumPy propagator backends (always available)."""
 
 from hpcom.backends.numpy.linear import LinearNumpyPropagator
+from hpcom.backends.numpy.ssfm import NumpySSFMPropagator
 
-__all__ = ["LinearNumpyPropagator"]
+__all__ = ["LinearNumpyPropagator", "NumpySSFMPropagator"]

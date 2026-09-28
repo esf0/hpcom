@@ -1,15 +1,26 @@
 """Pytest configuration shared across the test tree.
 
-Gates ``@pytest.mark.gpu`` tests behind an explicit ``--rungpu`` flag (or
-``HPCOM_RUN_GPU=1`` env var). Default CI runs skip them so the standard suite
-stays portable; self-hosted GPU runners opt in with ``pytest --rungpu``.
+* ``@pytest.mark.gpu`` tests run only with ``--rungpu`` (or ``HPCOM_RUN_GPU=1``).
+* ``nonlinear_backend`` / ``any_backend`` parametrise a test over every
+  *available* propagator, so a newly registered backend (JAX, Rust, …) is
+  automatically held to the same physics.
 """
 
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))  # make `helpers` importable
+
+from hpcom.backends import available_propagators
+
+#: Backends that solve the full NLSE / Manakov equation.
+NONLINEAR_BACKENDS = [name for name in available_propagators() if name != "numpy-linear"]
+ALL_BACKENDS = available_propagators()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -28,3 +39,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "gpu" in item.keywords:
             item.add_marker(skip_gpu)
+
+
+@pytest.fixture(params=NONLINEAR_BACKENDS)
+def nonlinear_backend(request: pytest.FixtureRequest) -> str:
+    """Name of every available backend that solves the nonlinear equation."""
+    return str(request.param)
+
+
+@pytest.fixture(params=ALL_BACKENDS)
+def any_backend(request: pytest.FixtureRequest) -> str:
+    """Name of every available backend (including the linear-only one)."""
+    return str(request.param)

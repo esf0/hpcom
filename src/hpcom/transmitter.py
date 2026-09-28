@@ -1,447 +1,487 @@
-"""Optical transmitters: abstract base + concrete subclasses per signal shape.
+r"""Optical transmitters: abstract base, pulse-shaped base, single-carrier QAM.
 
-This module owns the abstract :class:`Transmitter` and :class:`TransmittedSignal`
-bases, plus the concrete :class:`SingleCarrierTransmitter` /
-:class:`SingleCarrierSignal` pair (RRC-shaped QAM). The WDM and OFDM variants
-live in :mod:`hpcom.wdm` and :mod:`hpcom.ofdm` respectively — each module owns
-the config, the transmitter, and the signal class for its signal shape.
+Class hierarchy (the receiver side mirrors it)::
 
-Polarisation, pilots, and probabilistic shaping (``dm``) are universal fields
-on the abstract base because they compose orthogonally with every signal shape.
+    Transmitter (abstract)                       — modulation, polarisation, power, seed
+    ├── PulseShapedTransmitter (abstract)        — symbol rate, RRC pulse, pilots
+    │   ├── SingleCarrierTransmitter             — one channel
+    │   └── WDMTransmitter  (hpcom.wdm)          — N channels on a frequency grid
+    └── OFDMTransmitter     (hpcom.ofdm)         — IFFT/CP multicarrier
+
+Conventions shared by every transmitter:
+
+* **Launch power** is per WDM channel, summed over both polarisations
+  (:attr:`Transmitter.launch_power_per_channel_dbm`, default 0 dBm). A
+  dual-polarisation channel puts half of it in each polarisation. The
+  alternative input :attr:`Transmitter.launch_power_total_dbm` is the sum
+  over all channels. The field is returned in physical units (√W), scaled so
+  its *expected* average power equals the launch power; one finite
+  realisation fluctuates around it by :math:`O(1/\sqrt{n})`.
+* **Array layout**: time (or symbol index) on the last axis; leading axes
+  are ``(polarisation, channel)``, each present only when applicable. A
+  single-polarisation single-carrier field is 1-D ``(n_samples,)``; a
+  dual-polarisation field is ``(2, n_samples)``.
+* **bits** are information bits — the input of the bit→symbol mapping (or of
+  the distribution matcher). Pilots carry no bits.
+* **symbols** are on the unit-power constellation scale (not scaled by the
+  launch power) and include pilot slots.
+* **Randomness**: stream ``i`` (in ``(polarisation, channel)`` C order)
+  draws from child ``i`` of ``SeedSequence(seed)`` (or of a seed drawn from
+  the ``rng`` argument), so streams are independent and reproducible.
 """
 
 from __future__ import annotations
 
-from abc import abstractmethod
-from typing import Literal
+import math
+from abc import ABC, abstractmethod
+from typing import ClassVar
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
-from hpcom._pulse import root_raised_cosine
-from hpcom._typing import ComplexArray
-from hpcom.modulation import (
-    ConstantCompositionDM,
-    ConstellationConfig,
-    bits_per_symbol,
-)
+from hpcom._model import ComplexArrayView, HpcomModel, Polymorphic, UInt8ArrayView
+from hpcom._pulse import Convolution, pulse_shape
+from hpcom._typing import ComplexArray, Polarization
+from hpcom.modulation.spec import ModulationSpec
 from hpcom.pilots import PilotConfig
+from hpcom.units import dbm_to_w
 
-Polarization = Literal["single", "dual"]
+__all__ = [
+    "Polarization",
+    "PulseShapedTransmitter",
+    "SingleCarrierSignal",
+    "SingleCarrierTransmitter",
+    "TransmittedSignal",
+    "Transmitter",
+]
 
 
 # ---------------------------------------------------------------------------
-# TransmittedSignal: ABC + SingleCarrierSignal
+# Transmitter base
 # ---------------------------------------------------------------------------
 
 
-class TransmittedSignal(BaseModel):
-    """Abstract base for transmitter output.
+class Transmitter(ModulationSpec, ABC):
+    """Abstract optical transmitter.
 
-    Every transmitter returns a subclass of this carrying:
-
-    * ``field`` — the complex baseband output; shape depends on polarisation.
-    * ``dt_s`` — sample period in seconds.
-    * ``symbols`` — the QAM symbols that were modulated.
-    * ``bits`` — the bit stream (per stream / polarisation / WDM channel).
-    * ``n_symbols`` — the *generation count* used by the transmitter. Its
-      physical meaning varies by signal shape (number of QAM symbols for
-      single-carrier; number of OFDM frames for OFDM). Each concrete signal
-      type's docstring states what ``n_symbols`` means for it.
-    * ``polarization`` and ``pilots`` — universal, shape-agnostic flags.
-
-    Signal-shape-specific metadata (RRC parameters for SC/WDM, OFDM
-    parameters for OFDM, per-channel views for WDM, per-frame views for
-    OFDM) lives on subclasses.
+    Attributes
+    ----------
+    polarization
+        ``"single"`` or ``"dual"`` (polarisation-division multiplexing; the two
+        tributaries carry independent data).
+    launch_power_per_channel_dbm
+        Average launch power **per WDM channel, summed over polarisations**,
+        in dBm. Default 0 dBm when neither power field is given.
+    launch_power_total_dbm
+        Alternative to the above: total launch power of all channels and
+        polarisations. Set at most one of the two; the other is derived
+        (``P_total = n_channels · P_channel``).
+    seed
+        Seed for the random data. ``None`` draws fresh entropy (unless an
+        ``rng`` is passed to :meth:`generate`).
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    field: ComplexArray
-    dt_s: float
-    symbols: ComplexArray
-    bits: npt.NDArray[np.uint8]
-    n_symbols: int
     polarization: Polarization = "single"
+    launch_power_per_channel_dbm: float | None = None
+    launch_power_total_dbm: float | None = None
+    seed: int | None = None
+
+    _exclusive_fields: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("modulation_order", "constellation"),
+        ("launch_power_per_channel_dbm", "launch_power_total_dbm"),
+    )
+
+    @model_validator(mode="after")
+    def _validate_transmitter(self) -> Transmitter:
+        if (
+            self.launch_power_per_channel_dbm is not None
+            and self.launch_power_total_dbm is not None
+        ):
+            raise ValueError(
+                "set at most one of `launch_power_per_channel_dbm` and `launch_power_total_dbm`"
+            )
+        n_data = self.n_data_symbols_per_stream
+        if n_data < 1:
+            raise ValueError("the signal has no data symbols")
+        if self.dm is not None and n_data % self.dm.block_length:
+            raise ValueError(
+                f"data symbols per stream ({n_data}) must be a multiple of "
+                f"dm.block_length ({self.dm.block_length})"
+            )
+        return self
+
+    # ---- structure ---------------------------------------------------------
+
+    @property
+    def n_polarizations(self) -> int:
+        return 2 if self.polarization == "dual" else 1
+
+    @property
+    def n_channels(self) -> int:
+        """Number of WDM channels (1 unless overridden)."""
+        return 1
+
+    @property
+    @abstractmethod
+    def dt_s(self) -> float:
+        """Sample period of the generated field, in seconds."""
+
+    @property
+    def sample_rate_hz(self) -> float:
+        return 1.0 / self.dt_s
+
+    @property
+    @abstractmethod
+    def n_data_symbols_per_stream(self) -> int:
+        """Data (information-carrying) symbols per polarisation per channel."""
+
+    @property
+    def n_bits_per_stream(self) -> int:
+        """Information bits per polarisation per channel."""
+        n = self.n_data_symbols_per_stream
+        if self.dm is not None:
+            return (n // self.dm.block_length) * self.dm.bits_per_block
+        return n * self.bits_per_symbol
+
+    @property
+    def stream_shape(self) -> tuple[int, ...]:
+        """Leading shape of ``bits`` / ``symbols``: ``(2?, n_channels?)``."""
+        shape: tuple[int, ...] = (2,) if self.polarization == "dual" else ()
+        if self.n_channels > 1:
+            shape += (self.n_channels,)
+        return shape
+
+    # ---- launch power ------------------------------------------------------
+
+    @property
+    def launch_power_per_channel_w(self) -> float:
+        """Average power per channel (both polarisations), in W."""
+        if self.launch_power_total_dbm is not None:
+            return dbm_to_w(self.launch_power_total_dbm) / self.n_channels
+        return dbm_to_w(self.launch_power_per_channel_dbm or 0.0)
+
+    @property
+    def launch_power_total_w(self) -> float:
+        """Average power of all channels and polarisations, in W."""
+        return self.launch_power_per_channel_w * self.n_channels
+
+    @property
+    def launch_power_per_polarization_w(self) -> float:
+        """Average power per channel per polarisation, in W."""
+        return self.launch_power_per_channel_w / self.n_polarizations
+
+    def with_launch_power(
+        self, *, per_channel_dbm: float | None = None, total_dbm: float | None = None
+    ) -> Transmitter:
+        """Copy with a new launch power (exactly one argument)."""
+        if (per_channel_dbm is None) == (total_dbm is None):
+            raise TypeError("pass exactly one of per_channel_dbm= or total_dbm=")
+        if per_channel_dbm is not None:
+            return self.replace(launch_power_per_channel_dbm=per_channel_dbm)
+        return self.replace(launch_power_total_dbm=total_dbm)
+
+    # ---- generation --------------------------------------------------------
+
+    @abstractmethod
+    def generate(
+        self,
+        *,
+        rng: np.random.Generator | None = None,
+        bits: npt.ArrayLike | None = None,
+        symbols: npt.ArrayLike | None = None,
+    ) -> TransmittedSignal:
+        """Generate a signal.
+
+        With neither ``bits`` nor ``symbols``, data is random (from ``rng`` if
+        given, else from :attr:`seed`). For deterministic input pass exactly
+        one of:
+
+        * ``bits`` — shape ``(*stream_shape, n_bits_per_stream)``;
+        * ``symbols`` — data symbols on the unit-power constellation scale,
+          shape ``(*stream_shape, n_data_symbols_per_stream)``. They are
+          transmitted as given (need not be constellation points); ``bits``
+          are the demapped labels of their nearest points (DM-decoded when a
+          DM is set).
+        """
+
+    def _draw_data(
+        self,
+        rng: np.random.Generator | None,
+        bits: npt.ArrayLike | None,
+        symbols: npt.ArrayLike | None,
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.complex128]]:
+        """Information bits and data symbols for every stream.
+
+        Returns arrays of shape ``(*stream_shape, n_bits_per_stream)`` and
+        ``(*stream_shape, n_data_symbols_per_stream)``.
+        """
+        if bits is not None and symbols is not None:
+            raise ValueError("pass at most one of `bits` or `symbols`")
+        lead = self.stream_shape
+        n_bits, n_data = self.n_bits_per_stream, self.n_data_symbols_per_stream
+        cfg = self.resolved_constellation
+        dm = self.dm
+
+        if symbols is not None:
+            syms = np.asarray(symbols, dtype=np.complex128)
+            if syms.shape != (*lead, n_data):
+                raise ValueError(f"`symbols` must have shape {(*lead, n_data)}, got {syms.shape}")
+            flat_syms = syms.reshape(-1, n_data)
+            idx = cfg.nearest(flat_syms)
+            if dm is not None:
+                out_bits = np.stack([dm.decode(row) for row in idx])
+            else:
+                out_bits = cfg.bit_labels[idx].reshape(flat_syms.shape[0], -1)
+            return out_bits.reshape(*lead, n_bits), syms.copy()
+
+        if bits is not None:
+            b = np.asarray(bits)
+            if b.shape != (*lead, n_bits):
+                raise ValueError(f"`bits` must have shape {(*lead, n_bits)}, got {b.shape}")
+            if np.any((b != 0) & (b != 1)):
+                raise ValueError("`bits` must contain only 0 and 1")
+            flat_bits = b.astype(np.uint8).reshape(-1, n_bits)
+            idx = np.stack(
+                [
+                    dm.encode(row) if dm is not None else cfg.indices_from_bits(row)
+                    for row in flat_bits
+                ]
+            )
+            return flat_bits.reshape(*lead, n_bits).copy(), cfg.points[idx].reshape(*lead, n_data)
+
+        root = _seed_sequence(rng, self.seed)
+        n_streams = math.prod(lead)
+        out_bits = np.empty((n_streams, n_bits), dtype=np.uint8)
+        out_syms = np.empty((n_streams, n_data), dtype=np.complex128)
+        for i, child in enumerate(root.spawn(n_streams)):
+            gen = np.random.default_rng(child)
+            if dm is None and cfg.probabilities is not None:
+                # i.i.d. probabilistic shaping: draw symbols from the PMF.
+                idx = gen.choice(cfg.modulation_order, size=n_data, p=cfg.probabilities)
+                out_bits[i] = cfg.bits_from_indices(idx)
+            else:
+                out_bits[i] = gen.integers(0, 2, size=n_bits, dtype=np.uint8)
+                idx = (
+                    dm.encode(out_bits[i]) if dm is not None else cfg.indices_from_bits(out_bits[i])
+                )
+            out_syms[i] = cfg.points[idx]
+        return out_bits.reshape(*lead, n_bits), out_syms.reshape(*lead, n_data)
+
+
+def _seed_sequence(rng: np.random.Generator | None, seed: int | None) -> np.random.SeedSequence:
+    if rng is not None:
+        return np.random.SeedSequence(int(rng.integers(0, 2**63 - 1)))
+    return np.random.SeedSequence(seed)
+
+
+# ---------------------------------------------------------------------------
+# Transmitted signal
+# ---------------------------------------------------------------------------
+
+
+class TransmittedSignal(HpcomModel, ABC):
+    """Output of :meth:`Transmitter.generate` (abstract; one subclass per waveform).
+
+    Attributes
+    ----------
+    transmitter
+        The configuration that produced this signal.
+    field
+        Complex envelope in √W: ``(n_samples,)`` or ``(2, n_samples)``.
+    symbols
+        Transmitted symbol stream on the unit-power constellation scale,
+        ``(*transmitter.stream_shape, n_slots)``, including pilot slots.
+    bits
+        Information bits, ``(*transmitter.stream_shape, n_bits_per_stream)``.
+    """
+
+    transmitter: Polymorphic[Transmitter]
+    field: ComplexArrayView
+    symbols: ComplexArrayView
+    bits: UInt8ArrayView
+
+    @property
+    def dt_s(self) -> float:
+        return self.transmitter.dt_s
+
+    @property
+    def polarization(self) -> Polarization:
+        return self.transmitter.polarization
+
+    @property
+    @abstractmethod
+    def data_indices(self) -> npt.NDArray[np.intp]:
+        """Positions of data symbols along the last axis of :attr:`symbols`."""
+
+    def data_symbols(self) -> ComplexArray:
+        """Data symbols only, ``(*stream_shape, n_data_symbols_per_stream)``."""
+        out: ComplexArray = self.symbols[..., self.data_indices]
+        return out
+
+    @property
+    def mean_power_w(self) -> float:
+        """Realised mean power of :attr:`field` summed over polarisations, in W."""
+        p = np.mean(np.abs(self.field) ** 2, axis=-1)
+        return float(np.sum(p))
+
+
+# ---------------------------------------------------------------------------
+# Pulse-shaped transmitters (single carrier, WDM)
+# ---------------------------------------------------------------------------
+
+
+class PulseShapedTransmitter(Transmitter, ABC):
+    """Common base of :class:`SingleCarrierTransmitter` and :class:`~hpcom.wdm.WDMTransmitter`.
+
+    Each stream is a sequence of ``n_symbols`` slots at ``symbol_rate_hz``,
+    shaped by a root-raised-cosine pulse and sampled ``samples_per_symbol``
+    times per symbol.
+
+    Attributes
+    ----------
+    symbol_rate_hz
+        Symbol rate ``R_s`` in baud.
+    n_symbols
+        Symbol slots per stream, pilots included.
+    samples_per_symbol
+        Oversampling factor (``dt = 1/(R_s·sps)``).
+    roll_off
+        RRC roll-off β ∈ [0, 1].
+    pulse_span_symbols
+        ``None`` → exact RRC (frequency-domain, periodic). An integer ``S`` →
+        truncated FIR of ``S·sps + 1`` taps (a realistic DSP filter).
+    convolution
+        ``"circular"`` → the signal is periodic (consistent with FFT-based
+        fiber propagation, no block edges). ``"linear"`` → a finite burst;
+        the ≈``pulse_span_symbols`` symbols at each end carry filter
+        transients (requires a finite span).
+    pilots
+        Optional :class:`~hpcom.pilots.PilotConfig` (time-domain pilots).
+    """
+
+    symbol_rate_hz: float = Field(gt=0)
+    n_symbols: int = Field(ge=1)
+    samples_per_symbol: int = Field(default=8, ge=2)
+    roll_off: float = Field(default=0.1, ge=0.0, le=1.0)
+    pulse_span_symbols: int | None = Field(default=None, ge=1)
+    convolution: Convolution = "circular"
     pilots: PilotConfig | None = None
 
+    @model_validator(mode="after")
+    def _validate_pulse(self) -> PulseShapedTransmitter:
+        if self.convolution == "linear" and self.pulse_span_symbols is None:
+            raise ValueError('convolution="linear" needs a finite `pulse_span_symbols`')
+        if self.pulse_span_symbols is not None and self.pulse_span_symbols >= self.n_symbols:
+            raise ValueError(
+                f"pulse_span_symbols ({self.pulse_span_symbols}) must be smaller than "
+                f"n_symbols ({self.n_symbols})"
+            )
+        if self.dm is not None and self.pilots is not None:
+            raise ValueError("`pilots` and `dm` cannot be combined")
+        return self
 
-class SingleCarrierSignal(TransmittedSignal):
-    """Single-carrier RRC-shaped QAM signal output.
+    @property
+    def dt_s(self) -> float:
+        return 1.0 / (self.symbol_rate_hz * self.samples_per_symbol)
 
-    Shape conventions:
+    @property
+    def n_samples(self) -> int:
+        return self.n_symbols * self.samples_per_symbol
 
-    * Single-pol: ``field=(n_samples,)``, ``bits=(n_symbols*k,)``,
-      ``symbols=(n_symbols,)``.
-    * Dual-pol:   ``field=(2, n_samples)``, ``bits=(2, n_symbols*k)``,
-      ``symbols=(2, n_symbols)``.
-
-    When ``pilots`` is set, ``symbols`` at pilot positions equal the configured
-    pilot value, and the corresponding ``bits`` are zero-filled. Use
-    :meth:`data_bits` / :meth:`data_symbols` for the pilot-stripped views.
-    """
-
-    samples_per_symbol: int
-    modulation_order: int
-    roll_off: float
-    pulse_span_symbols: int
+    @property
+    def data_indices(self) -> npt.NDArray[np.intp]:
+        """Data slots within ``n_symbols``."""
+        if self.pilots is None:
+            return np.arange(self.n_symbols, dtype=np.intp)
+        return self.pilots.data_indices(self.n_symbols)
 
     @property
     def pilot_indices(self) -> npt.NDArray[np.intp]:
-        """Symbol-grid positions of pilots, or empty if no pilots configured."""
+        """Pilot slots within ``n_symbols`` (empty without pilots)."""
         if self.pilots is None:
             return np.empty(0, dtype=np.intp)
         return self.pilots.pilot_indices(self.n_symbols)
 
     @property
+    def n_data_symbols_per_stream(self) -> int:
+        return int(self.data_indices.size)
+
+    @property
+    def transient_symbols(self) -> int:
+        """Symbols at each block edge affected by filter transients (0 when circular)."""
+        return (self.pulse_span_symbols or 0) if self.convolution == "linear" else 0
+
+    def _slot_stream(self, data: npt.NDArray[np.complex128]) -> npt.NDArray[np.complex128]:
+        """Insert pilots: ``(..., n_data)`` → ``(..., n_symbols)``."""
+        if self.pilots is None:
+            return data
+        stream = np.empty((*data.shape[:-1], self.n_symbols), dtype=np.complex128)
+        stream[..., self.pilot_indices] = self.pilots.symbol
+        stream[..., self.data_indices] = data
+        return stream
+
+    def _stream_energy(self) -> float:
+        """Expected ``|s|²`` per slot, pilots included."""
+        n_pil = self.pilot_indices.size
+        pilot_energy = abs(self.pilots.symbol) ** 2 if self.pilots is not None else 0.0
+        e_data = self.data_symbol_energy
+        return (self.n_data_symbols_per_stream * e_data + n_pil * pilot_energy) / self.n_symbols
+
+    def _shape_streams(self, slots: npt.NDArray[np.complex128]) -> npt.NDArray[np.complex128]:
+        """Pulse-shape every stream and scale to the per-polarisation launch power."""
+        energy = self._stream_energy()
+        if energy <= 0:
+            raise ValueError("the symbol stream has zero expected energy")
+        scale = np.sqrt(self.launch_power_per_polarization_w / energy)
+        shaped = pulse_shape(
+            slots, self.samples_per_symbol, self.roll_off, self.pulse_span_symbols, self.convolution
+        )
+        out: npt.NDArray[np.complex128] = shaped * scale
+        return out
+
+
+class SingleCarrierSignal(TransmittedSignal):
+    """Output of :class:`SingleCarrierTransmitter`.
+
+    Shapes: single-pol ``field (n_samples,)``, ``symbols (n_symbols,)``,
+    ``bits (n_bits,)``; dual-pol adds a leading axis of 2.
+    """
+
+    transmitter: Polymorphic[SingleCarrierTransmitter]
+
+    @property
     def data_indices(self) -> npt.NDArray[np.intp]:
-        """Symbol-grid positions of data symbols; all positions if no pilots."""
-        if self.pilots is None:
-            return np.arange(self.n_symbols, dtype=np.intp)
-        return self.pilots.data_indices(self.n_symbols)
+        return self.transmitter.data_indices
 
-    def data_symbols(self) -> ComplexArray:
-        """Symbols at data positions only. Preserves leading dims (pol, WDM)."""
-        if self.pilots is None:
-            return self.symbols
-        return self.symbols[..., self.data_indices]
-
-    def data_bits(self) -> npt.NDArray[np.uint8]:
-        """Bits at data positions only.
-
-        Preserves the leading dims of :attr:`bits` (pol, WDM channel) and
-        shrinks the trailing bit axis by the pilot fraction.
-        """
-        if self.pilots is None:
-            return self.bits
-        k = bits_per_symbol(self.modulation_order)
-        idx = self.data_indices
-        reshaped = self.bits.reshape(*self.bits.shape[:-1], -1, k)
-        selected = reshaped[..., idx, :]
-        return selected.reshape(*self.bits.shape[:-1], -1)
+    @property
+    def pilot_indices(self) -> npt.NDArray[np.intp]:
+        return self.transmitter.pilot_indices
 
 
-# ---------------------------------------------------------------------------
-# Transmitter: ABC + SingleCarrierTransmitter
-# ---------------------------------------------------------------------------
+class SingleCarrierTransmitter(PulseShapedTransmitter):
+    """Single-carrier RRC-shaped QAM transmitter (optionally dual-polarisation).
 
-
-class Transmitter(BaseModel):
-    """Abstract optical transmitter.
-
-    Concrete subclasses (:class:`SingleCarrierTransmitter`,
-    :class:`~hpcom.wdm.WDMTransmitter`, :class:`~hpcom.ofdm.OFDMTransmitter`)
-    implement :meth:`generate`. The base owns the universal fields and the
-    shared validation: constellation/modulation_order exclusivity, DM
-    block-alignment, polarisation, RNG seed.
-
-    Constellation specification: either ``modulation_order`` (Gray-coded
-    square QAM) or ``constellation`` (a :class:`ConstellationConfig`, for
-    geometric or probabilistic shaping). Exactly one must be set.
-
-    Probabilistic shaping is enabled by setting ``dm`` (a distribution
-    matcher whose ``target_pmf`` matches ``constellation.probabilities``).
-    With ``dm`` active, the bit-stream length per polarisation/channel is
-    ``(n_data_symbols / dm.block_length) * dm.bits_per_block`` rather than
-    the usual ``n_data_symbols * log₂ M``, where ``n_data_symbols`` is what
-    :meth:`_data_symbols_per_stream` returns (subclass-specific). Pilots
-    and ``dm`` are mutually exclusive.
+    >>> tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=32e9,
+    ...                               n_symbols=1024, seed=0)
+    >>> sig = tx.generate()
+    >>> sig.field.shape, sig.bits.shape
+    ((8192,), (4096,))
     """
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    symbol_rate_hz: float = Field(gt=0)
-    n_symbols: int = Field(ge=1)
-    modulation_order: int | None = None
-    constellation: ConstellationConfig | None = None
-    dm: ConstantCompositionDM | None = None
-    seed: int | None = None
-    polarization: Polarization = "single"
-    pilots: PilotConfig | None = None
-
-    @model_validator(mode="after")
-    def _validate_base(self) -> Transmitter:
-        if (self.modulation_order is None) == (self.constellation is None):
-            raise ValueError("exactly one of `modulation_order` or `constellation` must be set")
-        if self.modulation_order is not None:
-            resolved = ConstellationConfig.from_square_qam(self.modulation_order)
-        else:
-            assert self.constellation is not None  # for mypy
-            resolved = self.constellation
-        # Cached resolved constellation; bypass frozen for internal caching.
-        self.__dict__["_constellation"] = resolved
-
-        if self.dm is not None:
-            if self.pilots is not None:
-                raise ValueError(
-                    "`pilots` and `dm` are mutually exclusive — pilots displace data "
-                    "symbols and would break the DM block composition"
-                )
-            if self.constellation is None or self.constellation.probabilities is None:
-                raise ValueError("`dm` requires `constellation` with non-None probabilities")
-            if self.dm.target_pmf.shape != self.constellation.probabilities.shape or not (
-                np.allclose(self.dm.target_pmf, self.constellation.probabilities, atol=1e-12)
-            ):
-                raise ValueError("dm.target_pmf must match constellation.probabilities elementwise")
-            n_data_syms = self._data_symbols_per_stream()
-            if n_data_syms % self.dm.block_length != 0:
-                raise ValueError(
-                    f"data-symbols-per-stream ({n_data_syms}) must be a multiple of "
-                    f"dm.block_length ({self.dm.block_length})"
-                )
-        return self
-
-    @abstractmethod
-    def generate(
-        self,
-        *,
-        rng: np.random.Generator | None = None,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
-    ) -> TransmittedSignal:
-        """Generate a transmitted signal. Concrete subclasses implement this."""
-
-    @property
-    @abstractmethod
-    def dt_s(self) -> float:
-        """Sample period of the generated field in seconds."""
-
-    # ---- shared accessors ------------------------------------------------
-
-    @property
-    def effective_modulation_order(self) -> int:
-        """Constellation size — always defined, even when ``modulation_order`` is None."""
-        return self._resolved_constellation().modulation_order
-
-    def _resolved_constellation(self) -> ConstellationConfig:
-        """The internal :class:`ConstellationConfig` (built from
-        ``modulation_order`` or passed in directly)."""
-        return self.__dict__["_constellation"]  # type: ignore[no-any-return]
-
-    def _data_symbols_per_stream(self) -> int:
-        """Number of QAM data symbols emitted per polarisation/channel stream.
-
-        For single-carrier this equals :attr:`n_symbols`. Subclasses with a
-        different symbol/frame structure (e.g. OFDM, where one ``n_symbols``
-        increment = one OFDM frame = ``ofdm.n_data`` QAM symbols) override
-        this so the DM block-alignment check and bit-stream sizing land on
-        the actual QAM symbol count.
-        """
-        return self.n_symbols
-
-    def _bits_per_stream(self) -> int:
-        """Length of the bit-stream input expected per polarisation/channel.
-
-        Without DM: ``n_data_symbols * k``. With DM:
-        ``(n_data_symbols / block_length) * bits_per_block``.
-        """
-        n_data_syms = self._data_symbols_per_stream()
-        if self.dm is not None:
-            return (n_data_syms // self.dm.block_length) * self.dm.bits_per_block
-        return n_data_syms * self._resolved_constellation().bits_per_symbol
-
-
-# ---------------------------------------------------------------------------
-# SingleCarrierTransmitter
-# ---------------------------------------------------------------------------
-
-
-class SingleCarrierTransmitter(Transmitter):
-    """Single-carrier QAM optical transmitter (optionally dual-polarisation).
-
-    Produces one RRC-pulse-shaped baseband stream per polarisation. For WDM
-    (multiple carriers), use :class:`~hpcom.wdm.WDMTransmitter`. For OFDM,
-    use :class:`~hpcom.ofdm.OFDMTransmitter`.
-
-    Setting ``polarization="dual"`` gives bits/symbols/field a leading axis
-    of size 2; the two polarisations are seeded independently.
-    """
-
-    samples_per_symbol: int = Field(default=16, ge=2)
-    roll_off: float = Field(default=0.1, ge=0.0, le=1.0)
-    pulse_span_symbols: int = Field(default=64, ge=0)
-
-    @property
-    def dt_s(self) -> float:
-        """Sample period of the generated field in seconds."""
-        return 1.0 / (self.symbol_rate_hz * self.samples_per_symbol)
 
     def generate(
         self,
         *,
         rng: np.random.Generator | None = None,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
+        bits: npt.ArrayLike | None = None,
+        symbols: npt.ArrayLike | None = None,
     ) -> SingleCarrierSignal:
-        """Generate a single-carrier transmitted signal.
-
-        ``rng`` overrides the configured ``seed`` (useful when a parent
-        Simulation threads reproducibility across stages).
-
-        For deterministic inputs (testing, replay) pass either ``bits`` or
-        ``symbols``. Shapes:
-
-        - single-pol: ``bits=(n_symbols*k,)``, ``symbols=(n_symbols,)``.
-        - dual-pol:  ``bits=(2, n_symbols*k)``, ``symbols=(2, n_symbols)``.
-
-        ``bits`` and ``symbols`` are mutually exclusive.
-        """
-        if bits is not None and symbols is not None:
-            raise ValueError("pass at most one of `bits` or `symbols`, not both")
-
-        if self.polarization == "single":
-            single_rng = rng if rng is not None else np.random.default_rng(self.seed)
-            ch_bits, ch_syms, field = self._generate_one_channel(
-                single_rng,
-                bits=_as_1d(bits, "bits") if bits is not None else None,
-                symbols=_as_1d(symbols, "symbols") if symbols is not None else None,
-            )
-            return self._make_signal(
-                field=field, symbols=ch_syms, bits=ch_bits, polarization="single"
-            )
-
-        # Dual-pol single-carrier.
-        bps = self._bits_per_stream()
-        if bits is not None:
-            b2 = np.asarray(bits, dtype=np.uint8)
-            if b2.shape != (2, bps):
-                raise ValueError(f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}")
-        if symbols is not None:
-            s2 = np.asarray(symbols, dtype=np.complex128)
-            if s2.shape != (2, self.n_symbols):
-                raise ValueError(
-                    f"dual-pol `symbols` must have shape (2, {self.n_symbols}), got {s2.shape}"
-                )
-
-        seed_seq = _seed_seq_from(rng, self.seed)
-        pol_seqs = seed_seq.spawn(2)
-
-        per_pol_bits: list[npt.NDArray[np.uint8]] = []
-        per_pol_syms: list[ComplexArray] = []
-        per_pol_fields: list[ComplexArray] = []
-        for pol_idx, sub_seq in enumerate(pol_seqs):
-            pol_rng = np.random.default_rng(sub_seq)
-            p_bits, p_syms, p_field = self._generate_one_channel(
-                pol_rng,
-                bits=bits[pol_idx] if bits is not None else None,
-                symbols=symbols[pol_idx] if symbols is not None else None,
-            )
-            per_pol_bits.append(p_bits)
-            per_pol_syms.append(p_syms)
-            per_pol_fields.append(p_field)
-
-        return self._make_signal(
-            field=np.stack(per_pol_fields, axis=0),
-            symbols=np.stack(per_pol_syms, axis=0),
-            bits=np.stack(per_pol_bits, axis=0),
-            polarization="dual",
-        )
-
-    def _make_signal(
-        self,
-        *,
-        field: ComplexArray,
-        symbols: ComplexArray,
-        bits: npt.NDArray[np.uint8],
-        polarization: Polarization,
-    ) -> SingleCarrierSignal:
-        """Bundle a ``SingleCarrierSignal`` with this Tx's metadata."""
+        out_bits, data = self._draw_data(rng, bits, symbols)
+        slots = self._slot_stream(data)
         return SingleCarrierSignal(
-            field=field,
-            dt_s=self.dt_s,
-            symbols=symbols,
-            bits=bits,
-            samples_per_symbol=self.samples_per_symbol,
-            modulation_order=self.effective_modulation_order,
-            roll_off=self.roll_off,
-            pulse_span_symbols=self.pulse_span_symbols,
-            n_symbols=self.n_symbols,
-            polarization=polarization,
-            pilots=self.pilots,
+            transmitter=self, field=self._shape_streams(slots), symbols=slots, bits=out_bits
         )
 
-    def _generate_one_channel(
-        self,
-        rng: np.random.Generator,
-        *,
-        bits: npt.NDArray[np.uint8] | None = None,
-        symbols: ComplexArray | None = None,
-    ) -> tuple[npt.NDArray[np.uint8], ComplexArray, ComplexArray]:
-        """Generate ``(bits, symbols, baseband-field)`` for one 1-D stream.
 
-        WDM subclasses orchestrate multiple calls to this method (one per
-        channel × polarisation) to build their composite output.
-        """
-        from hpcom.modulation import nearest_symbol_indices  # local to avoid cycle
-
-        cfg = self._resolved_constellation()
-        dm = self.dm
-        n_bits = self._bits_per_stream()
-
-        if symbols is not None:
-            ch_symbols = np.asarray(symbols, dtype=np.complex128)
-            if ch_symbols.shape != (self.n_symbols,):
-                raise ValueError(
-                    f"`symbols` must have shape ({self.n_symbols},), got {ch_symbols.shape}"
-                )
-            if dm is not None:
-                indices = nearest_symbol_indices(ch_symbols, cfg.points).astype(np.intp)
-                ch_bits = dm.decode(indices)
-            else:
-                ch_bits = cfg.demap(ch_symbols)
-        elif bits is not None:
-            ch_bits = np.asarray(bits, dtype=np.uint8)
-            if ch_bits.shape != (n_bits,):
-                raise ValueError(f"`bits` must have shape ({n_bits},), got {ch_bits.shape}")
-            if dm is not None:
-                indices = dm.encode(ch_bits)
-                ch_symbols = cfg.points[indices].astype(np.complex128)
-            else:
-                ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
-        else:
-            ch_bits = rng.integers(0, 2, size=n_bits, dtype=np.uint8)
-            if dm is not None:
-                indices = dm.encode(ch_bits)
-                ch_symbols = cfg.points[indices].astype(np.complex128)
-            else:
-                ch_symbols = np.asarray(cfg.map(ch_bits), dtype=np.complex128)
-
-        if self.pilots is not None:
-            k = cfg.bits_per_symbol
-            pilot_idx = self.pilots.pilot_indices(self.n_symbols)
-            ch_symbols = ch_symbols.copy()
-            ch_symbols[pilot_idx] = self.pilots.symbol
-            ch_bits = ch_bits.copy()
-            for p in pilot_idx:
-                ch_bits[int(p) * k : (int(p) + 1) * k] = 0
-
-        n_samples = self.n_symbols * self.samples_per_symbol
-        upsampled = np.zeros(n_samples, dtype=np.complex128)
-        upsampled[:: self.samples_per_symbol] = ch_symbols
-
-        n_taps = self.pulse_span_symbols * self.samples_per_symbol + 1
-        rrc = root_raised_cosine(n_taps, self.samples_per_symbol, self.roll_off)
-        full = np.convolve(upsampled, rrc, mode="full")
-        delay = (n_taps - 1) // 2
-        field = full[delay : delay + n_samples].astype(np.complex128)
-        return ch_bits, ch_symbols, field
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers (used by SC and WDM/OFDM subclasses living in other modules)
-# ---------------------------------------------------------------------------
-
-
-def _as_1d(arr: np.ndarray, name: str) -> np.ndarray:
-    """Validate that a deterministic-input array is 1-D (single-channel path)."""
-    if arr.ndim != 1:
-        raise ValueError(f"`{name}` must be 1-D for a single-channel Transmitter, got {arr.ndim}-D")
-    return arr
-
-
-def _seed_seq_from(rng: np.random.Generator | None, seed: int | None) -> np.random.SeedSequence:
-    """Build a reproducible SeedSequence from either a generator or a seed."""
-    if rng is not None:
-        return np.random.SeedSequence(int(rng.integers(0, 2**63 - 1)))
-    return np.random.SeedSequence(seed)
+# Resolve forward references (signal classes refer to transmitters defined after them).
+SingleCarrierSignal.model_rebuild()

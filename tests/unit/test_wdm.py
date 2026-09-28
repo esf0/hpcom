@@ -1,35 +1,41 @@
-"""WDM (T5.4) — transmitter superposition and receiver demux."""
+"""WDM grid configuration and validation."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
+from hpcom import SingleCarrierTransmitter, WDMConfig, WDMReceiver, WDMTransmitter
 
 
-def test_wdm_config_rejects_lt_two_channels():
-    with pytest.raises(ValueError, match="n_channels"):
+def test_config_rejects_fewer_than_two_channels():
+    with pytest.raises(ValidationError, match="n_channels"):
         WDMConfig(n_channels=1, spacing_hz=50e9)
 
 
-def test_wdm_config_rejects_non_positive_spacing():
-    with pytest.raises(ValueError, match="spacing_hz"):
+def test_config_rejects_non_positive_spacing():
+    with pytest.raises(ValidationError, match="spacing_hz"):
         WDMConfig(n_channels=3, spacing_hz=0.0)
 
 
-def test_wdm_channel_frequencies_are_centered():
-    cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
-    np.testing.assert_allclose(cfg.channel_frequencies_hz(), [-50e9, 0.0, 50e9])
-    # Even N → symmetric around 0, no channel exactly at 0.
-    cfg2 = WDMConfig(n_channels=4, spacing_hz=25e9)
-    np.testing.assert_allclose(cfg2.channel_frequencies_hz(), [-37.5e9, -12.5e9, 12.5e9, 37.5e9])
+@pytest.mark.parametrize(
+    ("n", "spacing", "expected"),
+    [
+        (3, 50e9, [-50e9, 0.0, 50e9]),
+        (4, 25e9, [-37.5e9, -12.5e9, 12.5e9, 37.5e9]),
+        (2, 100e9, [-50e9, 50e9]),
+    ],
+)
+def test_channel_frequencies_are_centred_on_the_carrier(n, spacing, expected):
+    cfg = WDMConfig(n_channels=n, spacing_hz=spacing)
+    np.testing.assert_allclose(cfg.channel_frequencies_hz(), expected)
+    assert cfg.total_bandwidth_hz == pytest.approx((n - 1) * spacing)
 
 
-def test_transmitter_rejects_undersampled_wdm():
-    # 5 channels × 50 GHz spacing → outer center at ±100 GHz; with Rs=10 GHz
-    # and sps=16 the wideband fs is 160 GHz, far below the 2 · 105 GHz needed.
-    with pytest.raises(ValueError, match="Nyquist"):
+def test_transmitter_rejects_a_sample_rate_that_cannot_hold_the_grid():
+    # 5 × 50 GHz: band edge ±105.5 GHz, but R_s·sps = 160 GHz → need ≥ 211 GHz.
+    with pytest.raises(ValidationError, match=r"cannot hold 5 channels.*at least 22"):
         WDMTransmitter(
             modulation_order=4,
             symbol_rate_hz=10e9,
@@ -39,98 +45,69 @@ def test_transmitter_rejects_undersampled_wdm():
         )
 
 
-def test_three_channel_wdm_b2b_center_channel_ber_zero():
-    """3 channels at 50 GHz spacing; demux center, expect BER == 0.
-
-    Acceptance criterion for T5.4 in docs/spec/hpcom-v1-tasks.md.
-    """
-    cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
-    # sps must cover 2 · (50e9 + Rs·(1+ro)/2) = 2 · (50e9 + 5.5e9) = 111 GHz.
-    # With Rs=10 GHz, sps=16 → fs=160 GHz, comfortable.
-    tx = WDMTransmitter(
-        modulation_order=16,
-        symbol_rate_hz=10e9,
-        n_symbols=2048,
-        samples_per_symbol=16,
-        roll_off=0.1,
-        pulse_span_symbols=32,
-        seed=0,
-        wdm=cfg,
+@pytest.mark.parametrize(
+    ("n_channels", "n_symbols", "ok"),
+    [(3, 1024, True), (3, 1000, False), (4, 1024, True), (4, 1008, False)],
+)
+def test_circular_signals_need_carriers_on_the_fft_grid(n_channels, n_symbols, ok):
+    """Δf·n_symbols/R_s (/2 for even N) must be an integer for a periodic signal."""
+    kw = dict(
+        modulation_order=4,
+        symbol_rate_hz=32e9,
+        n_symbols=n_symbols,
+        samples_per_symbol=8,
+        wdm=WDMConfig(n_channels=n_channels, spacing_hz=50e9),
     )
-    sent = tx.generate()
-
-    # Per-channel arrays.
-    assert sent.bits.shape == (3, 2048 * 4)
-    assert sent.symbols.shape == (3, 2048)
-    assert sent.field.ndim == 1
-    assert sent.wdm is cfg
-
-    rx = WDMReceiver(
-        modulation_order=16,
-        samples_per_symbol=tx.samples_per_symbol,
-        roll_off=tx.roll_off,
-        pulse_span_symbols=tx.pulse_span_symbols,
-        wdm=cfg,
-        wdm_channel=1,  # center
-    )
-    received = rx.receive(sent.field, dt_s=sent.dt_s)
-
-    skip = tx.pulse_span_symbols
-    bps = 4
-    sent_bits = sent.bits[1].reshape(-1, bps)[skip:-skip]
-    rx_bits = received.bits.reshape(-1, bps)[skip:-skip]
-    n_errors = int(np.sum(sent_bits != rx_bits))
-    assert n_errors == 0, f"WDM center-channel BER must be 0, got {n_errors} bit errors"
+    if ok:
+        WDMTransmitter(**kw)
+    else:
+        with pytest.raises(ValidationError, match=r"not periodic.*multiple of"):
+            WDMTransmitter(**kw)
+    # Linear convolution does not require periodicity.
+    WDMTransmitter(**kw, pulse_span_symbols=16, convolution="linear")
 
 
-@pytest.mark.parametrize("ch", [0, 1, 2])
-def test_three_channel_wdm_b2b_all_channels_ber_zero(ch: int):
-    cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
+def test_wdm_transmitter_is_a_sibling_not_a_subclass_of_single_carrier():
     tx = WDMTransmitter(
         modulation_order=4,
-        symbol_rate_hz=10e9,
-        n_symbols=1024,
-        samples_per_symbol=16,
-        roll_off=0.1,
-        pulse_span_symbols=32,
-        seed=1,
-        wdm=cfg,
-    )
-    sent = tx.generate()
-    rx = WDMReceiver(
-        modulation_order=4,
-        samples_per_symbol=tx.samples_per_symbol,
-        roll_off=tx.roll_off,
-        pulse_span_symbols=tx.pulse_span_symbols,
-        wdm=cfg,
-        wdm_channel=ch,
-    )
-    received = rx.receive(sent.field, dt_s=sent.dt_s)
-
-    skip = tx.pulse_span_symbols
-    sent_bits = sent.bits[ch].reshape(-1, 2)[skip:-skip]
-    rx_bits = received.bits.reshape(-1, 2)[skip:-skip]
-    n_errors = int(np.sum(sent_bits != rx_bits))
-    assert n_errors == 0, f"WDM channel {ch} BER must be 0, got {n_errors} bit errors"
-
-
-def test_wdm_seed_makes_generation_deterministic():
-    cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
-    kwargs = dict(
-        modulation_order=4,
-        symbol_rate_hz=10e9,
+        symbol_rate_hz=32e9,
         n_symbols=64,
-        samples_per_symbol=16,
-        seed=7,
-        wdm=cfg,
+        samples_per_symbol=8,
+        wdm=WDMConfig(n_channels=3, spacing_hz=50e9),
     )
-    a = WDMTransmitter(**kwargs).generate()
-    b = WDMTransmitter(**kwargs).generate()
-    np.testing.assert_array_equal(a.bits, b.bits)
-    np.testing.assert_array_equal(a.field, b.field)
+    assert not isinstance(tx, SingleCarrierTransmitter)
+    assert tx.n_channels == 3
 
 
-def test_receiver_rejects_out_of_range_wdm_channel():
+def test_receiver_channel_selection_validation():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
-    with pytest.raises(ValueError, match="wdm_channel"):
-        WDMReceiver(modulation_order=4, wdm=cfg, wdm_channel=3)
+    assert WDMReceiver(modulation_order=4, wdm=cfg).selected_channels == (0, 1, 2)
+    assert WDMReceiver(modulation_order=4, wdm=cfg, channels=(2, 0)).selected_channels == (2, 0)
+    with pytest.raises(ValidationError, match=r"outside \[0, 3\)"):
+        WDMReceiver(modulation_order=4, wdm=cfg, channels=(3,))
+    with pytest.raises(ValidationError, match="unique"):
+        WDMReceiver(modulation_order=4, wdm=cfg, channels=(1, 1))
+    with pytest.raises(ValidationError, match="non-empty"):
+        WDMReceiver(modulation_order=4, wdm=cfg, channels=())
+
+
+def test_wdm_config_is_required():
+    with pytest.raises(ValidationError, match="wdm"):
+        WDMTransmitter(modulation_order=4, symbol_rate_hz=32e9, n_symbols=64)
+    with pytest.raises(ValidationError, match="wdm"):
+        WDMReceiver(modulation_order=4)
+
+
+def test_compatibility_issues_name_every_mismatch():
+    cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
+    tx = WDMTransmitter(
+        modulation_order=16, symbol_rate_hz=32e9, n_symbols=64, samples_per_symbol=8, wdm=cfg
+    )
+    rx = WDMReceiver(
+        modulation_order=4, samples_per_symbol=4, wdm=WDMConfig(n_channels=3, spacing_hz=75e9)
+    )
+    issues = "\n".join(rx.compatibility_issues(tx))
+    for word in ("constellations differ", "samples_per_symbol", "wdm"):
+        assert word in issues
+    sc = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=32e9, n_symbols=64)
+    assert rx.compatibility_issues(sc) == ["WDMReceiver cannot receive a SingleCarrierTransmitter"]

@@ -1,58 +1,87 @@
-"""Output container for a :class:`hpcom.simulation.Simulation` run."""
+"""Output of a :class:`~hpcom.simulation.Simulation` run."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from hpcom._typing import ComplexArray
-from hpcom.metrics import Metrics
+from hpcom._model import ComplexArrayView, HpcomModel, Polymorphic
+from hpcom.metrics import Metrics, StreamMetrics
+from hpcom.receiver import ReceivedSymbols
+from hpcom.transmitter import TransmittedSignal
+
+__all__ = ["Result", "SimulationMetadata"]
 
 
-class SimulationMetadata(BaseModel):
-    """Reproducibility + provenance for a single run."""
+class SimulationMetadata(HpcomModel):
+    """Provenance of one run — enough to reproduce it exactly.
 
-    model_config = ConfigDict(frozen=True)
+    ``config`` is the full ``Simulation.model_dump(mode="json")``. To rerun::
+
+        sim = Simulation.model_validate(meta.config).replace(seed=meta.seed_entropy)
+
+    ``seed_entropy`` is the entropy of the root :class:`numpy.random.SeedSequence`
+    (equal to ``seed`` when one was given, otherwise the OS entropy drawn).
+    """
 
     seed: int | None
+    seed_entropy: int
+    discarded_symbols: int = Field(ge=0)
     runtime_s: float
+    hpcom_version: str
+    numpy_version: str
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class Result(BaseModel):
-    """End-to-end simulation output.
+class Result(HpcomModel):
+    """Signals, decoded symbols, metrics and provenance of a simulation run.
 
-    Carries enough state for the user to inspect signals, recompute custom
-    metrics, or re-run with the same config.
+    Attributes
+    ----------
+    transmitted
+        The generated :class:`~hpcom.transmitter.TransmittedSignal`.
+    received_field
+        Field at the link output (before the receiver).
+    received
+        Receiver output (:class:`~hpcom.receiver.ReceivedSymbols`).
+    metrics
+        Aggregate over all scored streams.
+    stream_metrics
+        One entry per stream (polarisation × channel).
+    metadata
+        :class:`SimulationMetadata`.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    received_field: ComplexArray
-    decoded_symbols: ComplexArray
-    decoded_bits: npt.NDArray[np.uint8]
+    transmitted: Polymorphic[TransmittedSignal]
+    received_field: ComplexArrayView
+    received: Polymorphic[ReceivedSymbols]
     metrics: Metrics
+    stream_metrics: tuple[StreamMetrics, ...]
     metadata: SimulationMetadata
 
+    def stream(
+        self, *, polarization: int | None = None, channel: int | None = None
+    ) -> StreamMetrics:
+        """Metrics of the stream with the given polarisation / channel index."""
+        for m in self.stream_metrics:
+            if m.polarization == polarization and m.channel == channel:
+                return m
+        raise KeyError(f"no stream with polarization={polarization}, channel={channel}")
+
     def to_dict(self) -> dict[str, Any]:
-        """Serializable summary (arrays excluded; use ``np.savez`` for those)."""
+        """JSON-serialisable summary: metrics and metadata (no arrays)."""
         return {
-            "metrics": self.metrics.model_dump(),
-            "metadata": {
-                "seed": self.metadata.seed,
-                "runtime_s": self.metadata.runtime_s,
-                "config": self.metadata.config,
-            },
-            "n_samples": int(self.received_field.size),
-            "n_decoded_symbols": int(self.decoded_symbols.size),
+            "metrics": self.metrics.model_dump(mode="json"),
+            "stream_metrics": [m.model_dump(mode="json") for m in self.stream_metrics],
+            "metadata": self.metadata.model_dump(mode="json"),
         }
 
     def __repr__(self) -> str:
         m = self.metrics
         return (
-            f"Result(ber={m.ber:.3e}, evm_rms={m.evm_rms:.3e}, "
-            f"n_bits={m.n_bits}, runtime={self.metadata.runtime_s:.3f}s)"
+            f"Result(ber={m.ber:.3e}, snr={m.snr_db:.2f} dB, evm={m.evm_rms:.3e}, "
+            f"gmi={m.gmi_bits:.3f} b/sym, n_bits={m.n_bits}, runtime={self.metadata.runtime_s:.3f}s)"
         )
+
+    __str__ = __repr__

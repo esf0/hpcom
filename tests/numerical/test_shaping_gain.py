@@ -147,3 +147,46 @@ def test_64qam_maxwell_boltzmann_shaping_gain_at_4_bits():
         f"  shaping gain = {gain_db:.3f} dB"
     )
     assert gain_db >= 0.5, f"shaping gain {gain_db:.3f} dB < 0.5 dB acceptance threshold"
+
+
+# ---------------------------------------------------------------------------
+# The same physics through hpcom's own pipeline
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_mi(cfg: ConstellationConfig, snr_db: float, seed: int) -> float:
+    from helpers import matched_receiver_kwargs
+    from hpcom import (
+        AdditiveNoise,
+        Link,
+        Simulation,
+        SingleCarrierReceiver,
+        SingleCarrierTransmitter,
+    )
+
+    tx = SingleCarrierTransmitter(
+        constellation=cfg, symbol_rate_hz=32e9, n_symbols=1 << 15, samples_per_symbol=2
+    )
+    noise = AdditiveNoise.for_snr(
+        snr_db, power_per_polarization_w=tx.launch_power_per_polarization_w, symbol_rate_hz=32e9
+    )
+    rx = SingleCarrierReceiver(**matched_receiver_kwargs(tx, equalize="data_aided"))
+    return (
+        Simulation(transmitter=tx, link=Link(elements=(noise,)), receiver=rx, seed=seed)
+        .run()
+        .metrics.mi_bits
+    )
+
+
+@pytest.mark.slow
+def test_pipeline_mutual_information_matches_the_standalone_estimate_and_shows_shaping_gain():
+    """Tx → AWGN → Rx → Metrics reports the same MI as a direct AWGN Monte-Carlo, and at
+    12 dB the Maxwell–Boltzmann 64-QAM carries more information than uniform 64-QAM."""
+    points, labels = square_qam(64)
+    uniform = ConstellationConfig.from_square_qam(64)
+    shaped = ConstellationConfig.from_points(points, labels, maxwell_boltzmann(points, nu=1.2))
+    rng = np.random.default_rng(7)
+    for cfg in (uniform, shaped):
+        direct = _mutual_information_awgn(cfg.points, cfg.pmf, 12.0, 60_000, rng)
+        assert _pipeline_mi(cfg, 12.0, seed=1) == pytest.approx(direct, abs=0.03)
+    assert _pipeline_mi(shaped, 12.0, seed=2) > _pipeline_mi(uniform, 12.0, seed=2) + 0.1

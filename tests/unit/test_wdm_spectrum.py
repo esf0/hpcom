@@ -1,221 +1,93 @@
-"""WDM spectrum & isolation (Test D): does the comb actually look like a comb?
-
-Spectral checks for WDM Tx output and Rx demux:
-
-- channel i's energy is centered at f_i with the expected per-channel bandwidth
-- a single-tone-per-channel (constant symbols) lands within one FFT bin of f_i
-- after demuxing channel i, the adjacent channels are suppressed by a large
-  margin (matched-filter selectivity)
-- per-channel deterministic-symbol round-trip survives the WDM mux/demux
-"""
+"""WDM composite spectrum: channel placement, band limits, cross-channel isolation."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from hpcom.transmitter import SingleCarrierTransmitter
-from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
+from helpers import PULSE_MODES, trim, wdm_pair
 
 
-def _wdm_tx(*, n_channels: int = 3, **overrides: object) -> WDMTransmitter:
-    """Reasonable defaults: 3 channels at 50 GHz, Rs=10 GHz, sps high enough."""
-    base = dict(
+def _psd(sig):
+    return np.abs(np.fft.fft(sig.field)) ** 2, np.fft.fftfreq(sig.field.shape[-1], sig.dt_s)
+
+
+@pytest.mark.parametrize("pulse", PULSE_MODES)
+def test_energy_sits_on_the_channel_grid(pulse):
+    tx, _ = wdm_pair(modulation_order=16, n_symbols=2048, samples_per_symbol=16, seed=0, **pulse)
+    psd, f = _psd(tx.generate())
+    rs, spacing = tx.symbol_rate_hz, tx.wdm.spacing_hz
+    for fc in tx.wdm.channel_frequencies_hz():
+        in_band = psd[np.abs(f - fc) <= rs / 2].sum()
+        guard = psd[np.abs(f - (fc + spacing / 2)) <= (spacing - rs * (1 + tx.roll_off)) / 2].sum()
+        assert in_band > 1e3 * guard
+    outer = abs(tx.wdm.channel_frequencies_hz()[0]) + rs * (1 + tx.roll_off) / 2
+    assert psd[np.abs(f) > outer * 1.01].sum() / psd.sum() < 1e-3
+
+
+def test_exact_rrc_channels_have_no_energy_outside_their_band():
+    tx, _ = wdm_pair(modulation_order=16, n_symbols=2048, samples_per_symbol=16, seed=0)
+    psd, f = _psd(tx.generate())
+    half_band = tx.symbol_rate_hz * (1 + tx.roll_off) / 2 * (1 + 1e-9)
+    in_some_band = np.zeros_like(f, dtype=bool)
+    for fc in tx.wdm.channel_frequencies_hz():
+        in_some_band |= np.abs(f - fc) <= half_band
+    assert psd[~in_some_band].max() < 1e-24 * psd.max()
+
+
+def test_constant_symbols_put_a_tone_exactly_on_each_carrier_bin():
+    tx, _ = wdm_pair(modulation_order=4, n_symbols=512, samples_per_symbol=16)
+    tones = np.array([1 + 0j, 1j, -1 + 0j])
+    sig = tx.generate(symbols=np.tile(tones[:, None], (1, 512)))
+    psd, f = _psd(sig)
+    peaks = np.sort(f[np.argsort(psd)[-3:]])
+    np.testing.assert_allclose(peaks, tx.wdm.channel_frequencies_hz(), rtol=0, atol=1e-3)
+    # Circular + on-grid carriers: all energy is in exactly three bins.
+    assert np.sort(psd)[-4] < 1e-20 * psd.max()
+
+
+@pytest.mark.parametrize(
+    ("pulse", "min_rejection_db"),
+    [
+        pytest.param({}, 250.0, id="exact-circular"),
+        pytest.param({"pulse_span_symbols": 32}, 30.0, id="fir-circular"),
+        pytest.param({"pulse_span_symbols": 32, "convolution": "linear"}, 30.0, id="fir-linear"),
+    ],
+)
+@pytest.mark.parametrize("demux", [0, 1, 2])
+def test_demultiplexer_rejects_neighbouring_channels(demux, pulse, min_rejection_db):
+    """Only a neighbour is modulated; the demuxed channel must see (almost) nothing.
+
+    The exact RRC is strictly band-limited, so with 50 GHz spacing ≥ R_s(1+β)
+    the rejection is limited only by rounding; the truncated FIR leaks.
+    """
+    tx, rx = wdm_pair(
         modulation_order=4,
-        symbol_rate_hz=10e9,
-        n_symbols=2048,
-        samples_per_symbol=16,
-        roll_off=0.1,
-        pulse_span_symbols=32,
-        seed=0,
-        wdm=WDMConfig(n_channels=n_channels, spacing_hz=50e9),
-    )
-    base.update(overrides)
-    return WDMTransmitter(**base)  # type: ignore[arg-type]
-
-
-def test_wdm_spectrum_peaks_at_expected_channel_frequencies():
-    """Average |FFT|² of the composite WDM field shows clear peaks at each f_i."""
-    tx = _wdm_tx()
-    sent = tx.generate()
-    fs = 1.0 / sent.dt_s
-    n = sent.field.size
-    spectrum = np.fft.fftshift(np.fft.fft(sent.field))
-    freqs = np.fft.fftshift(np.fft.fftfreq(n, d=sent.dt_s))
-    psd = np.abs(spectrum) ** 2
-
-    assert tx.wdm is not None
-    expected_centers = tx.wdm.channel_frequencies_hz()
-    rs = tx.symbol_rate_hz
-    for f_expected in expected_centers:
-        # Energy in the ±Rs/2 window around the channel center must dominate
-        # the energy in a same-width window equidistant *between* two channels
-        # (a "guard band").
-        in_band = psd[np.abs(freqs - f_expected) <= rs / 2].sum()
-        guard_band = psd[np.abs(freqs - (f_expected + tx.wdm.spacing_hz / 2)) <= rs / 2].sum()
-        assert in_band > 50 * guard_band, (
-            f"channel at {f_expected:.2e} Hz: in-band {in_band:.3e} vs "
-            f"guard {guard_band:.3e} (ratio {in_band / guard_band:.1f}, "
-            f"expected >50)"
-        )
-    # And no significant energy outside the outer channel + Rs/2 margin.
-    outer = abs(float(expected_centers[-1])) + rs
-    out_of_band = psd[np.abs(freqs) > outer].sum()
-    total = psd.sum()
-    assert out_of_band / total < 0.02, (
-        f"{out_of_band / total:.3%} of energy outside [-{outer:.2e}, +{outer:.2e}] Hz "
-        f"(fs={fs:.2e} Hz)"
-    )
-
-
-def test_single_tone_per_channel_lands_at_correct_frequency():
-    """Drive each channel with a constant symbol → that channel becomes a CW
-    tone at exactly f_i in the composite field."""
-    n_ch = 3
-    cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    tx = WDMTransmitter(
-        modulation_order=4,
-        symbol_rate_hz=10e9,
         n_symbols=512,
         samples_per_symbol=16,
-        pulse_span_symbols=32,
-        wdm=cfg,
+        rx_kwargs={"equalize": "none"},
+        **pulse,
     )
-    # Constant symbols per channel: ch0 = 1+0j, ch1 = 0+1j, ch2 = -1+0j.
-    constants = np.array([1 + 0j, 0 + 1j, -1 + 0j], dtype=np.complex128)
-    symbols = np.tile(constants[:, None], (1, tx.n_symbols))
-    sent = tx.generate(symbols=symbols)
-    fs = 1.0 / sent.dt_s
-    n = sent.field.size
-    spectrum = np.fft.fftshift(np.fft.fft(sent.field))
-    freqs = np.fft.fftshift(np.fft.fftfreq(n, d=sent.dt_s))
-    psd = np.abs(spectrum) ** 2
+    skip = tx.transient_symbols
 
-    # Pick the largest peak in a narrow window around each expected f_i and
-    # verify it sits within ±2 FFT bins of f_i.
-    df = fs / n
-    for f_expected in cfg.channel_frequencies_hz():
-        window = np.abs(freqs - f_expected) <= 2 * tx.symbol_rate_hz
-        peak_idx_local = int(np.argmax(psd[window]))
-        peak_freq = freqs[window][peak_idx_local]
-        assert abs(peak_freq - f_expected) <= 2 * df, (
-            f"channel peak landed at {peak_freq:.3e} Hz, expected {f_expected:.3e} "
-            f"(within ±2 bins = {2 * df:.2e} Hz)"
-        )
+    def response(driven: int) -> float:
+        syms = np.zeros((3, 512), dtype=complex)
+        syms[driven] = 1.0
+        sig = tx.generate(symbols=syms)
+        out = rx.receive(sig.field, sig.dt_s).symbols[demux]
+        return float(np.mean(np.abs(trim(out, 1, skip)) ** 2))
+
+    own = response(demux)
+    for neighbour in {0, 1, 2} - {demux}:
+        rejection = 10 * np.log10(own / max(response(neighbour), 1e-300))
+        assert rejection > min_rejection_db, f"neighbour {neighbour}: {rejection:.1f} dB"
 
 
-@pytest.mark.parametrize("ch_demux", [0, 1, 2])
-def test_demux_channel_suppresses_neighbours_by_at_least_30_db(ch_demux: int):
-    """Drive *only* a neighbour channel with a CW tone; demux a different
-    channel. The post-matched-filter output should be ~30 dB below the
-    same channel's response when driven with the same tone."""
-    n_ch = 3
-    cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    base_kwargs = dict(
-        modulation_order=4,
-        symbol_rate_hz=10e9,
-        n_symbols=512,
-        samples_per_symbol=16,
-        pulse_span_symbols=32,
-        wdm=cfg,
-    )
-    tx = WDMTransmitter(**base_kwargs)  # type: ignore[arg-type]
-
-    # Reference: drive only the demux'd channel with the tone.
-    ref_symbols = np.zeros((n_ch, tx.n_symbols), dtype=np.complex128)
-    ref_symbols[ch_demux] = 1.0 + 0.0j
-    sent_ref = tx.generate(symbols=ref_symbols)
-    rx = WDMReceiver(
-        modulation_order=4,
-        samples_per_symbol=tx.samples_per_symbol,
-        roll_off=tx.roll_off,
-        pulse_span_symbols=tx.pulse_span_symbols,
-        wdm=cfg,
-        wdm_channel=ch_demux,
-    )
-    rx_ref = rx.receive(sent_ref.field, dt_s=sent_ref.dt_s)
-    skip = tx.pulse_span_symbols
-    ref_power = float(np.mean(np.abs(rx_ref.symbols[skip:-skip]) ** 2))
-
-    # Cross-channel: drive *only* a neighbour, demux ch_demux → should be tiny.
-    for neighbour in range(n_ch):
-        if neighbour == ch_demux:
-            continue
-        cross_symbols = np.zeros((n_ch, tx.n_symbols), dtype=np.complex128)
-        cross_symbols[neighbour] = 1.0 + 0.0j
-        sent_cross = WDMTransmitter(**base_kwargs).generate(symbols=cross_symbols)  # type: ignore[arg-type]
-        rx_cross = rx.receive(sent_cross.field, dt_s=sent_cross.dt_s)
-        cross_power = float(np.mean(np.abs(rx_cross.symbols[skip:-skip]) ** 2))
-        rejection_db = 10.0 * np.log10(ref_power / max(cross_power, 1e-30))
-        assert rejection_db > 30, (
-            f"demux ch={ch_demux} sees neighbour ch={neighbour} at only "
-            f"{rejection_db:.1f} dB below the same-channel response (need >30 dB)"
-        )
-
-
-def test_per_channel_deterministic_bits_round_trip_in_wdm():
-    """Feed channel-specific bit patterns into all channels of a WDM Tx, then
-    demux each channel at the Rx and verify exact bit-level recovery on the
-    steady-state region. Catches per-channel cross-talk and seed leakage."""
-    n_ch = 3
-    cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    tx = WDMTransmitter(
-        modulation_order=4,
-        symbol_rate_hz=10e9,
-        n_symbols=2048,
-        samples_per_symbol=16,
-        roll_off=0.1,
-        pulse_span_symbols=32,
-        wdm=cfg,
-    )
-    k = 2
-    rng = np.random.default_rng(123)
-    bits = rng.integers(0, 2, size=(n_ch, tx.n_symbols * k), dtype=np.uint8)
+@pytest.mark.parametrize("pulse", PULSE_MODES)
+def test_per_channel_bit_patterns_survive_mux_and_demux(pulse):
+    tx, rx = wdm_pair(modulation_order=4, n_symbols=2048, samples_per_symbol=16, **pulse)
+    bits = np.random.default_rng(123).integers(0, 2, (3, tx.n_bits_per_stream), dtype=np.uint8)
     sent = tx.generate(bits=bits)
-    np.testing.assert_array_equal(sent.bits, bits)
-
-    for ch in range(n_ch):
-        rx = WDMReceiver(
-            modulation_order=4,
-            samples_per_symbol=tx.samples_per_symbol,
-            roll_off=tx.roll_off,
-            pulse_span_symbols=tx.pulse_span_symbols,
-            wdm=cfg,
-            wdm_channel=ch,
-        )
-        received = rx.receive(sent.field, dt_s=sent.dt_s)
-        skip = tx.pulse_span_symbols
-        sent_bits = bits[ch].reshape(-1, k)[skip:-skip]
-        rx_bits = received.bits.reshape(-1, k)[skip:-skip]
-        n_err = int(np.sum(sent_bits != rx_bits))
-        assert n_err == 0, f"ch={ch}: {n_err} bit errors after WDM round-trip"
-
-
-def test_wdm_tx_total_power_equals_sum_of_per_channel_powers():
-    """Composite power should equal the sum of per-channel baseband powers
-    (channels are orthogonal in frequency, so cross terms time-average to 0)."""
-    n_ch = 3
-    cfg = WDMConfig(n_channels=n_ch, spacing_hz=50e9)
-    tx = WDMTransmitter(
-        modulation_order=16,
-        symbol_rate_hz=10e9,
-        n_symbols=4096,
-        samples_per_symbol=16,
-        pulse_span_symbols=32,
-        seed=0,
-        wdm=cfg,
-    )
-    sent = tx.generate()
-    composite_power = float(np.mean(np.abs(sent.field) ** 2))
-    # Expected: n_channels times per-channel mean power, since channels are
-    # orthogonal in frequency and the composite is their sum.
-    single_tx = SingleCarrierTransmitter(
-        modulation_order=16,
-        symbol_rate_hz=tx.symbol_rate_hz,
-        n_symbols=tx.n_symbols,
-        samples_per_symbol=tx.samples_per_symbol,
-        pulse_span_symbols=tx.pulse_span_symbols,
-        seed=0,
-    )
-    per_ch_power = float(np.mean(np.abs(single_tx.generate().field) ** 2))
-    np.testing.assert_allclose(composite_power, n_ch * per_ch_power, rtol=0.05)
+    received = rx.receive(sent.field, sent.dt_s)
+    skip = tx.transient_symbols
+    np.testing.assert_array_equal(trim(received.bits, 2, skip), trim(bits, 2, skip))
