@@ -55,9 +55,7 @@ class Simulation(BaseModel):
             )
         tx = self._sc_transmitter()
         if tx.samples_per_symbol != self.receiver.samples_per_symbol:
-            raise ValueError(
-                "transmitter and receiver samples_per_symbol must match"
-            )
+            raise ValueError("transmitter and receiver samples_per_symbol must match")
         if self.transmitter.polarization != self.receiver.polarization:
             raise ValueError(
                 "transmitter and receiver polarization must match: "
@@ -96,13 +94,13 @@ class Simulation(BaseModel):
 
         # Seed split: Tx and link draw from independent sub-streams.
         seed_seq = np.random.SeedSequence(self.seed) if self.seed is not None else None
-        tx_seed_seq, link_seed_seq = (
-            seed_seq.spawn(2) if seed_seq is not None else (None, None)
-        )
+        tx_seed_seq, link_seed_seq = seed_seq.spawn(2) if seed_seq is not None else (None, None)
         tx_rng = (
             None
             if self.transmitter.seed is not None
-            else np.random.default_rng(tx_seed_seq) if tx_seed_seq is not None else None
+            else np.random.default_rng(tx_seed_seq)
+            if tx_seed_seq is not None
+            else None
         )
         link_rng = np.random.default_rng(link_seed_seq) if link_seed_seq is not None else None
 
@@ -136,10 +134,12 @@ class Simulation(BaseModel):
 
         rx_syms = received.symbols[..., skip:end]
         # EVM measured against each received symbol's hard decision.
-        decision_bits = (received.bits.reshape(*received.bits.shape[:-1], -1, bps)
-                         [..., skip:end, :]
-                         .reshape(*received.bits.shape[:-1], -1))
-        ref_for_evm = bits_to_symbols(decision_bits.ravel(), self.receiver.effective_modulation_order)
+        decision_bits = received.bits.reshape(*received.bits.shape[:-1], -1, bps)[
+            ..., skip:end, :
+        ].reshape(*received.bits.shape[:-1], -1)
+        ref_for_evm = bits_to_symbols(
+            decision_bits.ravel(), self.receiver.effective_modulation_order
+        )
         evm = evm_rms(rx_syms.ravel(), ref_for_evm)
 
         metrics = Metrics(ber=ber, evm_rms=evm, n_bits=n_bits, n_bit_errors=n_errors)

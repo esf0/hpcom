@@ -193,9 +193,7 @@ def test_pilots_in_wdm_per_channel_recovery():
     # Per-channel pilot insertion check.
     pilot_idx = cfg_pilot.pilot_indices(tx.n_symbols)
     for ch in range(cfg_wdm.n_channels):
-        np.testing.assert_allclose(
-            sent.symbols[ch, pilot_idx], cfg_pilot.symbol, atol=1e-12
-        )
+        np.testing.assert_allclose(sent.symbols[ch, pilot_idx], cfg_pilot.symbol, atol=1e-12)
 
     for ch in range(cfg_wdm.n_channels):
         rx = WDMReceiver(
@@ -218,8 +216,12 @@ def test_no_pilots_data_bits_returns_full_bits():
     tx = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8, seed=0)
     sent = tx.generate()
     assert sent.data_bits() is sent.bits
-    rx = SingleCarrierReceiver(modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
-                  roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols)
+    rx = SingleCarrierReceiver(
+        modulation_order=4,
+        samples_per_symbol=tx.samples_per_symbol,
+        roll_off=tx.roll_off,
+        pulse_span_symbols=tx.pulse_span_symbols,
+    )
     received = rx.receive(sent.field)
     assert received.data_bits() is received.bits
 
@@ -232,7 +234,5 @@ def test_pilot_count_and_data_count_partition_n_symbols():
         assert len(cfg.pilot_indices(n)) == cfg.n_pilots(n)
         assert len(cfg.data_indices(n)) == cfg.n_data(n)
         # Indices are disjoint and cover the full range.
-        all_idx = np.sort(
-            np.concatenate([cfg.pilot_indices(n), cfg.data_indices(n)])
-        )
+        all_idx = np.sort(np.concatenate([cfg.pilot_indices(n), cfg.data_indices(n)]))
         np.testing.assert_array_equal(all_idx, np.arange(n))

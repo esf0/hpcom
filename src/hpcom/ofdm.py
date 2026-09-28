@@ -79,9 +79,7 @@ class OFDMConfig(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> OFDMConfig:
         if not _is_power_of_two(self.n_subcarriers) or self.n_subcarriers < 4:
-            raise ValueError(
-                f"n_subcarriers must be a power of 2 ≥ 4, got {self.n_subcarriers}"
-            )
+            raise ValueError(f"n_subcarriers must be a power of 2 ≥ 4, got {self.n_subcarriers}")
         if not 0 <= self.cp_len < self.n_subcarriers:
             raise ValueError(
                 f"cp_len must satisfy 0 ≤ cp_len < n_subcarriers "
@@ -95,21 +93,14 @@ class OFDMConfig(BaseModel):
 
         pilots = tuple(int(p) for p in self.pilot_subcarrier_indices)
         if len(set(pilots)) != len(pilots):
-            raise ValueError(
-                f"pilot_subcarrier_indices must be unique, got {pilots}"
-            )
+            raise ValueError(f"pilot_subcarrier_indices must be unique, got {pilots}")
         for p in pilots:
             if not 0 <= p < self.n_subcarriers:
-                raise ValueError(
-                    f"pilot subcarrier {p} is out of range "
-                    f"[0, {self.n_subcarriers})"
-                )
+                raise ValueError(f"pilot subcarrier {p} is out of range [0, {self.n_subcarriers})")
         guard_set = set(int(i) for i in self.guard_subcarrier_indices())
         bad = guard_set & set(pilots)
         if bad:
-            raise ValueError(
-                f"pilot subcarriers {sorted(bad)} collide with the guard band"
-            )
+            raise ValueError(f"pilot subcarriers {sorted(bad)} collide with the guard band")
         # Canonicalise the pilot tuple (sorted, ints). With frozen=True the
         # public setattr is blocked, but model_validator can assign via
         # __dict__ before pydantic finalises the instance.
@@ -135,9 +126,7 @@ class OFDMConfig(BaseModel):
         non_data = set(self.guard_subcarrier_indices().tolist()) | set(
             self.pilot_subcarrier_indices
         )
-        return np.array(
-            [i for i in all_idx if int(i) not in non_data], dtype=np.intp
-        )
+        return np.array([i for i in all_idx if int(i) not in non_data], dtype=np.intp)
 
     @property
     def n_data(self) -> int:
@@ -198,8 +187,7 @@ def _ofdm_modulate_frames(
     data_symbols = np.asarray(data_symbols, dtype=np.complex128)
     if data_symbols.ndim != 2 or data_symbols.shape[1] != cfg.n_data:
         raise ValueError(
-            f"data_symbols must have shape (n_frames, {cfg.n_data}), "
-            f"got {data_symbols.shape}"
+            f"data_symbols must have shape (n_frames, {cfg.n_data}), got {data_symbols.shape}"
         )
     n_frames = data_symbols.shape[0]
     n = cfg.n_subcarriers
@@ -320,7 +308,10 @@ class OFDMTransmitter(Transmitter):
                 symbols=_as_1d(symbols, "symbols") if symbols is not None else None,
             )
             return self._make_ofdm_signal(
-                field=ch_field, symbols=ch_syms, bits=ch_bits, polarization="single",
+                field=ch_field,
+                symbols=ch_syms,
+                bits=ch_bits,
+                polarization="single",
             )
 
         # Dual-pol
@@ -329,15 +320,12 @@ class OFDMTransmitter(Transmitter):
         if bits is not None:
             b2 = np.asarray(bits, dtype=np.uint8)
             if b2.shape != (2, bps):
-                raise ValueError(
-                    f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}"
-                )
+                raise ValueError(f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}")
         if symbols is not None:
             s2 = np.asarray(symbols, dtype=np.complex128)
             if s2.shape != (2, total_data_syms):
                 raise ValueError(
-                    f"dual-pol `symbols` must have shape (2, {total_data_syms}), "
-                    f"got {s2.shape}"
+                    f"dual-pol `symbols` must have shape (2, {total_data_syms}), got {s2.shape}"
                 )
 
         seed_seq = _seed_seq_from(rng, self.seed)
@@ -382,8 +370,7 @@ class OFDMTransmitter(Transmitter):
             ch_symbols = np.asarray(symbols, dtype=np.complex128)
             if ch_symbols.shape != (total_data_syms,):
                 raise ValueError(
-                    f"`symbols` must have shape ({total_data_syms},), "
-                    f"got {ch_symbols.shape}"
+                    f"`symbols` must have shape ({total_data_syms},), got {ch_symbols.shape}"
                 )
             if dm is not None:
                 indices = nearest_symbol_indices(ch_symbols, cfg.points).astype(np.intp)
@@ -393,9 +380,7 @@ class OFDMTransmitter(Transmitter):
         elif bits is not None:
             ch_bits = np.asarray(bits, dtype=np.uint8)
             if ch_bits.shape != (n_bits,):
-                raise ValueError(
-                    f"`bits` must have shape ({n_bits},), got {ch_bits.shape}"
-                )
+                raise ValueError(f"`bits` must have shape ({n_bits},), got {ch_bits.shape}")
             if dm is not None:
                 indices = dm.encode(ch_bits)
                 ch_symbols = cfg.points[indices].astype(np.complex128)
@@ -469,14 +454,13 @@ def _ofdm_demodulate_frames(
     sps = cfg.samples_per_ofdm_symbol  # N + cp_len
     if field.ndim != 1 or field.size % sps != 0:
         raise ValueError(
-            f"field length {field.size} is not a multiple of "
-            f"samples_per_ofdm_symbol ({sps})"
+            f"field length {field.size} is not a multiple of samples_per_ofdm_symbol ({sps})"
         )
     n_frames = field.size // sps
 
     # Reshape into frames and strip CP.
     frames = field.reshape(n_frames, sps)
-    useful = frames[:, cfg.cp_len:]  # (n_frames, N)
+    useful = frames[:, cfg.cp_len :]  # (n_frames, N)
 
     # FFT along the subcarrier axis, then undo Tx power scaling.
     spectrum = np.fft.fft(useful, axis=1)
@@ -590,9 +574,7 @@ class OFDMReceiver(Receiver):
             )
         return self
 
-    def receive(
-        self, field: ComplexArray, dt_s: float | None = None
-    ) -> OFDMReceivedSymbols:
+    def receive(self, field: ComplexArray, dt_s: float | None = None) -> OFDMReceivedSymbols:
         """Demodulate a received OFDM field.
 
         For ``polarization="single"`` the input is 1-D; for ``"dual"`` it
@@ -601,16 +583,13 @@ class OFDMReceiver(Receiver):
         """
         if self.polarization == "single":
             if field.ndim != 1:
-                raise ValueError(
-                    f"single-pol receiver expects 1-D field, got shape {field.shape}"
-                )
+                raise ValueError(f"single-pol receiver expects 1-D field, got shape {field.shape}")
             return self._receive_one_ofdm_stream(field)
 
         # Dual-pol
         if field.ndim != 2 or field.shape[0] != 2:
             raise ValueError(
-                f"dual-pol receiver expects 2-D field with leading axis 2, "
-                f"got shape {field.shape}"
+                f"dual-pol receiver expects 2-D field with leading axis 2, got shape {field.shape}"
             )
         per_pol = [self._receive_one_ofdm_stream(field[i]) for i in (0, 1)]
         return OFDMReceivedSymbols(
@@ -624,9 +603,7 @@ class OFDMReceiver(Receiver):
             ofdm=self.ofdm,
         )
 
-    def _receive_one_ofdm_stream(
-        self, field: ComplexArray
-    ) -> OFDMReceivedSymbols:
+    def _receive_one_ofdm_stream(self, field: ComplexArray) -> OFDMReceivedSymbols:
         """Single 1-D OFDM demodulation pipeline."""
         data_2d, pilot_2d = _ofdm_demodulate_frames(field, self.ofdm)
 

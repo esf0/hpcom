@@ -94,7 +94,9 @@ def test_backward_undoes_forward_within_lossless_dispersion_only():
         n_steps=50,
     )
     rng = np.random.default_rng(7)
-    field = ((rng.standard_normal(512) + 1j * rng.standard_normal(512)) * 1e-3).astype(np.complex128)
+    field = ((rng.standard_normal(512) + 1j * rng.standard_normal(512)) * 1e-3).astype(
+        np.complex128
+    )
 
     prop = get_propagator("tensorflow")
     forward = prop.propagate(field, fiber, dt_s=2e-11, direction="forward")

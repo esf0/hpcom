@@ -12,6 +12,7 @@ from hpcom.ofdm import OFDMConfig
 # Validation
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("n", [3, 5, 6, 7, 10, 12])
 def test_n_subcarriers_must_be_power_of_two(n):
     with pytest.raises(ValueError, match="power of 2"):
@@ -55,14 +56,13 @@ def test_pilots_disjoint_from_guard():
 # Derived sets
 # ---------------------------------------------------------------------------
 
+
 def test_no_guard_no_pilots_means_all_data():
     cfg = OFDMConfig(n_subcarriers=64)
     assert cfg.n_guard == 0
     assert cfg.n_pilots == 0
     assert cfg.n_data == 64
-    np.testing.assert_array_equal(
-        cfg.data_subcarrier_indices(), np.arange(64, dtype=np.intp)
-    )
+    np.testing.assert_array_equal(cfg.data_subcarrier_indices(), np.arange(64, dtype=np.intp))
     assert cfg.guard_subcarrier_indices().size == 0
 
 
@@ -74,9 +74,7 @@ def test_guard_subcarrier_indices_straddle_nyquist():
 
 
 def test_pilots_and_guards_disjoint_data_excludes_both():
-    cfg = OFDMConfig(
-        n_subcarriers=64, n_guard=4, pilot_subcarrier_indices=(3, 10, 50)
-    )
+    cfg = OFDMConfig(n_subcarriers=64, n_guard=4, pilot_subcarrier_indices=(3, 10, 50))
     data = cfg.data_subcarrier_indices()
     pilots = set(cfg.pilot_subcarrier_indices)
     guards = set(cfg.guard_subcarrier_indices().tolist())
@@ -88,9 +86,7 @@ def test_pilots_and_guards_disjoint_data_excludes_both():
 
 
 def test_pilot_indices_canonicalised_sorted():
-    cfg = OFDMConfig(
-        n_subcarriers=32, pilot_subcarrier_indices=(7, 1, 4)
-    )
+    cfg = OFDMConfig(n_subcarriers=32, pilot_subcarrier_indices=(7, 1, 4))
     assert cfg.pilot_subcarrier_indices == (1, 4, 7)
 
 
@@ -102,6 +98,7 @@ def test_samples_per_ofdm_symbol_includes_cp():
 # ---------------------------------------------------------------------------
 # Frozen / replaceable
 # ---------------------------------------------------------------------------
+
 
 def test_model_is_frozen():
     cfg = OFDMConfig(n_subcarriers=64)
@@ -120,6 +117,7 @@ def test_model_copy_preserves_invariants():
 # ---------------------------------------------------------------------------
 # Boundary / degenerate cases
 # ---------------------------------------------------------------------------
+
 
 def test_minimum_n_subcarriers_four_with_guard():
     """N=4 is the minimum valid size. n_guard=1 leaves 2 data subcarriers."""

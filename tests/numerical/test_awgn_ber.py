@@ -57,7 +57,7 @@ def _run_b2b_with_awgn(modulation_order: int, snr_db: float, n_symbols: int, see
     snr_lin = 10.0 ** (snr_db / 10.0)
     sigma2_field = 1.0 / snr_lin
     rng = np.random.default_rng(seed + 1)
-    noise = (rng.standard_normal(sent.field.size) + 1j * rng.standard_normal(sent.field.size))
+    noise = rng.standard_normal(sent.field.size) + 1j * rng.standard_normal(sent.field.size)
     noise *= np.sqrt(sigma2_field / 2.0)
     rx_field = sent.field + noise
 

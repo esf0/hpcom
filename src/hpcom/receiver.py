@@ -101,17 +101,13 @@ class Receiver(BaseModel):
     @classmethod
     def _check_polarization(cls, v: object) -> object:
         if v not in ("single", "dual"):
-            raise ValueError(
-                f"polarization must be 'single' or 'dual', got {v!r}"
-            )
+            raise ValueError(f"polarization must be 'single' or 'dual', got {v!r}")
         return v
 
     @model_validator(mode="after")
     def _validate_base(self) -> Receiver:
         if (self.modulation_order is None) == (self.constellation is None):
-            raise ValueError(
-                "exactly one of `modulation_order` or `constellation` must be set"
-            )
+            raise ValueError("exactly one of `modulation_order` or `constellation` must be set")
         if self.modulation_order is not None:
             resolved = ConstellationConfig.from_square_qam(self.modulation_order)
         else:
@@ -122,19 +118,13 @@ class Receiver(BaseModel):
 
         if self.dm is not None:
             if self.pilots is not None:
-                raise ValueError(
-                    "`pilots` and `dm` are mutually exclusive on the Receiver"
-                )
+                raise ValueError("`pilots` and `dm` are mutually exclusive on the Receiver")
             if self.constellation is None or self.constellation.probabilities is None:
-                raise ValueError(
-                    "`dm` requires `constellation` with non-None probabilities"
-                )
+                raise ValueError("`dm` requires `constellation` with non-None probabilities")
             if self.dm.target_pmf.shape != self.constellation.probabilities.shape or not (
                 np.allclose(self.dm.target_pmf, self.constellation.probabilities, atol=1e-12)
             ):
-                raise ValueError(
-                    "dm.target_pmf must match constellation.probabilities elementwise"
-                )
+                raise ValueError("dm.target_pmf must match constellation.probabilities elementwise")
         return self
 
     @property
@@ -146,9 +136,7 @@ class Receiver(BaseModel):
         return self.__dict__["_constellation"]  # type: ignore[no-any-return]
 
     @abstractmethod
-    def receive(
-        self, field: ComplexArray, dt_s: float | None = None
-    ) -> ReceivedSymbols:
+    def receive(self, field: ComplexArray, dt_s: float | None = None) -> ReceivedSymbols:
         """Demodulate a received field. Subclasses define the pipeline."""
         raise NotImplementedError
 
@@ -178,9 +166,7 @@ class SingleCarrierReceiver(Receiver):
     @classmethod
     def _check_equalize(cls, v: object) -> object:
         if v not in ("none", "unit_power"):
-            raise ValueError(
-                f"equalize must be 'none' or 'unit_power', got {v!r}"
-            )
+            raise ValueError(f"equalize must be 'none' or 'unit_power', got {v!r}")
         return v
 
     def receive(
@@ -195,21 +181,19 @@ class SingleCarrierReceiver(Receiver):
         """
         if self.polarization == "single":
             if field.ndim != 1:
-                raise ValueError(
-                    f"single-pol receiver expects 1-D field, got shape {field.shape}"
-                )
+                raise ValueError(f"single-pol receiver expects 1-D field, got shape {field.shape}")
             return self._receive_one_stream(field, dt_s)
 
         if field.ndim != 2 or field.shape[0] != 2:
             raise ValueError(
-                f"dual-pol receiver expects 2-D field with leading axis 2, "
-                f"got shape {field.shape}"
+                f"dual-pol receiver expects 2-D field with leading axis 2, got shape {field.shape}"
             )
         per_pol = [self._receive_one_stream(field[i], dt_s) for i in (0, 1)]
         pilot_syms: ComplexArray | None
         if per_pol[0].pilot_symbols is not None:
             pilot_syms = np.stack(
-                [p.pilot_symbols for p in per_pol], axis=0  # type: ignore[misc]
+                [p.pilot_symbols for p in per_pol],
+                axis=0,  # type: ignore[misc]
             )
         else:
             pilot_syms = None
@@ -232,8 +216,7 @@ class SingleCarrierReceiver(Receiver):
         if self.cd_compensation_s2 != 0.0:
             if dt_s is None:
                 raise ValueError(
-                    "dt_s is required when cd_compensation_s2 != 0 "
-                    "(needed for the frequency grid)"
+                    "dt_s is required when cd_compensation_s2 != 0 (needed for the frequency grid)"
                 )
             field = self._undo_dispersion(field, dt_s)
 

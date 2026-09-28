@@ -18,6 +18,7 @@ from hpcom.modulation import (
 # Maxwell-Boltzmann PMF
 # ---------------------------------------------------------------------------
 
+
 def test_mb_nu_zero_is_uniform():
     constellation, _ = square_qam(16)
     p = maxwell_boltzmann(constellation, nu=0.0)
@@ -69,7 +70,9 @@ def test_mb_equi_energy_is_always_uniform():
     for nu in [0.0, 0.5, 2.0, 10.0]:
         p = maxwell_boltzmann(points, nu=nu)
         np.testing.assert_allclose(
-            p, np.full(8, 1.0 / 8), atol=1e-12,
+            p,
+            np.full(8, 1.0 / 8),
+            atol=1e-12,
             err_msg=f"failed for nu={nu}",
         )
 
@@ -77,6 +80,7 @@ def test_mb_equi_energy_is_always_uniform():
 # ---------------------------------------------------------------------------
 # ConstantCompositionDM — construction
 # ---------------------------------------------------------------------------
+
 
 def test_dm_rejects_non_normalised_pmf():
     with pytest.raises(ValueError, match="sum to 1"):
@@ -129,6 +133,7 @@ def test_dm_rate_bounded_by_entropy():
 def test_dm_unrank_out_of_range_raises():
     """_unrank_multiset must raise ValueError for rank >= total permutations."""
     from hpcom.modulation.dm import _unrank_multiset
+
     # composition [2, 2] → total = 4!/(2!2!) = 6 valid ranks (0..5)
     with pytest.raises(ValueError, match="out of range"):
         _unrank_multiset(6, [2, 2])
@@ -139,6 +144,7 @@ def test_dm_unrank_out_of_range_raises():
 def test_dm_rank_out_of_range_sym_raises():
     """_rank_multiset must raise ValueError for a symbol index out of composition range."""
     from hpcom.modulation.dm import _rank_multiset
+
     # composition has 3 symbols (indices 0, 1, 2); index 3 is invalid
     with pytest.raises(ValueError, match="out of range"):
         _rank_multiset([0, 3, 2], [2, 2, 2])
@@ -147,6 +153,7 @@ def test_dm_rank_out_of_range_sym_raises():
 # ---------------------------------------------------------------------------
 # Round-trip
 # ---------------------------------------------------------------------------
+
 
 def test_dm_round_trip_uniform_block():
     """Uniform PMF over 8 symbols, block_length=16."""
@@ -181,6 +188,7 @@ def test_dm_round_trip_maxwell_boltzmann():
 # ---------------------------------------------------------------------------
 # Empirical PMF matches target
 # ---------------------------------------------------------------------------
+
 
 def test_dm_empirical_pmf_equals_composition():
     """By construction, the emitted distribution is exactly composition / N."""
@@ -222,6 +230,7 @@ def test_dm_empirical_pmf_kl_to_target_below_1e_3():
 # Wired to ConstellationConfig
 # ---------------------------------------------------------------------------
 
+
 def test_dm_pipeline_with_constellation_config():
     """Bits → DM.encode → ConstellationConfig.points indexing → symbols
     have the configured (probabilistic) PMF; reverse path recovers bits."""
@@ -238,9 +247,7 @@ def test_dm_pipeline_with_constellation_config():
     # the symbols transmitted would be cfg.points[sym_indices].
     transmitted = cfg.points[sym_indices]
     # Noiseless receive: nearest-neighbour from cfg.points is identity.
-    decoded_indices = np.argmin(
-        np.abs(transmitted[:, None] - cfg.points[None, :]), axis=1
-    )
+    decoded_indices = np.argmin(np.abs(transmitted[:, None] - cfg.points[None, :]), axis=1)
     np.testing.assert_array_equal(decoded_indices, sym_indices)
 
     bits_back = dm.decode(decoded_indices)

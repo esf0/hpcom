@@ -163,9 +163,7 @@ class Transmitter(BaseModel):
     @model_validator(mode="after")
     def _validate_base(self) -> Transmitter:
         if (self.modulation_order is None) == (self.constellation is None):
-            raise ValueError(
-                "exactly one of `modulation_order` or `constellation` must be set"
-            )
+            raise ValueError("exactly one of `modulation_order` or `constellation` must be set")
         if self.modulation_order is not None:
             resolved = ConstellationConfig.from_square_qam(self.modulation_order)
         else:
@@ -181,15 +179,11 @@ class Transmitter(BaseModel):
                     "symbols and would break the DM block composition"
                 )
             if self.constellation is None or self.constellation.probabilities is None:
-                raise ValueError(
-                    "`dm` requires `constellation` with non-None probabilities"
-                )
+                raise ValueError("`dm` requires `constellation` with non-None probabilities")
             if self.dm.target_pmf.shape != self.constellation.probabilities.shape or not (
                 np.allclose(self.dm.target_pmf, self.constellation.probabilities, atol=1e-12)
             ):
-                raise ValueError(
-                    "dm.target_pmf must match constellation.probabilities elementwise"
-                )
+                raise ValueError("dm.target_pmf must match constellation.probabilities elementwise")
             n_data_syms = self._data_symbols_per_stream()
             if n_data_syms % self.dm.block_length != 0:
                 raise ValueError(
@@ -312,15 +306,12 @@ class SingleCarrierTransmitter(Transmitter):
         if bits is not None:
             b2 = np.asarray(bits, dtype=np.uint8)
             if b2.shape != (2, bps):
-                raise ValueError(
-                    f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}"
-                )
+                raise ValueError(f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}")
         if symbols is not None:
             s2 = np.asarray(symbols, dtype=np.complex128)
             if s2.shape != (2, self.n_symbols):
                 raise ValueError(
-                    f"dual-pol `symbols` must have shape (2, {self.n_symbols}), "
-                    f"got {s2.shape}"
+                    f"dual-pol `symbols` must have shape (2, {self.n_symbols}), got {s2.shape}"
                 )
 
         seed_seq = _seed_seq_from(rng, self.seed)
@@ -392,8 +383,7 @@ class SingleCarrierTransmitter(Transmitter):
             ch_symbols = np.asarray(symbols, dtype=np.complex128)
             if ch_symbols.shape != (self.n_symbols,):
                 raise ValueError(
-                    f"`symbols` must have shape ({self.n_symbols},), "
-                    f"got {ch_symbols.shape}"
+                    f"`symbols` must have shape ({self.n_symbols},), got {ch_symbols.shape}"
                 )
             if dm is not None:
                 indices = nearest_symbol_indices(ch_symbols, cfg.points).astype(np.intp)
@@ -403,9 +393,7 @@ class SingleCarrierTransmitter(Transmitter):
         elif bits is not None:
             ch_bits = np.asarray(bits, dtype=np.uint8)
             if ch_bits.shape != (n_bits,):
-                raise ValueError(
-                    f"`bits` must have shape ({n_bits},), got {ch_bits.shape}"
-                )
+                raise ValueError(f"`bits` must have shape ({n_bits},), got {ch_bits.shape}")
             if dm is not None:
                 indices = dm.encode(ch_bits)
                 ch_symbols = cfg.points[indices].astype(np.complex128)
@@ -448,15 +436,11 @@ class SingleCarrierTransmitter(Transmitter):
 def _as_1d(arr: np.ndarray, name: str) -> np.ndarray:
     """Validate that a deterministic-input array is 1-D (single-channel path)."""
     if arr.ndim != 1:
-        raise ValueError(
-            f"`{name}` must be 1-D for a single-channel Transmitter, got {arr.ndim}-D"
-        )
+        raise ValueError(f"`{name}` must be 1-D for a single-channel Transmitter, got {arr.ndim}-D")
     return arr
 
 
-def _seed_seq_from(
-    rng: np.random.Generator | None, seed: int | None
-) -> np.random.SeedSequence:
+def _seed_seq_from(rng: np.random.Generator | None, seed: int | None) -> np.random.SeedSequence:
     """Build a reproducible SeedSequence from either a generator or a seed."""
     if rng is not None:
         return np.random.SeedSequence(int(rng.integers(0, 2**63 - 1)))

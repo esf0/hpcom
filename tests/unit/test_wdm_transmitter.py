@@ -47,8 +47,12 @@ def test_wdm_transmitter_inherits_from_transmitter():
 def test_single_pol_wdm_output_shapes():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
-        samples_per_symbol=16, seed=0, wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        seed=0,
+        wdm=cfg,
     )
     sent = tx.generate()
     n_samples = tx.n_symbols * tx.samples_per_symbol
@@ -62,8 +66,13 @@ def test_single_pol_wdm_output_shapes():
 def test_dual_pol_wdm_output_shapes():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
-        samples_per_symbol=16, seed=0, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        seed=0,
+        polarization="dual",
+        wdm=cfg,
     )
     sent = tx.generate()
     n_samples = tx.n_symbols * tx.samples_per_symbol
@@ -78,8 +87,13 @@ def test_dual_pol_wdm_pol_streams_are_independent():
     spawned per (pol, channel))."""
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
-        samples_per_symbol=16, seed=0, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        seed=0,
+        polarization="dual",
+        wdm=cfg,
     )
     sent = tx.generate()
     for ch in range(3):
@@ -91,8 +105,13 @@ def test_dual_pol_wdm_channel_streams_are_independent():
     bits (sub-RNGs per channel)."""
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
-        samples_per_symbol=16, seed=0, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        seed=0,
+        polarization="dual",
+        wdm=cfg,
     )
     sent = tx.generate()
     for pol in range(2):
@@ -102,8 +121,13 @@ def test_dual_pol_wdm_channel_streams_are_independent():
 def test_wdm_transmitter_seed_reproducible():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     kw = dict(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
-        samples_per_symbol=16, seed=99, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        seed=99,
+        polarization="dual",
+        wdm=cfg,
     )
     a = WDMTransmitter(**kw).generate()
     b = WDMTransmitter(**kw).generate()
@@ -114,8 +138,12 @@ def test_wdm_transmitter_seed_reproducible():
 def test_dual_pol_wdm_deterministic_bits_input():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=32,
-        samples_per_symbol=16, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=32,
+        samples_per_symbol=16,
+        polarization="dual",
+        wdm=cfg,
     )
     k = bits_per_symbol(tx.modulation_order)
     rng = np.random.default_rng(0)
@@ -127,12 +155,17 @@ def test_dual_pol_wdm_deterministic_bits_input():
 def test_dual_pol_wdm_deterministic_symbols_input():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=32,
-        samples_per_symbol=16, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=32,
+        samples_per_symbol=16,
+        polarization="dual",
+        wdm=cfg,
     )
     rng = np.random.default_rng(0)
-    symbols = (rng.standard_normal((2, 3, tx.n_symbols))
-               + 1j * rng.standard_normal((2, 3, tx.n_symbols))) / np.sqrt(2)
+    symbols = (
+        rng.standard_normal((2, 3, tx.n_symbols)) + 1j * rng.standard_normal((2, 3, tx.n_symbols))
+    ) / np.sqrt(2)
     sent = tx.generate(symbols=symbols)
     np.testing.assert_allclose(sent.symbols, symbols, atol=1e-12)
 
@@ -140,8 +173,12 @@ def test_dual_pol_wdm_deterministic_symbols_input():
 def test_dual_pol_wdm_rejects_wrong_input_shapes():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=32,
-        samples_per_symbol=16, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=32,
+        samples_per_symbol=16,
+        polarization="dual",
+        wdm=cfg,
     )
     with pytest.raises(ValueError, match=r"`bits` must have shape \(2, 3,"):
         tx.generate(bits=np.zeros((3, tx.n_symbols * 2), dtype=np.uint8))
@@ -156,9 +193,15 @@ def test_dual_pol_wdm_b2b_per_channel_per_pol_recovers_bits():
     """
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=1024,
-        samples_per_symbol=16, roll_off=0.1, pulse_span_symbols=32,
-        seed=7, polarization="dual", wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=1024,
+        samples_per_symbol=16,
+        roll_off=0.1,
+        pulse_span_symbols=32,
+        seed=7,
+        polarization="dual",
+        wdm=cfg,
     )
     sent = tx.generate()
     n_samples = sent.field.shape[-1]
@@ -181,9 +224,12 @@ def test_dual_pol_wdm_b2b_per_channel_per_pol_recovers_bits():
 def test_wdm_transmitter_requires_wdm_field():
     """`wdm` is required — constructing without raises ValidationError."""
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError, match="wdm"):
         WDMTransmitter(  # type: ignore[call-arg]
-            modulation_order=4, symbol_rate_hz=10e9, n_symbols=16,
+            modulation_order=4,
+            symbol_rate_hz=10e9,
+            n_symbols=16,
             samples_per_symbol=16,
         )
 
@@ -194,14 +240,18 @@ def test_wdm_transmitter_pilots_on_every_channel_and_pol():
     cfg_wdm = WDMConfig(n_channels=3, spacing_hz=50e9)
     cfg_p = PilotConfig(period=8, symbol=0.3 - 0.4j)
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=64,
-        samples_per_symbol=16, pulse_span_symbols=16, seed=0,
-        polarization="dual", wdm=cfg_wdm, pilots=cfg_p,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=64,
+        samples_per_symbol=16,
+        pulse_span_symbols=16,
+        seed=0,
+        polarization="dual",
+        wdm=cfg_wdm,
+        pilots=cfg_p,
     )
     sent = tx.generate()
     pilot_idx = cfg_p.pilot_indices(tx.n_symbols)
     for pol in range(2):
         for ch in range(cfg_wdm.n_channels):
-            np.testing.assert_allclose(
-                sent.symbols[pol, ch, pilot_idx], cfg_p.symbol, atol=1e-12
-            )
+            np.testing.assert_allclose(sent.symbols[pol, ch, pilot_idx], cfg_p.symbol, atol=1e-12)

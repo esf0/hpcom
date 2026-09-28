@@ -109,4 +109,3 @@ __all__ = [
     "WDMTransmitter",
     "__version__",
 ]
-

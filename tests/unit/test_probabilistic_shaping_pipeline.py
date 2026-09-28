@@ -26,6 +26,7 @@ from hpcom.wdm import WDMConfig, WDMReceiver, WDMTransmitter
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_8psk_shaped() -> tuple[ConstellationConfig, ConstantCompositionDM]:
     """8-PSK + M-B(ν=0.6): equi-energy points → M-B reduces to uniform; the
     DM still operates over an explicit (uniform) probability vector, which
@@ -57,6 +58,7 @@ def shaped_cfg_and_dm(request):
 # Validation
 # ---------------------------------------------------------------------------
 
+
 def test_tx_dm_requires_constellation_with_probabilities():
     """Passing dm without a probabilistic constellation must raise."""
     points = np.exp(2j * np.pi * np.arange(8) / 8)
@@ -65,8 +67,10 @@ def test_tx_dm_requires_constellation_with_probabilities():
     dm = ConstantCompositionDM(target_pmf=pmf, block_length=32)
     with pytest.raises(ValueError, match="probabilities"):
         SingleCarrierTransmitter(
-            constellation=cfg_unshaped, dm=dm,
-            symbol_rate_hz=32e9, n_symbols=256,
+            constellation=cfg_unshaped,
+            dm=dm,
+            symbol_rate_hz=32e9,
+            n_symbols=256,
         )
 
 
@@ -78,8 +82,10 @@ def test_tx_dm_target_pmf_must_match_constellation(shaped_cfg_and_dm):
     other_dm = ConstantCompositionDM(target_pmf=other_pmf, block_length=32)
     with pytest.raises(ValueError, match="target_pmf"):
         SingleCarrierTransmitter(
-            constellation=cfg, dm=other_dm,
-            symbol_rate_hz=32e9, n_symbols=256,
+            constellation=cfg,
+            dm=other_dm,
+            symbol_rate_hz=32e9,
+            n_symbols=256,
         )
 
 
@@ -87,8 +93,10 @@ def test_tx_n_symbols_must_be_multiple_of_block_length(shaped_cfg_and_dm):
     cfg, dm = shaped_cfg_and_dm  # block_length=32
     with pytest.raises(ValueError, match="multiple of"):
         SingleCarrierTransmitter(
-            constellation=cfg, dm=dm,
-            symbol_rate_hz=32e9, n_symbols=257,
+            constellation=cfg,
+            dm=dm,
+            symbol_rate_hz=32e9,
+            n_symbols=257,
         )
 
 
@@ -97,8 +105,11 @@ def test_tx_pilots_and_dm_mutually_exclusive(shaped_cfg_and_dm):
     pilots = PilotConfig(symbol=1.0 + 0j, period=8)
     with pytest.raises(ValueError, match=r"pilots.*dm"):
         SingleCarrierTransmitter(
-            constellation=cfg, dm=dm, pilots=pilots,
-            symbol_rate_hz=32e9, n_symbols=256,
+            constellation=cfg,
+            dm=dm,
+            pilots=pilots,
+            symbol_rate_hz=32e9,
+            n_symbols=256,
         )
 
 
@@ -106,12 +117,17 @@ def test_tx_pilots_and_dm_mutually_exclusive(shaped_cfg_and_dm):
 # Empirical PMF on transmitted symbols matches the DM composition
 # ---------------------------------------------------------------------------
 
+
 def test_transmitted_symbols_follow_dm_composition(shaped_cfg_and_dm):
     cfg, dm = shaped_cfg_and_dm
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 8,  # 8 DM blocks
-        samples_per_symbol=8, pulse_span_symbols=16, seed=0,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 8,  # 8 DM blocks
+        samples_per_symbol=8,
+        pulse_span_symbols=16,
+        seed=0,
     )
     sent = tx.generate()
 
@@ -130,11 +146,14 @@ def test_transmitted_symbols_follow_dm_composition(shaped_cfg_and_dm):
 # Bit-stream length
 # ---------------------------------------------------------------------------
 
+
 def test_tx_emits_dm_sized_bit_stream(shaped_cfg_and_dm):
     cfg, dm = shaped_cfg_and_dm
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 4,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 4,
         seed=1,
     )
     sent = tx.generate()
@@ -146,17 +165,24 @@ def test_tx_emits_dm_sized_bit_stream(shaped_cfg_and_dm):
 # B2B round-trip (noiseless)
 # ---------------------------------------------------------------------------
 
+
 def test_b2b_round_trip_with_dm(shaped_cfg_and_dm):
     cfg, dm = shaped_cfg_and_dm
     span = 16
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 16,
-        samples_per_symbol=8, pulse_span_symbols=span, seed=2,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 16,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
+        seed=2,
     )
     rx = SingleCarrierReceiver(
-        constellation=cfg, dm=dm,
-        samples_per_symbol=8, pulse_span_symbols=span,
+        constellation=cfg,
+        dm=dm,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
     )
 
     sent = tx.generate()
@@ -178,14 +204,20 @@ def test_b2b_round_trip_with_dm_dual_pol(shaped_cfg_and_dm):
     cfg, dm = shaped_cfg_and_dm
     span = 16
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 16,
-        samples_per_symbol=8, pulse_span_symbols=span,
-        polarization="dual", seed=3,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 16,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
+        polarization="dual",
+        seed=3,
     )
     rx = SingleCarrierReceiver(
-        constellation=cfg, dm=dm,
-        samples_per_symbol=8, pulse_span_symbols=span,
+        constellation=cfg,
+        dm=dm,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
         polarization="dual",
     )
 
@@ -205,12 +237,15 @@ def test_b2b_round_trip_with_dm_dual_pol(shaped_cfg_and_dm):
 # Deterministic-input path
 # ---------------------------------------------------------------------------
 
+
 def test_dm_deterministic_bit_input(shaped_cfg_and_dm):
     """Caller-supplied bits flow through the DM encoder; output preserves them."""
     cfg, dm = shaped_cfg_and_dm
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 4,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 4,
         seed=4,
     )
     n_bits = (tx.n_symbols // dm.block_length) * dm.bits_per_block
@@ -224,8 +259,10 @@ def test_dm_deterministic_bit_input(shaped_cfg_and_dm):
 def test_dm_rejects_wrong_bit_input_length(shaped_cfg_and_dm):
     cfg, dm = shaped_cfg_and_dm
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 4,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 4,
     )
     wrong = np.zeros(10, dtype=np.uint8)  # wrong size
     with pytest.raises(ValueError, match="shape"):
@@ -235,6 +272,7 @@ def test_dm_rejects_wrong_bit_input_length(shaped_cfg_and_dm):
 # ---------------------------------------------------------------------------
 # Receiver: partial-block protection
 # ---------------------------------------------------------------------------
+
 
 def test_receiver_dm_raises_on_partial_block(shaped_cfg_and_dm):
     """Receiver.receive must raise ValueError when the field length yields a
@@ -249,13 +287,19 @@ def test_receiver_dm_raises_on_partial_block(shaped_cfg_and_dm):
     sps = 8
     span = 4
     tx = SingleCarrierTransmitter(
-        constellation=cfg, dm=dm,
-        symbol_rate_hz=32e9, n_symbols=32 * 4,
-        samples_per_symbol=sps, pulse_span_symbols=span, seed=5,
+        constellation=cfg,
+        dm=dm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 4,
+        samples_per_symbol=sps,
+        pulse_span_symbols=span,
+        seed=5,
     )
     rx = SingleCarrierReceiver(
-        constellation=cfg, dm=dm,
-        samples_per_symbol=sps, pulse_span_symbols=span,
+        constellation=cfg,
+        dm=dm,
+        samples_per_symbol=sps,
+        pulse_span_symbols=span,
     )
     sent = tx.generate()
     # Append sps samples → receiver sees n_symbols+1 decisions; 129 % 32 = 1 ≠ 0
@@ -268,13 +312,17 @@ def test_receiver_dm_raises_on_partial_block(shaped_cfg_and_dm):
 # WDM + DM
 # ---------------------------------------------------------------------------
 
+
 def test_wdm_tx_rejects_wrong_bits_shape_with_dm(shaped_cfg_and_dm):
     """WDMTransmitter with dm= must reject a bits array with wrong shape."""
     cfg, dm = shaped_cfg_and_dm  # block_length=32
     wdm = WDMConfig(n_channels=2, spacing_hz=50e9)
     tx = WDMTransmitter(
-        constellation=cfg, dm=dm, wdm=wdm,
-        symbol_rate_hz=32e9, n_symbols=32 * 4,
+        constellation=cfg,
+        dm=dm,
+        wdm=wdm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 4,
     )
     bps = (tx.n_symbols // dm.block_length) * dm.bits_per_block
     # Correct shape is (2, bps); pass (2, bps+1) which is wrong.
@@ -293,9 +341,14 @@ def test_wdm_b2b_round_trip_with_dm(shaped_cfg_and_dm):
     wdm = WDMConfig(n_channels=2, spacing_hz=50e9)
     span = 8
     tx = WDMTransmitter(
-        constellation=cfg, dm=dm, wdm=wdm,
-        symbol_rate_hz=32e9, n_symbols=32 * 8,
-        samples_per_symbol=8, pulse_span_symbols=span, seed=11,
+        constellation=cfg,
+        dm=dm,
+        wdm=wdm,
+        symbol_rate_hz=32e9,
+        n_symbols=32 * 8,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
+        seed=11,
     )
     sent = tx.generate()
 
@@ -306,8 +359,12 @@ def test_wdm_b2b_round_trip_with_dm(shaped_cfg_and_dm):
 
     for ch in range(wdm.n_channels):
         rx = WDMReceiver(
-            constellation=cfg, dm=dm, wdm=wdm, wdm_channel=ch,
-            samples_per_symbol=8, pulse_span_symbols=span,
+            constellation=cfg,
+            dm=dm,
+            wdm=wdm,
+            wdm_channel=ch,
+            samples_per_symbol=8,
+            pulse_span_symbols=span,
         )
         received = rx.receive(sent.field, dt_s=sent.dt_s)
 

@@ -48,9 +48,7 @@ def nearest_symbol_indices(
     return idx
 
 
-def symbols_to_bits(
-    received: ComplexArray, modulation_order: int
-) -> npt.NDArray[np.uint8]:
+def symbols_to_bits(received: ComplexArray, modulation_order: int) -> npt.NDArray[np.uint8]:
     """Hard-decision demap: each received sample → its k bits."""
     constellation, bit_labels = square_qam(modulation_order)
     idx = nearest_symbol_indices(received, constellation)

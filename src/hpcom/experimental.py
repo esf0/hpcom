@@ -118,7 +118,10 @@ class ExperimentalTransmission(Transmitter):
                 symbols=_as_1d(symbols, "symbols") if symbols is not None else None,
             )
             return self._make_signal(
-                field=field, symbols=ch_syms, bits=ch_bits, polarization="single",
+                field=field,
+                symbols=ch_syms,
+                bits=ch_bits,
+                polarization="single",
             )
 
         # Dual-pol: two independently-seeded streams stacked on axis 0.
@@ -126,15 +129,12 @@ class ExperimentalTransmission(Transmitter):
         if bits is not None:
             b2 = np.asarray(bits, dtype=np.uint8)
             if b2.shape != (2, bps):
-                raise ValueError(
-                    f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}"
-                )
+                raise ValueError(f"dual-pol `bits` must have shape (2, {bps}), got {b2.shape}")
         if symbols is not None:
             s2 = np.asarray(symbols, dtype=np.complex128)
             if s2.shape != (2, self.n_symbols):
                 raise ValueError(
-                    f"dual-pol `symbols` must have shape (2, {self.n_symbols}), "
-                    f"got {s2.shape}"
+                    f"dual-pol `symbols` must have shape (2, {self.n_symbols}), got {s2.shape}"
                 )
 
         seed_seq = _seed_seq_from(rng, self.seed)
@@ -245,15 +245,12 @@ class ExperimentalReceiver(Receiver):
 
         if self.polarization == "single":
             if field.ndim != 1:
-                raise ValueError(
-                    f"single-pol receiver expects 1-D field, got shape {field.shape}"
-                )
+                raise ValueError(f"single-pol receiver expects 1-D field, got shape {field.shape}")
             return self._decode_one(field, polarization="single")
 
         if field.ndim != 2 or field.shape[0] != 2:
             raise ValueError(
-                f"dual-pol receiver expects 2-D field with leading axis 2, "
-                f"got shape {field.shape}"
+                f"dual-pol receiver expects 2-D field with leading axis 2, got shape {field.shape}"
             )
         x = self._decode_one(field[0], polarization="dual", _stack=True)
         y = self._decode_one(field[1], polarization="dual", _stack=True)
@@ -286,9 +283,7 @@ class ExperimentalReceiver(Receiver):
         decisions = nearest_symbol_indices(rx_syms, cfg.points).astype(np.intp)
         decided_syms = cfg.points[decisions].astype(np.complex128)
 
-        bits = (
-            self.dm.decode(decisions) if self.dm is not None else cfg.demap(decided_syms)
-        )
+        bits = self.dm.decode(decisions) if self.dm is not None else cfg.demap(decided_syms)
 
         return ExperimentalReceivedSymbols(
             symbols=rx_syms,

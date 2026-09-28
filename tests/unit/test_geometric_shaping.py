@@ -18,6 +18,7 @@ from hpcom.transmitter import SingleCarrierTransmitter
 # Validation
 # ---------------------------------------------------------------------------
 
+
 def test_apsk_size_must_be_power_of_two():
     with pytest.raises(ValueError, match="power of 2"):
         apsk(ring_sizes=(4, 8, 3), ring_radii=(1.0, 2.0, 3.0))
@@ -42,11 +43,15 @@ def test_apsk_phase_length_mismatch():
 # Shape
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("ring_sizes,ring_radii,expected_m", [
-    ((4, 12), (1.0, 2.85), 16),  # DVB-S2 16-APSK
-    ((4, 12, 16), (1.0, 2.6, 4.3), 32),  # 32-APSK
-    ((1, 7), (0.0 + 1e-12, 1.0), 8),  # degenerate inner 1-PSK + 7-PSK ring (still 8)
-])
+
+@pytest.mark.parametrize(
+    "ring_sizes,ring_radii,expected_m",
+    [
+        ((4, 12), (1.0, 2.85), 16),  # DVB-S2 16-APSK
+        ((4, 12, 16), (1.0, 2.6, 4.3), 32),  # 32-APSK
+        ((1, 7), (0.0 + 1e-12, 1.0), 8),  # degenerate inner 1-PSK + 7-PSK ring (still 8)
+    ],
+)
 def test_apsk_total_size(ring_sizes, ring_radii, expected_m):
     cfg = apsk(ring_sizes=ring_sizes, ring_radii=ring_radii)
     assert isinstance(cfg, ConstellationConfig)
@@ -72,8 +77,7 @@ def test_apsk_inner_ring_points_have_smaller_magnitude():
 
 def test_apsk_ring_phase_rotates_points():
     cfg_a = apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85))
-    cfg_b = apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85),
-                 ring_phases=(np.pi / 4, 0.0))
+    cfg_b = apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85), ring_phases=(np.pi / 4, 0.0))
     # Inner ring of cfg_b is cfg_a's inner ring rotated by π/4.
     rot = np.exp(1j * np.pi / 4)
     inner_a = cfg_a.points[:4]
@@ -94,11 +98,18 @@ def test_apsk_minimum_distance_positive():
 # B2B round-trip
 # ---------------------------------------------------------------------------
 
+
 def test_apsk_16_b2b_noiseless_recovers_bits():
     cfg = apsk(ring_sizes=(4, 12), ring_radii=(1.0, 2.85))
     span = 16
-    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=1024,
-                     samples_per_symbol=8, pulse_span_symbols=span, seed=17)
+    tx = SingleCarrierTransmitter(
+        constellation=cfg,
+        symbol_rate_hz=32e9,
+        n_symbols=1024,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
+        seed=17,
+    )
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
@@ -113,8 +124,14 @@ def test_apsk_16_b2b_noiseless_recovers_bits():
 def test_apsk_32_b2b_noiseless_recovers_bits():
     cfg = apsk(ring_sizes=(4, 12, 16), ring_radii=(1.0, 2.6, 4.3))
     span = 16
-    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=2048,
-                     samples_per_symbol=8, pulse_span_symbols=span, seed=19)
+    tx = SingleCarrierTransmitter(
+        constellation=cfg,
+        symbol_rate_hz=32e9,
+        n_symbols=2048,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
+        seed=19,
+    )
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
@@ -129,6 +146,7 @@ def test_apsk_32_b2b_noiseless_recovers_bits():
 # ---------------------------------------------------------------------------
 # Single-ring (pure PSK)
 # ---------------------------------------------------------------------------
+
 
 def test_apsk_single_ring_is_psk():
     """apsk with one ring is equivalent to M-PSK with equi-spaced points."""
@@ -146,8 +164,14 @@ def test_apsk_single_ring_b2b_noiseless():
     """Single-ring 8-PSK B2B round-trip."""
     cfg = apsk(ring_sizes=(8,), ring_radii=(1.0,))
     span = 8
-    tx = SingleCarrierTransmitter(constellation=cfg, symbol_rate_hz=32e9, n_symbols=512,
-                     samples_per_symbol=8, pulse_span_symbols=span, seed=21)
+    tx = SingleCarrierTransmitter(
+        constellation=cfg,
+        symbol_rate_hz=32e9,
+        n_symbols=512,
+        samples_per_symbol=8,
+        pulse_span_symbols=span,
+        seed=21,
+    )
     rx = SingleCarrierReceiver(constellation=cfg, samples_per_symbol=8, pulse_span_symbols=span)
 
     sent = tx.generate()
@@ -162,6 +186,7 @@ def test_apsk_single_ring_b2b_noiseless():
 # ---------------------------------------------------------------------------
 # Bit-labeling contract
 # ---------------------------------------------------------------------------
+
 
 def test_apsk_default_labels_are_binary_indexed():
     """Default labels are MSB-first binary (index i → binary(i)).

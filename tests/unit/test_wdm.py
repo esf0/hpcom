@@ -20,14 +20,10 @@ def test_wdm_config_rejects_non_positive_spacing():
 
 def test_wdm_channel_frequencies_are_centered():
     cfg = WDMConfig(n_channels=3, spacing_hz=50e9)
-    np.testing.assert_allclose(
-        cfg.channel_frequencies_hz(), [-50e9, 0.0, 50e9]
-    )
+    np.testing.assert_allclose(cfg.channel_frequencies_hz(), [-50e9, 0.0, 50e9])
     # Even N → symmetric around 0, no channel exactly at 0.
     cfg2 = WDMConfig(n_channels=4, spacing_hz=25e9)
-    np.testing.assert_allclose(
-        cfg2.channel_frequencies_hz(), [-37.5e9, -12.5e9, 12.5e9, 37.5e9]
-    )
+    np.testing.assert_allclose(cfg2.channel_frequencies_hz(), [-37.5e9, -12.5e9, 12.5e9, 37.5e9])
 
 
 def test_transmitter_rejects_undersampled_wdm():

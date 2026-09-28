@@ -41,7 +41,9 @@ def test_noiseless_b2b_recovers_all_symbols(order: int):
 
 
 def test_dt_s_consistent_with_symbol_rate():
-    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=10e9, n_symbols=10, samples_per_symbol=4)
+    tx = SingleCarrierTransmitter(
+        modulation_order=16, symbol_rate_hz=10e9, n_symbols=10, samples_per_symbol=4
+    )
     assert tx.dt_s == pytest.approx(1.0 / (10e9 * 4))
     sig = tx.generate()
     assert sig.field.shape == (10 * 4,)
@@ -50,7 +52,9 @@ def test_dt_s_consistent_with_symbol_rate():
 
 def test_invalid_samples_per_symbol_rejected():
     with pytest.raises(ValueError, match="samples_per_symbol"):
-        SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=1)
+        SingleCarrierTransmitter(
+            modulation_order=4, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=1
+        )
 
 
 def test_seed_makes_generation_deterministic():

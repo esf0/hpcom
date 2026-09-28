@@ -35,8 +35,8 @@ def main() -> None:
     n_samples = 1024
     dt_s = 1e-11
     rng = np.random.default_rng(0)
-    field_x = ((rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)) * 1e-3)
-    field_y = ((rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)) * 1e-3)
+    field_x = (rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)) * 1e-3
+    field_y = (rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)) * 1e-3
     field = np.stack([field_x, field_y], axis=0).astype(np.complex128)
 
     out = fiber_dual.propagate(field, dt_s=dt_s)
@@ -45,7 +45,7 @@ def main() -> None:
     p_out = float(np.mean(np.abs(out) ** 2))
     print(f"Manakov over {fiber_dual.length_km:.0f} km SSMF, dual-pol")
     print(f"  input mean power:  {p_in:.3e}")
-    print(f"  output mean power: {p_out:.3e}  (loss {10*np.log10(p_in/p_out):.2f} dB)")
+    print(f"  output mean power: {p_out:.3e}  (loss {10 * np.log10(p_in / p_out):.2f} dB)")
     print(f"  output shape:      {out.shape}")
 
 

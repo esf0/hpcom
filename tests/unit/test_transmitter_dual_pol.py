@@ -85,9 +85,7 @@ def test_dual_pol_b2b_each_pol_recovers_its_own_bits():
         rx_bits = symbols_to_bits(rx_syms, tx.modulation_order)
         sent_bits = sent.bits[pol].reshape(-1, k)[skip:-skip]
         rx_bits_view = rx_bits.reshape(-1, k)[skip:-skip]
-        assert int(np.sum(sent_bits != rx_bits_view)) == 0, (
-            f"pol={pol}: dual-pol B2B BER must be 0"
-        )
+        assert int(np.sum(sent_bits != rx_bits_view)) == 0, f"pol={pol}: dual-pol B2B BER must be 0"
 
 
 def test_dual_pol_deterministic_bits_input():
@@ -144,9 +142,7 @@ def test_dual_pol_pilots_apply_to_both_pols():
     sent = tx.generate()
     pilot_idx = cfg.pilot_indices(tx.n_symbols)
     for pol in (0, 1):
-        np.testing.assert_allclose(
-            sent.symbols[pol, pilot_idx], cfg.symbol, atol=1e-12
-        )
+        np.testing.assert_allclose(sent.symbols[pol, pilot_idx], cfg.symbol, atol=1e-12)
 
 
 def test_dual_pol_rejects_wrong_input_shapes():

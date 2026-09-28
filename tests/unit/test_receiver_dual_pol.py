@@ -165,7 +165,11 @@ def test_dual_pol_received_signal_has_polarization_field():
     assert received.polarization == "dual"
 
     tx_s = SingleCarrierTransmitter(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8, seed=0)
-    rx_s = SingleCarrierReceiver(modulation_order=4, samples_per_symbol=tx_s.samples_per_symbol,
-                    roll_off=tx_s.roll_off, pulse_span_symbols=tx_s.pulse_span_symbols)
+    rx_s = SingleCarrierReceiver(
+        modulation_order=4,
+        samples_per_symbol=tx_s.samples_per_symbol,
+        roll_off=tx_s.roll_off,
+        pulse_span_symbols=tx_s.pulse_span_symbols,
+    )
     received_s = rx_s.receive(tx_s.generate().field)
     assert received_s.polarization == "single"

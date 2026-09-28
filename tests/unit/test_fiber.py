@@ -60,5 +60,6 @@ def test_frozen_model_rejects_mutation():
     fiber = Fiber.ssmf(80.0)
     # pydantic frozen=True raises ValidationError on attempted setattr.
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError, match="frozen"):
         fiber.length_km = 100.0  # type: ignore[misc]

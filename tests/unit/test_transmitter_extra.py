@@ -81,9 +81,7 @@ def test_fed_symbols_round_trip_exactly(order: int):
     # span=32 the coherent worst case is a few %, so use atol=2e-2 for the
     # raw complex amplitude. Bit-level recovery (which uses hard decision)
     # is tested separately and is exact.
-    np.testing.assert_allclose(
-        received.symbols[skip:-skip], symbols[skip:-skip], atol=2e-2
-    )
+    np.testing.assert_allclose(received.symbols[skip:-skip], symbols[skip:-skip], atol=2e-2)
 
 
 def test_constant_symbol_produces_cw_carrier():
@@ -111,9 +109,7 @@ def test_constant_symbol_produces_cw_carrier():
     skip = tx.pulse_span_symbols
     # With pulse_span=64 sps=8 roll_off=0.1, coherent leakage from constant
     # neighbours stays below 2%. Tighter tolerances need a much longer filter.
-    np.testing.assert_allclose(
-        received.symbols[skip:-skip], constant, atol=2e-2
-    )
+    np.testing.assert_allclose(received.symbols[skip:-skip], constant, atol=2e-2)
 
 
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
@@ -196,7 +192,10 @@ def test_symbols_input_demaps_off_grid_to_nearest_bits():
     constellation, labels = square_qam(order)
     # Pick the first 8 constellation points, perturb each by a tiny noise.
     clean = constellation[:8]
-    noisy = clean + 1e-3 * (np.random.default_rng(0).standard_normal(8) + 1j * np.random.default_rng(1).standard_normal(8))
+    noisy = clean + 1e-3 * (
+        np.random.default_rng(0).standard_normal(8)
+        + 1j * np.random.default_rng(1).standard_normal(8)
+    )
     tx = SingleCarrierTransmitter(modulation_order=order, symbol_rate_hz=1e9, n_symbols=8)
     sent_clean = tx.generate(symbols=clean)
     sent_noisy = tx.generate(symbols=noisy)

@@ -42,15 +42,23 @@ def _passthrough_link() -> Link:
 def test_simulation_launch_power_dbm_yields_target_power(dbm: float):
     """`launch_power_dbm=X` → received_field mean power = 10^(X/10) mW exactly."""
     tx = SingleCarrierTransmitter(
-        modulation_order=16, symbol_rate_hz=10e9, n_symbols=4096,
-        samples_per_symbol=8, pulse_span_symbols=32, seed=0,
+        modulation_order=16,
+        symbol_rate_hz=10e9,
+        n_symbols=4096,
+        samples_per_symbol=8,
+        pulse_span_symbols=32,
+        seed=0,
     )
     rx = SingleCarrierReceiver(
-        modulation_order=16, samples_per_symbol=tx.samples_per_symbol,
-        roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols,
+        modulation_order=16,
+        samples_per_symbol=tx.samples_per_symbol,
+        roll_off=tx.roll_off,
+        pulse_span_symbols=tx.pulse_span_symbols,
     )
     sim = Simulation(
-        transmitter=tx, link=_passthrough_link(), receiver=rx,
+        transmitter=tx,
+        link=_passthrough_link(),
+        receiver=rx,
         launch_power_dbm=dbm,
     )
     result = sim.run()
@@ -62,12 +70,18 @@ def test_simulation_launch_power_dbm_yields_target_power(dbm: float):
 def test_launch_power_dbm_none_leaves_field_unscaled():
     """Default behaviour: no rescale; field power = constellation unit / sps."""
     tx = SingleCarrierTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=4096,
-        samples_per_symbol=8, pulse_span_symbols=32, seed=0,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=4096,
+        samples_per_symbol=8,
+        pulse_span_symbols=32,
+        seed=0,
     )
     rx = SingleCarrierReceiver(
-        modulation_order=4, samples_per_symbol=tx.samples_per_symbol,
-        roll_off=tx.roll_off, pulse_span_symbols=tx.pulse_span_symbols,
+        modulation_order=4,
+        samples_per_symbol=tx.samples_per_symbol,
+        roll_off=tx.roll_off,
+        pulse_span_symbols=tx.pulse_span_symbols,
     )
     sim = Simulation(transmitter=tx, link=_passthrough_link(), receiver=rx)
     result = sim.run()
@@ -83,9 +97,12 @@ def test_launch_power_dbm_none_leaves_field_unscaled():
 def test_fiber_loss_matches_beer_lambert(alpha: float, length: float):
     """Pure-loss fiber: output mean power = input × 10^(-α·L/10) exactly."""
     fiber = Fiber(
-        length_km=length, alpha_db_per_km=alpha,
-        beta2_s2_per_m=0.0, gamma_per_w_per_km=0.0,
-        n_steps=10, backend="numpy-linear",
+        length_km=length,
+        alpha_db_per_km=alpha,
+        beta2_s2_per_m=0.0,
+        gamma_per_w_per_km=0.0,
+        n_steps=10,
+        backend="numpy-linear",
     )
     rng = np.random.default_rng(0)
     n = 2048
@@ -131,11 +148,15 @@ def test_edfa_deterministic_amplitude_when_seed_pinned():
     rng_signal = np.random.default_rng(42)
     rng_zero = np.random.default_rng(42)
     n = 2048
-    sig = (np.random.default_rng(0).standard_normal(n)
-           + 1j * np.random.default_rng(1).standard_normal(n)) / np.sqrt(2)
+    sig = (
+        np.random.default_rng(0).standard_normal(n)
+        + 1j * np.random.default_rng(1).standard_normal(n)
+    ) / np.sqrt(2)
     out_signal = edfa.amplify(sig, dt_s=1e-11, rng=rng_signal)
     out_noise = edfa.amplify(
-        np.zeros_like(sig), dt_s=1e-11, rng=rng_zero,
+        np.zeros_like(sig),
+        dt_s=1e-11,
+        rng=rng_zero,
     )
     deterministic = out_signal - out_noise
     expected_deterministic = np.sqrt(10.0 ** (edfa.gain_db / 10.0)) * sig
@@ -152,8 +173,12 @@ def test_wdm_channel_centers_match_grid_to_subbin_precision():
     # 5 channels × 37.5 GHz spacing → outer center ±75 GHz; with Rs=10 GHz
     # and roll-off 0.1, need fs > 2·(75e9 + 5.5e9) = 161 GHz → sps ≥ 17.
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=4096,
-        samples_per_symbol=32, pulse_span_symbols=32, wdm=cfg,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=4096,
+        samples_per_symbol=32,
+        pulse_span_symbols=32,
+        wdm=cfg,
     )
     # Constant 1+0j on every channel → each is a pure tone at f_i.
     symbols = np.ones((cfg.n_channels, tx.n_symbols), dtype=np.complex128)
@@ -192,8 +217,12 @@ def test_wdm_channel_centers_match_grid_to_subbin_precision():
 def test_dual_pol_total_power_equals_sum_of_per_pol_powers():
     """Trivial sanity: |E_x|² + |E_y|² across all samples = total intensity."""
     tx = SingleCarrierTransmitter(
-        modulation_order=16, symbol_rate_hz=10e9, n_symbols=4096,
-        samples_per_symbol=8, pulse_span_symbols=32, seed=0,
+        modulation_order=16,
+        symbol_rate_hz=10e9,
+        n_symbols=4096,
+        samples_per_symbol=8,
+        pulse_span_symbols=32,
+        seed=0,
         polarization="dual",
     )
     sent = tx.generate()
@@ -207,8 +236,12 @@ def test_dual_pol_total_power_equals_sum_of_per_pol_powers():
 def test_dual_pol_per_pol_power_equal_for_uniform_qam():
     """Identical bit-rate / constellation on X and Y → equal average power."""
     tx = SingleCarrierTransmitter(
-        modulation_order=16, symbol_rate_hz=10e9, n_symbols=16384,
-        samples_per_symbol=4, pulse_span_symbols=32, seed=0,
+        modulation_order=16,
+        symbol_rate_hz=10e9,
+        n_symbols=16384,
+        samples_per_symbol=4,
+        pulse_span_symbols=32,
+        seed=0,
         polarization="dual",
     )
     sent = tx.generate()
@@ -230,17 +263,25 @@ def test_wdm_composite_power_equals_n_times_single_channel(n_ch: int):
     # sps must satisfy fs > 2·((n_ch-1)/2·spacing + Rs·(1+ro)/2). For n_ch=5
     # and 50 GHz spacing that's 211 GHz → sps ≥ 22 at Rs=10 GHz. Use 32.
     tx = WDMTransmitter(
-        modulation_order=16, symbol_rate_hz=10e9, n_symbols=4096,
-        samples_per_symbol=32, pulse_span_symbols=32, seed=0, wdm=cfg,
+        modulation_order=16,
+        symbol_rate_hz=10e9,
+        n_symbols=4096,
+        samples_per_symbol=32,
+        pulse_span_symbols=32,
+        seed=0,
+        wdm=cfg,
     )
     sent = tx.generate()
     composite_p = float(np.mean(np.abs(sent.field) ** 2))
 
     # Reference: same-config single-channel Tx (no WDM).
     single = SingleCarrierTransmitter(
-        modulation_order=16, symbol_rate_hz=10e9, n_symbols=tx.n_symbols,
+        modulation_order=16,
+        symbol_rate_hz=10e9,
+        n_symbols=tx.n_symbols,
         samples_per_symbol=tx.samples_per_symbol,
-        pulse_span_symbols=tx.pulse_span_symbols, seed=0,
+        pulse_span_symbols=tx.pulse_span_symbols,
+        seed=0,
     )
     single_p = float(np.mean(np.abs(single.generate().field) ** 2))
     np.testing.assert_allclose(composite_p, n_ch * single_p, rtol=0.02)
@@ -257,14 +298,18 @@ def test_cd_compensation_undoes_linear_fiber_exactly():
     dt_s = 1e-11
     sig = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) / np.sqrt(2)
     fiber = Fiber(
-        length_km=80.0, alpha_db_per_km=0.0,
-        beta2_s2_per_m=-2.16e-26, gamma_per_w_per_km=0.0,
-        n_steps=100, backend="numpy-linear",
+        length_km=80.0,
+        alpha_db_per_km=0.0,
+        beta2_s2_per_m=-2.16e-26,
+        gamma_per_w_per_km=0.0,
+        n_steps=100,
+        backend="numpy-linear",
     )
     out = fiber.propagate(sig, dt_s=dt_s)
 
     rx = SingleCarrierReceiver(
-        modulation_order=4, samples_per_symbol=2,
+        modulation_order=4,
+        samples_per_symbol=2,
         cd_compensation_s2=fiber.beta2_s2_per_m * fiber.length_km * 1e3,
     )
     # Use private _undo_dispersion directly — receive() does matched filtering

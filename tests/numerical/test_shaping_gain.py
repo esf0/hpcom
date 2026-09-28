@@ -28,6 +28,7 @@ from hpcom.modulation import (
 # MI estimator
 # ---------------------------------------------------------------------------
 
+
 def _mutual_information_awgn(
     constellation: np.ndarray,
     pmf: np.ndarray,
@@ -57,9 +58,7 @@ def _mutual_information_awgn(
     log_pyx_grid = -(np.abs(y[:, None] - constellation[None, :]) ** 2) / n0
     # log Σ_i p_i exp(log_pyx_grid)  via log-sum-exp.
     m = log_pyx_grid.max(axis=1, keepdims=True)
-    log_py = m.squeeze(axis=1) + np.log(
-        np.sum(pmf[None, :] * np.exp(log_pyx_grid - m), axis=1)
-    )
+    log_py = m.squeeze(axis=1) + np.log(np.sum(pmf[None, :] * np.exp(log_pyx_grid - m), axis=1))
 
     log_pyx_tx = log_pyx_grid[np.arange(n_samples), idx]
     mi_nats = float(np.mean(log_pyx_tx - log_py))
@@ -75,10 +74,9 @@ def _snr_at_target_mi(
     rng: np.random.Generator,
 ) -> float:
     """Linear-interpolate the SNR at which estimated MI crosses ``target_mi``."""
-    mis = np.array([
-        _mutual_information_awgn(constellation, pmf, s, n_samples, rng)
-        for s in snr_grid_db
-    ])
+    mis = np.array(
+        [_mutual_information_awgn(constellation, pmf, s, n_samples, rng) for s in snr_grid_db]
+    )
     if not (mis[0] < target_mi < mis[-1]):
         raise AssertionError(
             f"target_mi {target_mi} not bracketed by MI grid "
@@ -90,6 +88,7 @@ def _snr_at_target_mi(
 # ---------------------------------------------------------------------------
 # Acceptance test
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.slow
 def test_64qam_maxwell_boltzmann_shaping_gain_at_4_bits():
@@ -109,9 +108,7 @@ def test_64qam_maxwell_boltzmann_shaping_gain_at_4_bits():
     # at MI = 4 — comfortably above the 0.5 dB acceptance threshold.
     nu = 1.2
     shaped_pmf = maxwell_boltzmann(points_raw, nu=nu)
-    cfg_shaped = ConstellationConfig.from_points(
-        points_raw, probabilities=shaped_pmf
-    )
+    cfg_shaped = ConstellationConfig.from_points(points_raw, probabilities=shaped_pmf)
 
     # H(p) sanity-check: must exceed target_mi so MI can actually reach it.
     h_shaped = float(-np.sum(shaped_pmf * np.log2(shaped_pmf + 1e-300)))
@@ -125,12 +122,20 @@ def test_64qam_maxwell_boltzmann_shaping_gain_at_4_bits():
     n_samples = 20_000
 
     snr_uniform = _snr_at_target_mi(
-        cfg_uniform.points, cfg_uniform.probabilities, target_mi,
-        snr_grid, n_samples, rng,
+        cfg_uniform.points,
+        cfg_uniform.probabilities,
+        target_mi,
+        snr_grid,
+        n_samples,
+        rng,
     )
     snr_shaped = _snr_at_target_mi(
-        cfg_shaped.points, cfg_shaped.probabilities, target_mi,
-        snr_grid, n_samples, rng,
+        cfg_shaped.points,
+        cfg_shaped.probabilities,
+        target_mi,
+        snr_grid,
+        n_samples,
+        rng,
     )
     gain_db = snr_uniform - snr_shaped
 
@@ -141,6 +146,4 @@ def test_64qam_maxwell_boltzmann_shaping_gain_at_4_bits():
         f"  M-B (ν={nu}): SNR = {snr_shaped:.3f} dB  (H(p) = {h_shaped:.2f} bits)\n"
         f"  shaping gain = {gain_db:.3f} dB"
     )
-    assert gain_db >= 0.5, (
-        f"shaping gain {gain_db:.3f} dB < 0.5 dB acceptance threshold"
-    )
+    assert gain_db >= 0.5, f"shaping gain {gain_db:.3f} dB < 0.5 dB acceptance threshold"

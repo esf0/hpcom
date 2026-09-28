@@ -6,7 +6,9 @@ import numpy as np
 import numpy.typing as npt
 
 
-def root_raised_cosine(n_taps: int, samples_per_symbol: int, roll_off: float) -> npt.NDArray[np.float64]:
+def root_raised_cosine(
+    n_taps: int, samples_per_symbol: int, roll_off: float
+) -> npt.NDArray[np.float64]:
     """Root-raised-cosine FIR with unit *energy* (Σ h² = 1).
 
     Two cascaded unit-energy RRC filters yield a raised-cosine response that is

@@ -72,9 +72,7 @@ class TensorFlowPropagator(Propagator):
 
         if polarization == "single":
             if field_c.ndim != 1:
-                raise ValueError(
-                    f"single-pol fiber expects 1-D field, got shape {field_c.shape}"
-                )
+                raise ValueError(f"single-pol fiber expects 1-D field, got shape {field_c.shape}")
             sig = tf.constant(field_c, dtype=tf.complex128)
             out_tf = tf_fiber_propogate(  # type: ignore[no-untyped-call]
                 sig,

@@ -109,9 +109,7 @@ def test_legacy_symbol_equals_conj_v1_times_rms(m_order: int):
         bit_str = "".join(str(int(b)) for b in bits)
         legacy_sym = legacy_dict[bit_str]
         # Match: legacy = norm · conj(v1)
-        np.testing.assert_allclose(
-            legacy_sym, norm * np.conj(v1_sym), atol=1e-12
-        )
+        np.testing.assert_allclose(legacy_sym, norm * np.conj(v1_sym), atol=1e-12)
 
 
 @pytest.mark.parametrize("m_order", [4, 16, 64])
@@ -150,8 +148,12 @@ def test_legacy_field_is_real_scaled_conj_of_v1_field(m_order: int):
     rolloff = 0.1
 
     wdm = _legacy_wdm_dict(
-        m_order=m_order, n_symbols=n_sym, sps=sps, rs=rs,
-        p_ave_w=p_ave_w, roll_off=rolloff,
+        m_order=m_order,
+        n_symbols=n_sym,
+        sps=sps,
+        rs=rs,
+        p_ave_w=p_ave_w,
+        roll_off=rolloff,
     )
     rng = np.random.default_rng(0)
     bits_arr = rng.integers(0, 2, size=n_sym * _N_BITS[_MOD_TYPE[m_order]], dtype=np.uint8)
@@ -161,8 +163,12 @@ def test_legacy_field_is_real_scaled_conj_of_v1_field(m_order: int):
     legacy_field = np.asarray(legacy_signal, dtype=np.complex128)
 
     tx = SingleCarrierTransmitter(
-        modulation_order=m_order, symbol_rate_hz=rs, n_symbols=n_sym,
-        samples_per_symbol=sps, roll_off=rolloff, pulse_span_symbols=32,
+        modulation_order=m_order,
+        symbol_rate_hz=rs,
+        n_symbols=n_sym,
+        samples_per_symbol=sps,
+        roll_off=rolloff,
+        pulse_span_symbols=32,
     )
     v1_field = tx.generate(bits=bits_arr).field
 
@@ -181,12 +187,8 @@ def test_legacy_field_is_real_scaled_conj_of_v1_field(m_order: int):
     # circular-vs-linear conv residual bleeding into the trimmed region;
     # in practice 99%+ of samples agree to 5%, with a handful of edge-
     # bleed outliers. Test the *median* magnitude, not every sample.
-    median_dev = float(
-        np.median(np.abs(np.abs(ratios) - abs(re_mean)) / abs(re_mean))
-    )
-    assert median_dev < 0.05, (
-        f"median |ratio| deviation = {median_dev:.3%} exceeds 5%"
-    )
+    median_dev = float(np.median(np.abs(np.abs(ratios) - abs(re_mean)) / abs(re_mean)))
+    assert median_dev < 0.05, f"median |ratio| deviation = {median_dev:.3%} exceeds 5%"
 
 
 def test_legacy_field_qpsk_known_power_scale():
@@ -198,8 +200,12 @@ def test_legacy_field_qpsk_known_power_scale():
     n_sym = 512
     sps = 8
     wdm = _legacy_wdm_dict(
-        m_order=4, n_symbols=n_sym, sps=sps, rs=10e9,
-        p_ave_w=1e-3, roll_off=0.1,
+        m_order=4,
+        n_symbols=n_sym,
+        sps=sps,
+        rs=10e9,
+        p_ave_w=1e-3,
+        roll_off=0.1,
     )
     rng = np.random.default_rng(1)
     bits_arr = rng.integers(0, 2, size=n_sym * 2, dtype=np.uint8)
@@ -207,15 +213,17 @@ def test_legacy_field_qpsk_known_power_scale():
     legacy_signal, _ = generate_wdm_base(wdm, bits=bits_str, seed=0)
     legacy_field = np.asarray(legacy_signal, dtype=np.complex128)
     tx = SingleCarrierTransmitter(
-        modulation_order=4, symbol_rate_hz=10e9, n_symbols=n_sym,
-        samples_per_symbol=sps, roll_off=0.1, pulse_span_symbols=32,
+        modulation_order=4,
+        symbol_rate_hz=10e9,
+        n_symbols=n_sym,
+        samples_per_symbol=sps,
+        roll_off=0.1,
+        pulse_span_symbols=32,
     )
     v1_field = tx.generate(bits=bits_arr).field
 
     skip = 32 * sps
-    re_mean = float(
-        np.real(legacy_field[skip:-skip] / np.conj(v1_field[skip:-skip])).mean()
-    )
+    re_mean = float(np.real(legacy_field[skip:-skip] / np.conj(v1_field[skip:-skip])).mean())
     # Positive real scale (sqrt(p_ave) > 0, both RRC peaks > 0).
     assert re_mean > 0.0
 
@@ -241,8 +249,12 @@ def test_legacy_qpsk_3channel_wdm_conjugate_relation_holds():
     bits_per_ch = rng.integers(0, 2, size=(3, n_sym * 2), dtype=np.uint8)
 
     tx = WDMTransmitter(
-        modulation_order=4, symbol_rate_hz=rs, n_symbols=n_sym,
-        samples_per_symbol=sps, roll_off=rolloff, pulse_span_symbols=32,
+        modulation_order=4,
+        symbol_rate_hz=rs,
+        n_symbols=n_sym,
+        samples_per_symbol=sps,
+        roll_off=rolloff,
+        pulse_span_symbols=32,
         wdm=cfg,
     )
     sent = tx.generate(bits=bits_per_ch)
@@ -254,8 +266,12 @@ def test_legacy_qpsk_3channel_wdm_conjugate_relation_holds():
         v1_baseband = sent.field * np.exp(-2j * np.pi * float(f_ch) * t)
 
         wdm_dict = _legacy_wdm_dict(
-            m_order=4, n_symbols=n_sym, sps=sps, rs=rs,
-            p_ave_w=1e-3, roll_off=rolloff,
+            m_order=4,
+            n_symbols=n_sym,
+            sps=sps,
+            rs=rs,
+            p_ave_w=1e-3,
+            roll_off=rolloff,
         )
         bits_str = "".join(str(int(b)) for b in bits_per_ch[ch_idx])
         legacy_signal, _ = generate_wdm_base(wdm_dict, bits=bits_str, seed=0)

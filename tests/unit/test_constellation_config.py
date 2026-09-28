@@ -17,6 +17,7 @@ from hpcom.modulation import (
 # Validation
 # ---------------------------------------------------------------------------
 
+
 def test_rejects_non_power_of_two_size():
     points = np.array([1 + 0j, -1 + 0j, 0 + 1j], dtype=np.complex128)
     bit_labels = np.zeros((3, 2), dtype=np.uint8)
@@ -78,6 +79,7 @@ def test_rejects_negative_probabilities():
 # Factories
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("m", [4, 16, 64, 256])
 def test_from_square_qam_matches_flat_api(m):
     cfg = ConstellationConfig.from_square_qam(m)
@@ -101,7 +103,9 @@ def test_from_square_qam_demap_matches_flat_api():
     bits = rng.integers(0, 2, size=cfg.bits_per_symbol * 512, dtype=np.uint8)
     symbols = bits_to_symbols(bits, 16)
     # Add small noise so the nearest-neighbour decision is exercised.
-    noisy = symbols + 0.05 * (rng.standard_normal(symbols.shape) + 1j * rng.standard_normal(symbols.shape))
+    noisy = symbols + 0.05 * (
+        rng.standard_normal(symbols.shape) + 1j * rng.standard_normal(symbols.shape)
+    )
 
     np.testing.assert_array_equal(cfg.demap(noisy), symbols_to_bits(noisy, 16))
 
@@ -146,6 +150,7 @@ def test_from_points_with_probabilities_normalises_expected_power():
 # ---------------------------------------------------------------------------
 # Frozen / immutable
 # ---------------------------------------------------------------------------
+
 
 def test_model_is_frozen():
     cfg = ConstellationConfig.from_square_qam(4)

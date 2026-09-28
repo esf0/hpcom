@@ -21,9 +21,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if config.getoption("--rungpu") or os.environ.get("HPCOM_RUN_GPU") == "1":
         return
     skip_gpu = pytest.mark.skip(reason="gpu test: pass --rungpu to enable")

@@ -57,6 +57,8 @@ def test_backward_direction_consistent_across_backends():
     field = ((rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 1e-3).astype(np.complex128)
     dt_s = 2e-11
 
-    np_back = get_propagator("numpy-linear").propagate(field, fiber, dt_s=dt_s, direction="backward")
+    np_back = get_propagator("numpy-linear").propagate(
+        field, fiber, dt_s=dt_s, direction="backward"
+    )
     tf_back = get_propagator("tensorflow").propagate(field, fiber, dt_s=dt_s, direction="backward")
     np.testing.assert_allclose(tf_back, np_back, atol=1e-8, rtol=1e-6)

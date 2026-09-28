@@ -49,7 +49,9 @@ def test_short_ssmf_edfa_chain_runs_and_decodes_correctly():
 
 
 def test_simulation_rejects_mismatched_modulation_order():
-    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=4)
+    tx = SingleCarrierTransmitter(
+        modulation_order=16, symbol_rate_hz=1e9, n_symbols=10, samples_per_symbol=4
+    )
     rx = SingleCarrierReceiver(modulation_order=64, samples_per_symbol=4)
     fiber = Fiber.ssmf(10.0, backend="numpy-linear")
     link = Link(elements=(fiber,))

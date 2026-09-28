@@ -47,8 +47,7 @@ class WDMConfig(BaseModel):
 
     n_channels: int = Field(
         ge=2,
-        description="Number of WDM channels (>= 2; use SingleCarrierTransmitter "
-                    "for one channel).",
+        description="Number of WDM channels (>= 2; use SingleCarrierTransmitter for one channel).",
     )
     spacing_hz: float = Field(gt=0, description="Inter-channel spacing in Hz.")
 
@@ -108,9 +107,7 @@ class WDMTransmitter(SingleCarrierTransmitter):
         # Per-channel one-sided bandwidth is Rs · (1 + roll_off) / 2.
         sample_rate_hz = self.symbol_rate_hz * self.samples_per_symbol
         outer_center = abs(self.wdm.channel_frequencies_hz()[-1])
-        needed = 2.0 * (
-            outer_center + self.symbol_rate_hz * (1.0 + self.roll_off) / 2.0
-        )
+        needed = 2.0 * (outer_center + self.symbol_rate_hz * (1.0 + self.roll_off) / 2.0)
         if sample_rate_hz < needed:
             raise ValueError(
                 f"WDM wideband sample rate ({sample_rate_hz:.3e} Hz) is below "
@@ -147,22 +144,14 @@ class WDMTransmitter(SingleCarrierTransmitter):
         # Validate deterministic-input shapes.
         if bits is not None:
             b = np.asarray(bits, dtype=np.uint8)
-            expected = (
-                (2, n_ch, bps) if n_pol == 2 else (n_ch, bps)
-            )
+            expected = (2, n_ch, bps) if n_pol == 2 else (n_ch, bps)
             if b.shape != expected:
-                raise ValueError(
-                    f"`bits` must have shape {expected}, got {b.shape}"
-                )
+                raise ValueError(f"`bits` must have shape {expected}, got {b.shape}")
         if symbols is not None:
             s = np.asarray(symbols, dtype=np.complex128)
-            expected_s = (
-                (2, n_ch, self.n_symbols) if n_pol == 2 else (n_ch, self.n_symbols)
-            )
+            expected_s = (2, n_ch, self.n_symbols) if n_pol == 2 else (n_ch, self.n_symbols)
             if s.shape != expected_s:
-                raise ValueError(
-                    f"`symbols` must have shape {expected_s}, got {s.shape}"
-                )
+                raise ValueError(f"`symbols` must have shape {expected_s}, got {s.shape}")
 
         # Seed tree: root → per-pol → per-channel.
         seed_seq = _seed_seq_from(rng, self.seed)
@@ -181,9 +170,7 @@ class WDMTransmitter(SingleCarrierTransmitter):
             composite = np.zeros(n_samples, dtype=np.complex128)
             this_pol_bits: list[npt.NDArray[np.uint8]] = []
             this_pol_syms: list[ComplexArray] = []
-            for ch_idx, (f_ch, sub_seq) in enumerate(
-                zip(freqs, ch_sub_seqs, strict=True)
-            ):
+            for ch_idx, (f_ch, sub_seq) in enumerate(zip(freqs, ch_sub_seqs, strict=True)):
                 ch_rng = np.random.default_rng(sub_seq)
                 if bits is not None:
                     b_in = bits[pol_idx, ch_idx] if n_pol == 2 else bits[ch_idx]
@@ -276,14 +263,11 @@ class WDMReceiver(SingleCarrierReceiver):
     def _validate_wdm_channel(self) -> WDMReceiver:
         if not 0 <= self.wdm_channel < self.wdm.n_channels:
             raise ValueError(
-                f"wdm_channel must be in [0, {self.wdm.n_channels}), "
-                f"got {self.wdm_channel}"
+                f"wdm_channel must be in [0, {self.wdm.n_channels}), got {self.wdm_channel}"
             )
         return self
 
-    def receive(
-        self, field: ComplexArray, dt_s: float | None = None
-    ) -> WDMReceivedSymbols:
+    def receive(self, field: ComplexArray, dt_s: float | None = None) -> WDMReceivedSymbols:
         if dt_s is None:
             raise ValueError(
                 "dt_s is required for WDMReceiver (needed to downshift the "

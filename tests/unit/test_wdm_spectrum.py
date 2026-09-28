@@ -52,12 +52,10 @@ def test_wdm_spectrum_peaks_at_expected_channel_frequencies():
         # the energy in a same-width window equidistant *between* two channels
         # (a "guard band").
         in_band = psd[np.abs(freqs - f_expected) <= rs / 2].sum()
-        guard_band = psd[
-            np.abs(freqs - (f_expected + tx.wdm.spacing_hz / 2)) <= rs / 2
-        ].sum()
+        guard_band = psd[np.abs(freqs - (f_expected + tx.wdm.spacing_hz / 2)) <= rs / 2].sum()
         assert in_band > 50 * guard_band, (
             f"channel at {f_expected:.2e} Hz: in-band {in_band:.3e} vs "
-            f"guard {guard_band:.3e} (ratio {in_band/guard_band:.1f}, "
+            f"guard {guard_band:.3e} (ratio {in_band / guard_band:.1f}, "
             f"expected >50)"
         )
     # And no significant energy outside the outer channel + Rs/2 margin.
@@ -65,7 +63,7 @@ def test_wdm_spectrum_peaks_at_expected_channel_frequencies():
     out_of_band = psd[np.abs(freqs) > outer].sum()
     total = psd.sum()
     assert out_of_band / total < 0.02, (
-        f"{out_of_band/total:.3%} of energy outside [-{outer:.2e}, +{outer:.2e}] Hz "
+        f"{out_of_band / total:.3%} of energy outside [-{outer:.2e}, +{outer:.2e}] Hz "
         f"(fs={fs:.2e} Hz)"
     )
 
@@ -102,7 +100,7 @@ def test_single_tone_per_channel_lands_at_correct_frequency():
         peak_freq = freqs[window][peak_idx_local]
         assert abs(peak_freq - f_expected) <= 2 * df, (
             f"channel peak landed at {peak_freq:.3e} Hz, expected {f_expected:.3e} "
-            f"(within ±2 bins = {2*df:.2e} Hz)"
+            f"(within ±2 bins = {2 * df:.2e} Hz)"
         )
 
 

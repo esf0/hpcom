@@ -81,9 +81,7 @@ def test_dual_pol_wdm_b2b_each_pol_each_channel_ber_zero(ch: int):
         sent_bits = sent.bits[pol, ch].reshape(-1, k)[skip:-skip]
         rx_bits = received.bits[pol].reshape(-1, k)[skip:-skip]
         n_err = int(np.sum(sent_bits != rx_bits))
-        assert n_err == 0, (
-            f"dual-pol × WDM: pol={pol} ch={ch} got {n_err} bit errors"
-        )
+        assert n_err == 0, f"dual-pol × WDM: pol={pol} ch={ch} got {n_err} bit errors"
 
 
 def test_dual_pol_wdm_pilot_recovery_per_pol():

@@ -156,6 +156,4 @@ def test_tf_wrapper_backward_uses_negative_length():
         alpha=0.0,
         beta3=0.0,
     )
-    np.testing.assert_array_equal(
-        wrapper_back, np.asarray(direct_back_tf, dtype=np.complex128)
-    )
+    np.testing.assert_array_equal(wrapper_back, np.asarray(direct_back_tf, dtype=np.complex128))

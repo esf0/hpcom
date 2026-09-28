@@ -13,9 +13,7 @@ _SUPPORTED_QAM_ORDERS = (4, 16, 64, 256, 1024)
 def bits_per_symbol(modulation_order: int) -> int:
     """Number of bits encoded per symbol (``log₂ M``)."""
     if modulation_order < 2 or (modulation_order & (modulation_order - 1)) != 0:
-        raise ValueError(
-            f"modulation_order must be a power of 2 ≥ 2, got {modulation_order}"
-        )
+        raise ValueError(f"modulation_order must be a power of 2 ≥ 2, got {modulation_order}")
     return int(np.log2(modulation_order))
 
 

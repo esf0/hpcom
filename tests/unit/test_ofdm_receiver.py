@@ -242,7 +242,10 @@ def test_noiseless_b2b_with_dm():
 
 def test_single_pol_output_shapes():
     tx, rx = _make_tx_rx(
-        n_subcarriers=64, n_guard=4, n_frames=10, modulation_order=16,
+        n_subcarriers=64,
+        n_guard=4,
+        n_frames=10,
+        modulation_order=16,
     )
     sent = tx.generate()
     rcv = rx.receive(sent.field)
@@ -254,8 +257,11 @@ def test_single_pol_output_shapes():
 
 def test_dual_pol_output_shapes():
     tx, rx = _make_tx_rx(
-        n_subcarriers=64, n_guard=4, n_frames=8,
-        modulation_order=16, polarization="dual",
+        n_subcarriers=64,
+        n_guard=4,
+        n_frames=8,
+        modulation_order=16,
+        polarization="dual",
     )
     sent = tx.generate()
     rcv = rx.receive(sent.field)
@@ -285,17 +291,24 @@ def test_pilot_eq_recovers_flat_fading_channel():
     pilot_idx = (2, 10, 20, 26, 40, 50, 60)
 
     ofdm_with_pilots = OFDMConfig(
-        n_subcarriers=n_sub, cp_len=cp_len, n_guard=n_guard,
+        n_subcarriers=n_sub,
+        cp_len=cp_len,
+        n_guard=n_guard,
         pilot_subcarrier_indices=pilot_idx,
     )
     ofdm_no_pilots = OFDMConfig(
-        n_subcarriers=n_sub, cp_len=cp_len, n_guard=n_guard,
+        n_subcarriers=n_sub,
+        cp_len=cp_len,
+        n_guard=n_guard,
     )
 
     # Build Tx with pilots and generate.
     tx_p = OFDMTransmitter(
-        modulation_order=mod, symbol_rate_hz=32e9, n_symbols=n_frames,
-        ofdm=ofdm_with_pilots, seed=42,
+        modulation_order=mod,
+        symbol_rate_hz=32e9,
+        n_symbols=n_frames,
+        ofdm=ofdm_with_pilots,
+        seed=42,
     )
     sent_p = tx_p.generate()
 
@@ -306,7 +319,7 @@ def test_pilot_eq_recovers_flat_fading_channel():
     amplitude = 0.8
     phase_slope = 0.05  # radians per subcarrier
     for f in range(n_frames):
-        block = sent_p.field[f * sps: (f + 1) * sps]
+        block = sent_p.field[f * sps : (f + 1) * sps]
         useful = block[cp_len:]
         spectrum = np.fft.fft(useful)
         # Apply channel in frequency domain.
@@ -319,7 +332,7 @@ def test_pilot_eq_recovers_flat_fading_channel():
             faded_block = np.concatenate([cp, useful_faded])
         else:
             faded_block = useful_faded
-        faded_field[f * sps: (f + 1) * sps] = faded_block
+        faded_field[f * sps : (f + 1) * sps] = faded_block
 
     # With pilots → equalizer should recover BER == 0.
     rx_p = OFDMReceiver(modulation_order=mod, ofdm=ofdm_with_pilots)
@@ -329,8 +342,11 @@ def test_pilot_eq_recovers_flat_fading_channel():
     # Without pilots on the same (faded) field → BER > 0 (channel distorts).
     # We need a Tx without pilots to get the reference bits.
     tx_np = OFDMTransmitter(
-        modulation_order=mod, symbol_rate_hz=32e9, n_symbols=n_frames,
-        ofdm=ofdm_no_pilots, seed=42,
+        modulation_order=mod,
+        symbol_rate_hz=32e9,
+        n_symbols=n_frames,
+        ofdm=ofdm_no_pilots,
+        seed=42,
     )
     sent_np = tx_np.generate()
 
@@ -338,7 +354,7 @@ def test_pilot_eq_recovers_flat_fading_channel():
     faded_field_np = np.empty_like(sent_np.field)
     sps_np = n_sub + cp_len
     for f in range(n_frames):
-        block = sent_np.field[f * sps_np: (f + 1) * sps_np]
+        block = sent_np.field[f * sps_np : (f + 1) * sps_np]
         useful = block[cp_len:]
         spectrum = np.fft.fft(useful)
         h = amplitude * np.exp(1j * phase_slope * np.arange(n_sub))
@@ -349,7 +365,7 @@ def test_pilot_eq_recovers_flat_fading_channel():
             faded_block = np.concatenate([cp, useful_faded])
         else:
             faded_block = useful_faded
-        faded_field_np[f * sps_np: (f + 1) * sps_np] = faded_block
+        faded_field_np[f * sps_np : (f + 1) * sps_np] = faded_block
 
     rx_np = OFDMReceiver(modulation_order=mod, ofdm=ofdm_no_pilots)
     rcv_np = rx_np.receive(faded_field_np)

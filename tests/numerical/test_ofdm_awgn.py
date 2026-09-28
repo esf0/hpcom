@@ -52,9 +52,7 @@ def _qam_ber_theory(m: int, es_n0_linear: float) -> float:
     """
     k = bits_per_symbol(m)
     sqrt_m = int(np.sqrt(m))
-    ber = (2.0 / k) * (1.0 - 1.0 / sqrt_m) * erfc(
-        np.sqrt(3.0 * es_n0_linear / (2.0 * (m - 1)))
-    )
+    ber = (2.0 / k) * (1.0 - 1.0 / sqrt_m) * erfc(np.sqrt(3.0 * es_n0_linear / (2.0 * (m - 1))))
     return float(ber)
 
 
@@ -67,9 +65,9 @@ def _qam_ber_theory(m: int, es_n0_linear: float) -> float:
 @pytest.mark.parametrize(
     "mod_order, snr_db",
     [
-        (4, 6.0),    # QPSK — BER ~ 2e-2
-        (4, 8.0),    # QPSK — BER ~ 2e-3
-        (4, 10.0),   # QPSK — BER ~ 5e-5
+        (4, 6.0),  # QPSK — BER ~ 2e-2
+        (4, 8.0),  # QPSK — BER ~ 2e-3
+        (4, 10.0),  # QPSK — BER ~ 5e-5
     ],
 )
 def test_ofdm_awgn_ber_matches_theory(mod_order: int, snr_db: float):
@@ -108,8 +106,7 @@ def test_ofdm_awgn_ber_matches_theory(mod_order: int, snr_db: float):
     noise_var = n_sub / (n_data * snr_linear)
     rng = np.random.default_rng(123)
     noise = np.sqrt(noise_var / 2.0) * (
-        rng.standard_normal(sent.field.shape)
-        + 1j * rng.standard_normal(sent.field.shape)
+        rng.standard_normal(sent.field.shape) + 1j * rng.standard_normal(sent.field.shape)
     )
     noisy_field = sent.field + noise
 

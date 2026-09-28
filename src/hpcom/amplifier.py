@@ -110,7 +110,9 @@ class EDFA(Amplifier):
             rng = np.random.default_rng()
 
         sample_rate_hz = 1.0 / dt_s
-        sigma_per_quadrature = float(np.sqrt(self.ase_noise_density_w_per_hz() * sample_rate_hz / 2.0))
+        sigma_per_quadrature = float(
+            np.sqrt(self.ase_noise_density_w_per_hz() * sample_rate_hz / 2.0)
+        )
         # Independent ASE per polarization (and per sample). For dual-pol the
         # broadcast over field.shape produces a (2, N) noise array natively.
         noise = rng.standard_normal(field.shape) + 1j * rng.standard_normal(field.shape)

@@ -119,8 +119,7 @@ def test_axis_nearest_neighbors_differ_by_one_bit(order: int):
             assert hamming(labels[grid_idx[q, i]], labels[grid_idx[q, i + 1]]) == 1
             # Sanity-check the spacing assumption holds.
             np.testing.assert_allclose(
-                constellation[grid_idx[q, i + 1]].real
-                - constellation[grid_idx[q, i]].real,
+                constellation[grid_idx[q, i + 1]].real - constellation[grid_idx[q, i]].real,
                 delta,
                 atol=1e-12,
             )

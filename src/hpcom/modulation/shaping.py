@@ -25,9 +25,7 @@ from hpcom.modulation.mapping import _pack_bit_groups_msb_first, nearest_symbol_
 _POWER_TOL = 1e-9
 
 
-def _expected_power(
-    points: ComplexArray, probabilities: npt.NDArray[np.float64] | None
-) -> float:
+def _expected_power(points: ComplexArray, probabilities: npt.NDArray[np.float64] | None) -> float:
     """E[|s|²] under the symbol distribution (uniform if probabilities is None)."""
     sq = np.abs(points) ** 2
     if probabilities is None:
@@ -80,15 +78,11 @@ class ConstellationConfig(BaseModel):
 
         m = points.shape[0]
         if points.ndim != 1 or not _is_power_of_two(m):
-            raise ValueError(
-                f"points must be 1-D with power-of-2 length, got shape {points.shape}"
-            )
+            raise ValueError(f"points must be 1-D with power-of-2 length, got shape {points.shape}")
 
         k = int(np.log2(m))
         if bit_labels.shape != (m, k):
-            raise ValueError(
-                f"bit_labels must have shape ({m}, {k}), got {bit_labels.shape}"
-            )
+            raise ValueError(f"bit_labels must have shape ({m}, {k}), got {bit_labels.shape}")
         if ((bit_labels != 0) & (bit_labels != 1)).any():
             raise ValueError("bit_labels must contain only 0/1 entries")
 
@@ -99,15 +93,11 @@ class ConstellationConfig(BaseModel):
         probabilities = self.probabilities
         if probabilities is not None:
             if probabilities.shape != (m,):
-                raise ValueError(
-                    f"probabilities must have shape ({m},), got {probabilities.shape}"
-                )
+                raise ValueError(f"probabilities must have shape ({m},), got {probabilities.shape}")
             if (probabilities < 0).any():
                 raise ValueError("probabilities must be non-negative")
             if not np.isclose(probabilities.sum(), 1.0, atol=1e-12):
-                raise ValueError(
-                    f"probabilities must sum to 1, got {probabilities.sum():.6e}"
-                )
+                raise ValueError(f"probabilities must sum to 1, got {probabilities.sum():.6e}")
 
         power = _expected_power(points, probabilities)
         if not np.isclose(power, 1.0, atol=_POWER_TOL):
@@ -156,16 +146,12 @@ class ConstellationConfig(BaseModel):
         points = np.asarray(points, dtype=np.complex128)
         m = points.shape[0]
         if points.ndim != 1 or not _is_power_of_two(m):
-            raise ValueError(
-                f"points must be 1-D with power-of-2 length, got shape {points.shape}"
-            )
+            raise ValueError(f"points must be 1-D with power-of-2 length, got shape {points.shape}")
 
         if probabilities is not None:
             probabilities = np.asarray(probabilities, dtype=np.float64)
             if probabilities.shape != (m,):
-                raise ValueError(
-                    f"probabilities must have shape ({m},), got {probabilities.shape}"
-                )
+                raise ValueError(f"probabilities must have shape ({m},), got {probabilities.shape}")
             if (probabilities < 0).any() or not np.isclose(probabilities.sum(), 1.0, atol=1e-12):
                 raise ValueError("probabilities must be non-negative and sum to 1")
 
@@ -187,9 +173,7 @@ class ConstellationConfig(BaseModel):
         k = self.bits_per_symbol
         bits = np.asarray(bits, dtype=np.uint8)
         if bits.size % k != 0:
-            raise ValueError(
-                f"bits length {bits.size} is not a multiple of {k}"
-            )
+            raise ValueError(f"bits length {bits.size} is not a multiple of {k}")
         groups = bits.reshape(-1, k)
         packed = _pack_bit_groups_msb_first(groups)
 
@@ -250,10 +234,7 @@ def apsk(
     if ring_phases is None:
         ring_phases = [0.0] * len(ring_sizes)
     elif len(ring_phases) != len(ring_sizes):
-        raise ValueError(
-            f"ring_phases must have length {len(ring_sizes)}, "
-            f"got {len(ring_phases)}"
-        )
+        raise ValueError(f"ring_phases must have length {len(ring_sizes)}, got {len(ring_phases)}")
     if any(n < 1 for n in ring_sizes):
         raise ValueError(f"all ring_sizes must be >= 1, got {ring_sizes}")
     if any(r <= 0 for r in ring_radii):
@@ -262,8 +243,7 @@ def apsk(
     total = int(sum(ring_sizes))
     if not _is_power_of_two(total):
         raise ValueError(
-            f"sum(ring_sizes) must be a power of 2, got {total} "
-            f"(ring_sizes={ring_sizes})"
+            f"sum(ring_sizes) must be a power of 2, got {total} (ring_sizes={ring_sizes})"
         )
 
     points_list: list[complex] = []

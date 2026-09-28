@@ -33,9 +33,8 @@ from hpcom._typing import ComplexArray
 # Maxwell–Boltzmann PMF
 # ---------------------------------------------------------------------------
 
-def maxwell_boltzmann(
-    constellation: ComplexArray, nu: float
-) -> npt.NDArray[np.float64]:
+
+def maxwell_boltzmann(constellation: ComplexArray, nu: float) -> npt.NDArray[np.float64]:
     """Maxwell–Boltzmann PMF over a constellation.
 
     For symbol energies ``E_i = |s_i|²`` the PMF is
@@ -65,9 +64,8 @@ def maxwell_boltzmann(
 # Composition (target PMF → integer counts summing to N)
 # ---------------------------------------------------------------------------
 
-def _composition_from_pmf(
-    pmf: npt.NDArray[np.float64], n: int
-) -> npt.NDArray[np.int64]:
+
+def _composition_from_pmf(pmf: npt.NDArray[np.float64], n: int) -> npt.NDArray[np.int64]:
     """Largest-remainder rounding: integer counts ``n_i`` with ``Σn_i = N``
     and ``n_i ≈ N·p_i``. Returns a length-M int64 array."""
     raw = pmf * n
@@ -84,10 +82,9 @@ def _composition_from_pmf(
 # Multiset rank / unrank
 # ---------------------------------------------------------------------------
 
+
 @lru_cache(maxsize=4096)
-def _multinomial_with_counts(
-    total: int, counts: tuple[int, ...]
-) -> int:
+def _multinomial_with_counts(total: int, counts: tuple[int, ...]) -> int:
     """``total! / Π(c_i!)`` with cache. ``sum(counts) == total`` is required."""
     if sum(counts) != total:
         raise ValueError(f"counts sum {sum(counts)} != total {total}")
@@ -151,6 +148,7 @@ def _rank_multiset(perm: list[int], composition: list[int]) -> int:
 # Bit ↔ int packing (MSB-first)
 # ---------------------------------------------------------------------------
 
+
 def _bits_to_int(bits: npt.NDArray[np.uint8]) -> int:
     """MSB-first bit array → Python int."""
     value = 0
@@ -173,6 +171,7 @@ def _int_to_bits(value: int, k: int) -> npt.NDArray[np.uint8]:
 # ---------------------------------------------------------------------------
 # CC-DM
 # ---------------------------------------------------------------------------
+
 
 class ConstantCompositionDM(BaseModel):
     """Bijective bit↔symbol-index encoder with a fixed per-block composition.
@@ -209,9 +208,7 @@ class ConstantCompositionDM(BaseModel):
     def _validate_and_compute(self) -> ConstantCompositionDM:
         pmf = self.target_pmf
         if pmf.ndim != 1 or pmf.size < 2:
-            raise ValueError(
-                f"target_pmf must be 1-D with ≥2 entries, got shape {pmf.shape}"
-            )
+            raise ValueError(f"target_pmf must be 1-D with ≥2 entries, got shape {pmf.shape}")
         if not np.isclose(pmf.sum(), 1.0, atol=1e-12):
             raise ValueError(f"target_pmf must sum to 1, got {pmf.sum():.6e}")
         if (pmf < 0).any():
@@ -223,9 +220,7 @@ class ConstantCompositionDM(BaseModel):
             )
 
         composition = _composition_from_pmf(pmf, self.block_length)
-        total = _multinomial_with_counts(
-            self.block_length, tuple(int(c) for c in composition)
-        )
+        total = _multinomial_with_counts(self.block_length, tuple(int(c) for c in composition))
         if total < 2:
             raise ValueError(
                 "block has a single permutation (composition is degenerate); "
@@ -266,8 +261,7 @@ class ConstantCompositionDM(BaseModel):
         bits = np.asarray(bits, dtype=np.uint8)
         if bits.size % self.bits_per_block != 0:
             raise ValueError(
-                f"bits.size {bits.size} is not a multiple of bits_per_block "
-                f"{self.bits_per_block}"
+                f"bits.size {bits.size} is not a multiple of bits_per_block {self.bits_per_block}"
             )
         n_blocks = bits.size // self.bits_per_block
         out = np.empty(n_blocks * self.block_length, dtype=np.intp)
@@ -283,8 +277,7 @@ class ConstantCompositionDM(BaseModel):
         indices = np.asarray(indices, dtype=np.intp)
         if indices.size % self.block_length != 0:
             raise ValueError(
-                f"indices.size {indices.size} is not a multiple of block_length "
-                f"{self.block_length}"
+                f"indices.size {indices.size} is not a multiple of block_length {self.block_length}"
             )
         n_blocks = indices.size // self.block_length
         out = np.empty(n_blocks * self.bits_per_block, dtype=np.uint8)
