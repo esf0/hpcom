@@ -27,6 +27,8 @@ and the channel, which the equaliser removes.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 from pydantic import Field, field_validator, model_validator
@@ -186,6 +188,9 @@ class OFDMTransmitter(Transmitter):
     @property
     def n_samples(self) -> int:
         return self.n_frames * self.ofdm.samples_per_frame
+
+    def matched_receiver(self, **overrides: Any) -> OFDMReceiver:
+        return OFDMReceiver(**{**self._modulation_fields(), "ofdm": self.ofdm, **overrides})
 
     def generate(
         self,

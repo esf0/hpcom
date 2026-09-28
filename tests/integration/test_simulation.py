@@ -316,3 +316,46 @@ def test_duck_typed_link_components_run_and_are_recorded_by_repr():
     assert element["repr"] == "HalfAttenuator()" and element["type"].endswith("HalfAttenuator")
     with pytest.raises(ValueError, match="recorded only by its repr"):
         Simulation.model_validate(result.metadata.config)
+
+
+@pytest.mark.parametrize("name", ["sc-dual", "wdm-subset", "ofdm-dual", "sc-dm", "sc-pilots"])
+def test_results_round_trip_through_save_and_load(name, tmp_path):
+    tx, rx = SCENARIOS[name]()
+    result = Simulation(transmitter=tx, link=b2b_link(), receiver=rx, seed=0).run()
+    path = result.save(tmp_path / "run.npz")
+    loaded = Result.load(path)
+    assert loaded == result
+    assert type(loaded.received) is type(result.received)
+    assert np.isinf(loaded.metrics.snr_db) == np.isinf(result.metrics.snr_db)
+
+
+def test_load_rejects_foreign_npz(tmp_path):
+    np.savez(tmp_path / "x.npz", _document=np.array('{"format": "other"}'))
+    with pytest.raises(ValueError, match=r"not written by Result\.save"):
+        Result.load(tmp_path / "x.npz")
+
+
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_matched_receiver_equals_the_hand_built_one(name):
+    tx, rx = SCENARIOS[name]()
+    auto = tx.matched_receiver(
+        **{
+            k: getattr(rx, k)
+            for k in ("equalize",) + (("channels",) if hasattr(rx, "channels") else ())
+        }
+    )
+    assert auto == rx
+    assert rx.compatibility_issues(tx) == []
+
+
+def test_matched_receiver_overrides_and_custom_waveforms():
+    tx, _ = sc_pair()
+    rx = tx.matched_receiver(equalize="none", cd_compensation_s2=1e-23)
+    assert (rx.equalize, rx.cd_compensation_s2, rx.samples_per_symbol) == ("none", 1e-23, 4)
+
+    class Bare(ExperimentalTransmission):
+        def matched_receiver(self, **overrides):  # a subclass that opts out
+            return super(ExperimentalTransmission, self).matched_receiver(**overrides)
+
+    with pytest.raises(NotImplementedError, match="does not define matched_receiver"):
+        Bare(modulation_order=4, symbol_rate_hz=1e9, n_symbols=8).matched_receiver()

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -116,6 +117,10 @@ class WDMTransmitter(PulseShapedTransmitter):
     @property
     def n_channels(self) -> int:
         return self.wdm.n_channels
+
+    def matched_receiver(self, **overrides: Any) -> WDMReceiver:
+        """A :class:`WDMReceiver` for this signal (all channels unless ``channels=`` is given)."""
+        return WDMReceiver(**{**self._pulse_fields(), "wdm": self.wdm, **overrides})
 
     def generate(
         self,

@@ -283,6 +283,8 @@ class HpcomModel(BaseModel):
         extra="forbid",
         arbitrary_types_allowed=True,
         validate_default=True,
+        # inf/nan (e.g. the SNR of a noiseless run) survive a JSON round trip.
+        ser_json_inf_nan="constants",
     )
 
     #: Qualified class name → class, for restoring ``Polymorphic`` fields.

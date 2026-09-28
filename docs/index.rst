@@ -25,16 +25,14 @@ Quick start
 
 .. code-block:: python
 
-   from hpcom import (EDFA, Fiber, Link, Simulation,
-                      SingleCarrierReceiver, SingleCarrierTransmitter)
+   from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierTransmitter
 
    fiber = Fiber.ssmf(length_km=80.0, polarization="dual")
    link = Link.from_spans(10, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0))
 
    tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=32e9, n_symbols=4096,
                                  polarization="dual", launch_power_per_channel_dbm=0.0)
-   rx = SingleCarrierReceiver(modulation_order=16, polarization="dual",
-                              equalize="data_aided", cd_compensation_s2=link.total_dispersion_s2)
+   rx = tx.matched_receiver(cd_compensation_s2=link.total_dispersion_s2)
 
    result = Simulation(transmitter=tx, link=link, receiver=rx, seed=0).run()
    print(result)   # Result(ber=..., snr=... dB, evm=..., gmi=... b/sym, ...)

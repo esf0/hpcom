@@ -1,12 +1,11 @@
 """04 — Dataset generation for ML / data-mining workflows.
 
-Runs one scenario over many seeds and launch powers and stores, per
-realisation, the transmitted and received symbols, the received field and the
-metrics — plus the full scenario configuration as JSON, from which any
-realisation can be regenerated exactly::
-
-    sim = Simulation.model_validate_json(Path("config.json").read_text())
-    result = sim.replace(seed=<seed>, transmitter=...).run()
+Runs one scenario over many seeds and launch powers. Each realisation is one
+``.npz`` file (``Result.save``) holding the transmitted bits/symbols/field,
+the received field and symbols, the metrics and the full configuration;
+``Result.load`` restores it, and ``np.load`` reads the arrays directly
+(``transmitted.symbols``, ``received.symbols``, ``received_field``, …).
+``index.json`` lists every file with its metrics.
 
 Run::
 
@@ -19,8 +18,6 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-
-import numpy as np
 
 from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierReceiver, SingleCarrierTransmitter
 
@@ -53,13 +50,7 @@ def main(out_dir: Path) -> None:
             )
             result = sim.run()
             name = f"p{power_dbm:+.0f}dBm_seed{seed}.npz"
-            np.savez_compressed(
-                out_dir / name,
-                tx_symbols=result.transmitted.symbols,
-                tx_bits=result.transmitted.bits,
-                rx_symbols=result.received.symbols,
-                rx_field=result.received_field,
-            )
+            result.save(out_dir / name)  # arrays + full config; Result.load() restores it
             index.append(
                 {
                     "file": name,

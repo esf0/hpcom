@@ -29,6 +29,8 @@ bits/symbols aligned with its output) and ``compatibility_issues``.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 from pydantic import Field
@@ -71,6 +73,16 @@ class ExperimentalTransmission(Transmitter):
     @property
     def n_data_symbols_per_stream(self) -> int:
         return self.n_symbols
+
+    def matched_receiver(self, **overrides: Any) -> ExperimentalReceiver:
+        # >>> REPLACE: copy your waveform's settings into its receiver.
+        return ExperimentalReceiver(
+            **{
+                **self._modulation_fields(),
+                "samples_per_symbol": self.samples_per_symbol,
+                **overrides,
+            }
+        )
 
     def generate(
         self,

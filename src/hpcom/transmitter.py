@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -46,6 +46,11 @@ from hpcom._typing import ComplexArray, Polarization
 from hpcom.modulation.spec import ModulationSpec
 from hpcom.pilots import PilotConfig
 from hpcom.units import dbm_to_w
+
+if TYPE_CHECKING:
+    from hpcom.receiver import Receiver, SingleCarrierReceiver
+
+_Tx = TypeVar("_Tx", bound="Transmitter")
 
 __all__ = [
     "Polarization",
@@ -172,14 +177,34 @@ class Transmitter(ModulationSpec, ABC):
         return self.launch_power_per_channel_w / self.n_polarizations
 
     def with_launch_power(
-        self, *, per_channel_dbm: float | None = None, total_dbm: float | None = None
-    ) -> Transmitter:
+        self: _Tx, *, per_channel_dbm: float | None = None, total_dbm: float | None = None
+    ) -> _Tx:
         """Copy with a new launch power (exactly one argument)."""
         if (per_channel_dbm is None) == (total_dbm is None):
             raise TypeError("pass exactly one of per_channel_dbm= or total_dbm=")
         if per_channel_dbm is not None:
             return self.replace(launch_power_per_channel_dbm=per_channel_dbm)
         return self.replace(launch_power_total_dbm=total_dbm)
+
+    def matched_receiver(self, **overrides: Any) -> Receiver:
+        """A receiver for this transmitter's signal.
+
+        Modulation, distribution matcher, polarisation and the waveform's own
+        settings (pulse, pilots, WDM grid, OFDM frame, …) are copied;
+        ``overrides`` set anything else — typically ``equalize`` and
+        ``cd_compensation_s2`` — or replace a copied value.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not define matched_receiver(); construct its receiver directly"
+        )
+
+    def _modulation_fields(self) -> dict[str, Any]:
+        return {
+            "modulation_order": self.modulation_order,
+            "constellation": self.constellation,
+            "dm": self.dm,
+            "polarization": self.polarization,
+        }
 
     # ---- generation --------------------------------------------------------
 
@@ -412,6 +437,16 @@ class PulseShapedTransmitter(Transmitter, ABC):
         """Symbols at each block edge affected by filter transients (0 when circular)."""
         return (self.pulse_span_symbols or 0) if self.convolution == "linear" else 0
 
+    def _pulse_fields(self) -> dict[str, Any]:
+        return {
+            **self._modulation_fields(),
+            "samples_per_symbol": self.samples_per_symbol,
+            "roll_off": self.roll_off,
+            "pulse_span_symbols": self.pulse_span_symbols,
+            "convolution": self.convolution,
+            "pilots": self.pilots,
+        }
+
     def _slot_stream(self, data: npt.NDArray[np.complex128]) -> npt.NDArray[np.complex128]:
         """Insert pilots: ``(..., n_data)`` → ``(..., n_symbols)``."""
         if self.pilots is None:
@@ -466,6 +501,11 @@ class SingleCarrierTransmitter(PulseShapedTransmitter):
     >>> sig.field.shape, sig.bits.shape
     ((8192,), (4096,))
     """
+
+    def matched_receiver(self, **overrides: Any) -> SingleCarrierReceiver:
+        from hpcom.receiver import SingleCarrierReceiver
+
+        return SingleCarrierReceiver(**{**self._pulse_fields(), **overrides})
 
     def generate(
         self,

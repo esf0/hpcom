@@ -43,21 +43,24 @@ Python ≥ 3.10.
 Dual-polarisation 16-QAM at 32 GBd over 10 × 80 km of standard fibre:
 
 ```python
-from hpcom import (EDFA, Fiber, Link, Simulation,
-                   SingleCarrierReceiver, SingleCarrierTransmitter)
+from hpcom import EDFA, Fiber, Link, Simulation, SingleCarrierTransmitter
 
 fiber = Fiber.ssmf(length_km=80.0, polarization="dual")        # backend="tensorflow" for GPU
 link = Link.from_spans(10, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0))
 
 tx = SingleCarrierTransmitter(modulation_order=16, symbol_rate_hz=32e9, n_symbols=4096,
                               polarization="dual", launch_power_per_channel_dbm=0.0)
-rx = SingleCarrierReceiver(modulation_order=16, polarization="dual",
-                           equalize="data_aided", cd_compensation_s2=link.total_dispersion_s2)
+rx = tx.matched_receiver(cd_compensation_s2=link.total_dispersion_s2)
 
 result = Simulation(transmitter=tx, link=link, receiver=rx, seed=0).run()
 print(result)
 # Result(ber=0.000e+00, snr=21.19 dB, evm=8.722e-02, gmi=4.000 b/sym, n_bits=32768, runtime=...)
 ```
+
+`tx.matched_receiver()` builds the receiver with the transmitter's modulation,
+pulse and polarisation; its default equaliser removes the mean nonlinear phase
+rotation. `result.save("run.npz")` / `Result.load(...)` store a run with its
+full configuration.
 
 More in [`examples/`](examples/): BER vs SNR against theory, a launch-power
 sweep, Manakov propagation, dataset generation, custom waveforms, WDM, OFDM,

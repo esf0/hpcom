@@ -79,7 +79,11 @@ A fiber's ``polarization`` selects the equation (NLSE or Manakov) and its
 Receivers
 ---------
 
-:class:`~hpcom.SingleCarrierReceiver`, :class:`~hpcom.WDMReceiver` (any
+``transmitter.matched_receiver(**overrides)`` returns the receiver that fits
+a transmitter — same modulation, distribution matcher, polarisation and
+waveform settings — with ``overrides`` for receiver-only options such as
+``cd_compensation_s2`` or ``equalize``. The classes can also be built
+directly: :class:`~hpcom.SingleCarrierReceiver`, :class:`~hpcom.WDMReceiver` (any
 subset of ``channels``) and :class:`~hpcom.OFDMReceiver` mirror the
 transmitters. All compensate chromatic dispersion
 (``cd_compensation_s2``/``_s3``) and equalise one complex gain per stream
@@ -101,4 +105,5 @@ the result. :class:`~hpcom.Result` holds the transmitted signal, the received
 field, the receiver output, aggregate :class:`~hpcom.Metrics`, one
 :class:`~hpcom.StreamMetrics` per (polarisation, channel), and
 :class:`~hpcom.SimulationMetadata` with the full configuration as JSON and
-the seed entropy, enough to replay the run exactly.
+the seed entropy, enough to replay the run exactly. ``result.save(path)``
+writes everything to one ``.npz`` file; ``Result.load(path)`` restores it.
