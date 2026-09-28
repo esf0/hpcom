@@ -140,6 +140,48 @@ agree to ~1e-13; both reproduce the original ``ssfm-gpu`` kernels
 nonlinear phase per step, :math:`\gamma P_\mathrm{peak} h`, is small (≲ 0.01
 rad) and confirm convergence by doubling it.
 
+Validation against exact solutions and other codes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every nonlinear backend must reproduce, in ``tests/backends/`` (conformance)
+and ``tests/numerical/``:
+
+.. list-table::
+   :widths: 35 65
+
+   * - Fundamental soliton
+     - :math:`\gamma P_0 T_0^2 = |\beta_2|`: shape kept, phase
+       :math:`\gamma P_0 z/2`.
+   * - Second-order soliton
+     - The Satsuma–Yajima closed form over a full period
+       (:math:`\xi = \pi/4, \pi/2`), complex field, error ÷4 per step halving.
+   * - Manakov vector soliton
+     - :math:`\tfrac89\gamma P_0 T_0^2 = |\beta_2|`, any polarisation state:
+       shape, polarisation and exact phase kept.
+   * - Degenerate four-wave mixing
+     - Idler power :math:`\gamma^2P_1^2P_2\,e^{-\alpha L}
+       \left|\frac{1-e^{(-\alpha+i\Delta\beta)L}}{\alpha-i\Delta\beta}\right|^2`,
+       :math:`\Delta\beta = \beta_2\Delta\omega^2`, to 1e-3 for
+       :math:`\Delta\beta L` = 1…107; the spurious FWM of coarse steps
+       vanishes as :math:`h^2`.
+   * - Modulation instability
+     - Exact linear-stability solution for symmetric sidebands — growth with
+       :math:`g = |\beta_2\Omega|\sqrt{\Omega_c^2-\Omega^2}`,
+       :math:`\Omega_c^2 = 4\gamma P_0/|\beta_2|`, inside the band,
+       oscillation outside — to 1e-3.
+   * - Group delay
+     - :math:`\beta_1` shifts the field by :math:`\beta_1 L` exactly.
+   * - OptiCommPy 0.10
+     - ``ssfm`` (same scheme): equal to 1e-14 at every step size;
+       ``manakovSSF`` (iterated trapezoidal scheme): both converge, second
+       order, to the same solution (3e-5); ``edfa``: same ASE variance.
+       [``test_opticommpy.py``]
+   * - ``ssfm-gpu`` (pre-v1 kernels)
+     - Golden output to 6e-14.
+   * - Pre-v1 hpcom end to end
+     - ``full_line_model_wdm``: 6e-6 RMS, identical step convergence;
+       ``full_line_model(dbp=…)``: 3e-6. [``test_legacy_chain.py``]
+
 
 Launch power
 ------------

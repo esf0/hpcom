@@ -10,6 +10,7 @@ the end.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -305,6 +306,142 @@ def test_split_step_error_is_second_order(nonlinear_backend):
     ]
     ratios = [errors[0] / errors[1], errors[1] / errors[2]]
     assert all(3.8 < r < 4.4 for r in ratios), f"convergence ratios {ratios} (expected ≈ 4)"
+
+
+# ---------------------------------------------------------------------------
+# Exact solutions of the NLSE / Manakov equation
+# ---------------------------------------------------------------------------
+
+_B2, _GAMMA = -2.16e-26, 1.27e-3  # s²/m, 1/(W·m)
+_T0 = 5e-12
+_LD = _T0**2 / abs(_B2)  # dispersion length ≈ 1.16 km
+
+
+def _soliton_grid(n: int = 2048, dt_s: float = _T0 / 40) -> tuple[np.ndarray, float]:
+    return (np.arange(n) - n // 2) * dt_s / _T0, dt_s
+
+
+def _satsuma_yajima(tau: np.ndarray, xi: float, p0: float) -> np.ndarray:
+    """Second-order soliton of iu_ξ + ½u_ττ + |u|²u = 0 with u(0, τ) = 2 sech τ (period ξ = π/2)."""
+    num = 4 * (np.cosh(3 * tau) + 3 * np.exp(4j * xi) * np.cosh(tau)) * np.exp(1j * xi / 2)
+    den = np.cosh(4 * tau) + 4 * np.cosh(2 * tau) + 3 * np.cos(4 * xi)
+    return np.sqrt(p0) * num / den
+
+
+@pytest.mark.parametrize("xi", [np.pi / 4, np.pi / 2])
+def test_second_order_soliton_matches_the_satsuma_yajima_solution(nonlinear_backend, xi):
+    """N = 2 soliton: the full complex field against the closed form, converging as h²."""
+    tau, dt = _soliton_grid()
+    p0 = abs(_B2) / (_GAMMA * _T0**2)
+    a0 = _satsuma_yajima(tau, 0.0, p0)
+    np.testing.assert_allclose(a0, 2 * np.sqrt(p0) / np.cosh(tau), rtol=0, atol=1e-12)
+    expected = _satsuma_yajima(tau, xi, p0)
+    errors = []
+    for n_steps in (200, 400, 800):
+        fiber = StubFiber(
+            length_km=xi * _LD / 1e3,
+            beta2_s2_per_m=_B2,
+            gamma_per_w_per_km=_GAMMA * 1e3,
+            n_steps=n_steps,
+        )
+        out = get_propagator(nonlinear_backend).propagate(a0, fiber, dt_s=dt)
+        errors.append(np.max(np.abs(out - expected)) / np.max(np.abs(a0)))
+    assert errors[-1] < 5e-4
+    for coarse, fine in itertools.pairwise(errors):
+        assert 3.7 < coarse / fine < 4.3  # second order
+
+
+@pytest.mark.parametrize(("theta", "phi"), [(0.0, 0.0), (np.pi / 4, 0.0), (0.6, 1.1)])
+def test_manakov_vector_soliton_keeps_its_shape_polarisation_and_exact_phase(
+    nonlinear_backend, theta, phi
+):
+    """A = √P₀ sech(t/T₀)·(cos θ, sin θ e^{iφ})·e^{iγ_eff P₀ z/2} with (8/9)γP₀T₀² = |β₂|."""
+    tau, dt = _soliton_grid()
+    p0 = abs(_B2) / (8 / 9 * _GAMMA * _T0**2)
+    pol = np.array([np.cos(theta), np.sin(theta) * np.exp(1j * phi)])[:, None]
+    a0 = np.sqrt(p0) / np.cosh(tau) * pol
+    length_m = 5 * _LD
+    fiber = StubFiber(
+        length_km=length_m / 1e3,
+        beta2_s2_per_m=_B2,
+        gamma_per_w_per_km=_GAMMA * 1e3,
+        n_steps=800,
+        polarization="dual",
+    )
+    out = get_propagator(nonlinear_backend).propagate(a0, fiber, dt_s=dt)
+    expected = a0 * np.exp(1j * (8 / 9) * _GAMMA * p0 * length_m / 2)
+    assert np.max(np.abs(out - expected)) / np.sqrt(p0) < 5e-5
+
+
+def _fwm_idler_ratio(backend: str, spacing_bins: int, n_steps: int) -> float:
+    """Simulated / closed-form idler power of degenerate FWM (pumps at 0 and +Δf, idler at −Δf)."""
+    n, fs, p = 512, 1.28e12, 1e-5  # 2.5 GHz bins; 10 µW pumps keep the Kerr phase mismatch ≈ 2e-4
+    alpha_db, length_m = 0.2, 50e3
+    alpha = alpha_db * np.log(10) / 10 / 1e3
+    t = np.arange(n) / fs
+    df = spacing_bins * fs / n
+    a0 = np.sqrt(p) * (1 + np.exp(2j * np.pi * df * t))
+    fiber = StubFiber(
+        length_km=length_m / 1e3,
+        alpha_db_per_km=alpha_db,
+        beta2_s2_per_m=_B2,
+        gamma_per_w_per_km=_GAMMA * 1e3,
+        n_steps=n_steps,
+    )
+    out = get_propagator(backend).propagate(a0, fiber, dt_s=1 / fs)
+    idler = np.abs(np.fft.fft(out)[-spacing_bins] / n) ** 2
+    # dA₃/dz = −α/2·A₃ + iγA₁²A₂*·e^{iΔβz}, pumps undepleted, Δβ = β₂Δω²:
+    # P₃(L) = γ²P₁²P₂·e^{−αL}·|(1 − e^{(−α+iΔβ)L})/(α − iΔβ)|².
+    dbeta = abs(_B2) * (2 * np.pi * df) ** 2
+    integral = (1 - np.exp((-alpha + 1j * dbeta) * length_m)) / (alpha - 1j * dbeta)
+    theory = _GAMMA**2 * p**3 * np.exp(-alpha * length_m) * np.abs(integral) ** 2
+    return float(idler / theory)
+
+
+@pytest.mark.parametrize("spacing_bins", [2, 8, 20])  # 5, 20, 50 GHz: ΔβL ≈ 1, 17, 107
+def test_degenerate_fwm_matches_the_closed_form_efficiency(nonlinear_backend, spacing_bins):
+    assert abs(_fwm_idler_ratio(nonlinear_backend, spacing_bins, 1600) - 1) < 1e-3
+
+
+def test_spurious_fwm_of_coarse_steps_vanishes_as_h_squared(nonlinear_backend):
+    """At 100 GHz (ΔβL ≈ 430) coarse steps overestimate FWM; the error falls ≈ 16× per 4× steps."""
+    errors = [abs(_fwm_idler_ratio(nonlinear_backend, 40, s) - 1) for s in (400, 1600, 6400)]
+    assert errors[0] > 1e-2 and errors[-1] < 1e-3
+    for coarse, fine in itertools.pairwise(errors):
+        assert coarse / fine > 10
+
+
+@pytest.mark.parametrize("omega_over_omega_c", [0.3, 0.5, 0.7, 0.96, 1.12, 1.44])
+def test_modulation_instability_matches_linear_stability_theory(
+    nonlinear_backend, omega_over_omega_c
+):
+    """CW pump P₀ with weak sidebands at ±Ω (anomalous dispersion, no loss).
+
+    Linearising around the pump, the sideband amplitude u (= v by symmetry)
+    obeys x' = (|β₂|Ω²/2)·y, y' = c·x with u = x + iy, c = 2γP₀ − |β₂|Ω²/2:
+    x = s·cosh κz, y = c·s·sinh(κz)/κ, κ = g/2 = |β₂Ω|√(Ω_c² − Ω²)/2,
+    Ω_c² = 4γP₀/|β₂| — exponential growth inside the band, oscillation outside.
+    """
+    p0, n, fs, length_m = 0.1, 256, 1e12, 30e3
+    omega_c = np.sqrt(4 * _GAMMA * p0 / abs(_B2))
+    k = round(omega_over_omega_c * omega_c / (2 * np.pi) / (fs / n))
+    omega = 2 * np.pi * k * fs / n
+    t = np.arange(n) / fs
+    s = 1e-5 * np.sqrt(p0)
+    a0 = np.sqrt(p0) + 2 * s * np.cos(omega * t)
+    fiber = StubFiber(
+        length_km=length_m / 1e3,
+        beta2_s2_per_m=_B2,
+        gamma_per_w_per_km=_GAMMA * 1e3,
+        n_steps=600,
+    )
+    out = get_propagator(nonlinear_backend).propagate(a0, fiber, dt_s=1 / fs)
+    sideband = np.abs(np.fft.fft(out)[k] / n) ** 2
+    kappa = np.sqrt(complex(_B2**2 * omega**2 * (omega_c**2 - omega**2))) / 2
+    c = 2 * _GAMMA * p0 - abs(_B2) * omega**2 / 2
+    x = (s * np.cosh(kappa * length_m)).real
+    y = (c * s * np.sinh(kappa * length_m) / kappa).real
+    np.testing.assert_allclose(sideband, x**2 + y**2, rtol=1e-3)
 
 
 # ---------------------------------------------------------------------------

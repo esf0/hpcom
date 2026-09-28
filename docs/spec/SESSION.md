@@ -1,6 +1,6 @@
 # Session resume — hpcom v1
 
-**Last updated: 2026-09-28.** Branch `dev`. 1281 tests pass (≈90 s); ruff,
+**Last updated: 2026-09-28.** Branch `dev`. 1318 tests pass (≈100 s); ruff,
 ruff-format, mypy (strict) and the Sphinx build (`-W`) are clean. A core-only
 install (numpy, scipy, pydantic) passes too, with TF/legacy tests skipped.
 
@@ -33,14 +33,16 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
 - DBP follow-ups: enhanced/filtered SSFM variants and non-uniform step
   placement (as further `Compensator`s); DBP for OFDM receivers; batching the
   per-channel stage across channels.
-- Cross-checks still to add: OptiCommPy (SSFM/Manakov, EDFA), N = 2 soliton
-  recurrence, Manakov vector soliton, FWM efficiency vs closed form,
-  modulation-instability gain.
+- Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data
+  (regenerate with `tests/numerical/_data/make_opticommpy_golden.py` in a
+  separate env — OptiCommPy needs numba), N = 2 soliton, Manakov vector
+  soliton, degenerate FWM, modulation instability. Candidates: Raman,
+  higher-order dispersion solitons, GN-model NLI power vs simulation.
 - Laser phase noise, PMD, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.
 - JAX propagator — seam and conformance tests exist.
-- OptiCommPy gap survey (old Phase B) — not started.
+- OptiCommPy feature-gap survey (old Phase B) — not started.
 - `hpcom._legacy` removal in v2.
 
 ## Ideas (not planned)
