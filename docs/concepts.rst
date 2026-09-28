@@ -95,6 +95,19 @@ pre-v1 hpcom always applied), otherwise blind amplitude normalisation. ``receive
 :class:`~hpcom.ReceivedSymbols`: equalised symbols, decisions, decoded bits
 and the removed gain per stream.
 
+Instead of bulk dispersion compensation, single-carrier and WDM receivers
+accept a **compensation stage**, e.g. digital back-propagation::
+
+    rx = tx.matched_receiver(
+        compensation=DigitalBackPropagation(link=link, steps_per_span=4, samples_per_symbol=2)
+    )
+
+It runs per channel on what a coherent receiver's ADC delivers — the channel
+at baseband, band-limited, resampled to ``samples_per_symbol`` — and the
+matched filter follows at that rate. :class:`~hpcom.dsp.DigitalBackPropagation`
+is one :class:`~hpcom.dsp.Compensator`; subclass the latter to plug in any
+algorithm under identical conditions (:doc:`physics` has the details).
+
 
 Simulation and Result
 ---------------------
@@ -107,3 +120,7 @@ field, the receiver output, aggregate :class:`~hpcom.Metrics`, one
 :class:`~hpcom.SimulationMetadata` with the full configuration as JSON and
 the seed entropy, enough to replay the run exactly. ``result.save(path)``
 writes everything to one ``.npz`` file; ``Result.load(path)`` restores it.
+
+``simulation.evaluate(result, other_receiver)`` scores another receiver on
+the same received field — same data, same noise — for paired comparisons of
+receiver algorithms (CDC vs DBP, DBP settings, custom compensators).

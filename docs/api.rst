@@ -26,6 +26,16 @@ Receivers
    :members:
    :show-inheritance:
 
+Receiver DSP
+------------
+
+.. automodule:: hpcom.dsp.compensation
+   :members:
+   :show-inheritance:
+
+.. automodule:: hpcom.dsp.frontend
+   :members:
+
 Link components
 ---------------
 

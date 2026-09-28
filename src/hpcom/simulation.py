@@ -11,6 +11,7 @@ import numpy.typing as npt
 from pydantic import Field, model_validator
 
 from hpcom._model import HpcomModel, Polymorphic
+from hpcom._typing import ComplexArray
 from hpcom._version import __version__
 from hpcom.link import Link
 from hpcom.metrics import (
@@ -24,7 +25,7 @@ from hpcom.metrics import (
 )
 from hpcom.receiver import ReceivedSymbols, Receiver
 from hpcom.result import Result, SimulationMetadata
-from hpcom.transmitter import Transmitter
+from hpcom.transmitter import TransmittedSignal, Transmitter
 from hpcom.wdm import WDMReceiver
 
 __all__ = ["Simulation"]
@@ -101,14 +102,51 @@ class Simulation(HpcomModel):
 
         sent = self.transmitter.generate(rng=tx_rng)
         out = self.link.propagate(sent.field, sent.dt_s, rng=np.random.default_rng(link_seq))
+        return self._receive(sent, out, int(root.entropy), t0)  # type: ignore[arg-type]
+
+    def evaluate(self, result: Result, receiver: Receiver | None = None) -> Result:
+        """Score ``receiver`` (default: this simulation's) on ``result``'s received field.
+
+        The transmitted signal and the received field — hence the data and
+        the noise realisation — are reused unchanged, so receivers (CD
+        compensation vs DBP, DBP settings, custom compensators, …) are
+        compared on identical inputs: a paired comparison, with far less
+        variance than independent runs. The returned result's
+        ``metadata.config`` holds the simulation with this receiver and the
+        original ``seed_entropy``, so it replays with :meth:`run`.
+
+        Example::
+
+            sim = Simulation(transmitter=tx, link=link, receiver=rx_cdc, seed=1)
+            cdc = sim.run()
+            dbp = sim.evaluate(cdc, rx_cdc.replace(
+                cd_compensation_s2=0.0,
+                compensation=DigitalBackPropagation(link=link, steps_per_span=4),
+            ))
+        """
+        t0 = time.perf_counter()
+        sim = self if receiver is None else self.replace(receiver=receiver)
+        if result.transmitted.transmitter != self.transmitter:
+            raise ValueError("`result` was produced by a different transmitter")
+        return sim._receive(
+            result.transmitted, result.received_field, result.metadata.seed_entropy, t0
+        )
+
+    def _receive(
+        self,
+        sent: TransmittedSignal,
+        out: ComplexArray,
+        seed_entropy: int,
+        t0: float,
+    ) -> Result:
+        """Receive ``out``, score it against ``sent`` and assemble the :class:`Result`."""
         received = self.receiver.receive(out, sent.dt_s, reference=sent)
         overall, per_stream = self._score(
             sent_bits_symbols=self.receiver.reference(sent), rx=received
         )
-
         metadata = SimulationMetadata(
             seed=self.seed,
-            seed_entropy=int(root.entropy),  # type: ignore[arg-type]
+            seed_entropy=seed_entropy,
             discarded_symbols=self._discard_count(),
             runtime_s=time.perf_counter() - t0,
             hpcom_version=__version__,

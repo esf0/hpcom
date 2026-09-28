@@ -67,6 +67,12 @@ Fiber parameters
    * - ``alpha_db_per_km``
      - Power loss; :math:`\alpha\,[\mathrm{m^{-1}}] = \alpha_\mathrm{dB}\ln(10)/10/1000`,
        :math:`P(L) = P(0)\,e^{-\alpha L}`.
+   * - ``beta1_s_per_m``
+     - Group delay per metre *relative to the retarded-time frame*: 0 in normal
+       use. :math:`\beta_1 > 0` delays the field by :math:`\beta_1 L`; it adds
+       :math:`-\beta_1\,\partial A/\partial t` to the equations above. Digital
+       back-propagation uses it for WDM channels (see below).
+       [``test_group_delay_shifts_the_field_exactly``]
    * - ``beta2_s2_per_m``
      - :math:`\beta_2 = -\lambda^2 D/(2\pi c)`; SSMF with :math:`D = 17` ps/(nm·km) gives
        :math:`\beta_2 = -2.17\times10^{-26}` s²/m.
@@ -91,7 +97,7 @@ part of the equations above is multiplication by
 
 .. math::
 
-   \hat L(\omega) = \frac{i\beta_2}{2}\omega^2 - \frac{i\beta_3}{6}\omega^3 - \frac{\alpha}{2}.
+   \hat L(\omega) = -i\beta_1\omega + \frac{i\beta_2}{2}\omega^2 - \frac{i\beta_3}{6}\omega^3 - \frac{\alpha}{2}.
 
 Because the equation is Agrawal's (field :math:`\propto A\,e^{i(\beta_0 z-\omega_0 t)}`)
 while the FFT is NumPy's, a **positive baseband frequency** :math:`+f` in hpcom
@@ -333,6 +339,8 @@ Receivers and equalisation
    = :math:`\sum\beta_2 L`) and :math:`B_3` = ``cd_compensation_s3``
    (``link.total_beta3_s3``). This is the exact inverse of the linear fiber
    operator. [``test_cd_compensation_undoes_beta2_and_beta3_exactly``]
+   *Or* a compensation stage such as digital back-propagation, run per
+   channel on realistic front-end samples — see the next section.
 2. **Demodulation** to symbol-rate samples :math:`r_k` (matched filter, or FFT).
 3. **Equalisation** by one complex gain :math:`g` per stream,
    :math:`y_k = r_k/g`:
@@ -356,6 +364,75 @@ Receivers and equalisation
    then its bit label, or distribution-matcher decoding. A DM block whose
    decisions are not a valid codeword cannot be inverted; its bits are set to
    zero and ``dm_block_valid`` is ``False`` (pre-FEC, the block is lost).
+
+
+Digital back-propagation
+------------------------
+
+**Where it runs.** A pulse-shaped receiver with
+``compensation=DigitalBackPropagation(...)`` processes each selected channel
+as a coherent receiver does:
+
+1. shift the channel to 0 Hz (local oscillator at :math:`f_k`);
+2. ideal low-pass to ``bandwidth_hz`` (two-sided; ``None`` — only step 3);
+3. resample exactly (FFT) to ``samples_per_symbol`` — the ADC with ideal
+   anti-aliasing;
+4. back-propagate;
+5. matched filter *at that rate*, sample, equalise, decide.
+
+If steps 2–3 change nothing (``samples_per_symbol=None`` or the simulation's,
+``bandwidth_hz=None``) the whole field is back-propagated once instead:
+**full-field DBP**, the exact inverse of a noiseless link.
+
+**What it computes.** The link runs backwards, last element first: fibers by
+the same symmetric split-step scheme with :math:`h \to -h`,
+``steps_per_span`` steps and :math:`\gamma \to \xi\gamma`
+(``nonlinearity_scale``); amplifiers as the noiseless :math:`1/\sqrt{G}`
+(ASE cannot be undone).
+
+**Channel frequency.** A channel shifted down from :math:`\omega_k = 2\pi f_k`
+still sees the dispersion at its own frequency,
+:math:`\hat L(\omega' + \omega_k)`, which is the operator of a fiber with
+
+.. math::
+
+   \beta_1' = \beta_1 - \beta_2\omega_k + \tfrac12\beta_3\omega_k^2,\qquad
+   \beta_2' = \beta_2 - \beta_3\omega_k,\qquad
+   \beta_3' = \beta_3,
+
+times the constant phase
+:math:`e^{i\phi_0 z}`, :math:`\phi_0 = -\beta_1\omega_k + \tfrac12\beta_2\omega_k^2 - \tfrac16\beta_3\omega_k^3`
+(undone once; it commutes with every step). The walk-off :math:`\beta_1'`
+stays in the split-step scheme, so a channel back-propagated at the
+simulation rate equals the full-field result shifted down, up to the
+wrap-around of nonlinear products at the grid edge
+[``test_frequency_offset_equals_backpropagating_the_full_field_then_shifting``].
+
+**Checks** [``tests/numerical/test_dbp.py``]:
+
+* :math:`\xi = 0` is exactly the bulk CD compensation at every front-end
+  rate, for 1 and 3 channels with :math:`\beta_3 \ne 0` (1e-11);
+* full-field DBP with the forward step count inverts a nonlinear link
+  (SNR > 200 dB);
+* single-channel DBP converges with steps per span to a floor set by the
+  sampling rate — spectral broadening beyond :math:`\pm R_s` is lost at 2
+  samples/symbol (≈ 50 dB for 5×80 km at 7 dBm), much less at 4; at 1
+  sample/symbol the roll-off band itself is lost and DBP saturates near the
+  CDC level;
+* back-propagating more bandwidth undoes more nonlinearity (CDC <
+  single-channel < 3-channel < 5-channel < full field), but wide-band DBP
+  needs steps short compared with the inter-channel walk-off;
+* with ASE, DBP recovers the SNR up to, never beyond, the ASE limit
+  :math:`P_\mathrm{pol}/(N S_\mathrm{ASE} R_s)`;
+* full-rate DBP agrees with pre-v1 ``full_line_model(dbp=[...])`` to 3e-6
+  RMS at 1–8 steps per span [``test_legacy_chain.py``].
+
+**Comparing algorithms.** :meth:`Simulation.evaluate(result, receiver)
+<hpcom.Simulation.evaluate>` scores another receiver on the *same* received
+field (same data, same noise realisation), so CDC, DBP settings and custom
+:class:`~hpcom.dsp.Compensator` subclasses are compared pairwise.
+:meth:`~hpcom.PulseShapedReceiver.front_end` returns exactly the samples the
+stage sees, for datasets or external algorithms.
 
 
 Metrics

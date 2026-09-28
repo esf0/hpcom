@@ -28,7 +28,7 @@ class Propagator(ABC):
       not modified.
     * Equation and sign conventions are those of
       :doc:`/physics` — in NumPy's FFT convention the linear operator is
-      ``exp[(i β₂ω²/2 − i β₃ω³/6 − α/2) z]`` and the Kerr term is
+      ``exp[(−i β₁ω + i β₂ω²/2 − i β₃ω³/6 − α/2) z]`` and the Kerr term is
       ``+i γ |A|² A`` (``+i (8/9) γ (|A_x|²+|A_y|²) A`` for Manakov).
     * ``direction="backward"`` applies the exact inverse step sequence (same
       steps, negated length), as used by digital back-propagation.
@@ -83,17 +83,19 @@ def check_field_shape(field: np.ndarray, fiber: FiberLike) -> None:
 def linear_operator_exponent(
     n_samples: int, dt_s: float, fiber: FiberLike
 ) -> npt.NDArray[np.complex128]:
-    """Per-metre exponent of the linear step, ``i β₂ω²/2 − i β₃ω³/6 − α/2``.
+    """Per-metre exponent of the linear step, ``−i β₁ω + i β₂ω²/2 − i β₃ω³/6 − α/2``.
 
-    ``ω`` is the angular-frequency grid in NumPy FFT order. The sign of the
-    β₃ term follows from Agrawal's NLSE written in NumPy's FFT convention (see
-    :doc:`/physics`); the β₂ term is sign-convention independent.
+    ``ω`` is the angular-frequency grid in NumPy FFT order. The signs of the
+    β₁ and β₃ terms follow from Agrawal's NLSE written in NumPy's FFT
+    convention (see :doc:`/physics`): β₁ > 0 delays the field by β₁z. The β₂
+    term is sign-convention independent.
     """
     omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
     alpha_per_m = fiber.alpha_db_per_km * np.log(10.0) / 10.0 / 1e3
     beta3 = fiber.beta3_s3_per_m
     exponent: npt.NDArray[np.complex128] = (
-        1j * (fiber.beta2_s2_per_m / 2.0) * omega**2
+        -1j * fiber.beta1_s_per_m * omega
+        + 1j * (fiber.beta2_s2_per_m / 2.0) * omega**2
         - 1j * (beta3 / 6.0) * omega**3
         - alpha_per_m / 2.0
     ).astype(np.complex128)

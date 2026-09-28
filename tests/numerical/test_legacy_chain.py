@@ -9,7 +9,9 @@ CD compensation → matched filter → data-aided phase/gain (pre-v1
   residual is the pre-v1 window-truncated RRC (``test_legacy_parity.py``);
 * in how they converge when the step is refined: both change by the same
   amount, so they are the same numerical method, not two methods that happen
-  to agree at one setting.
+  to agree at one setting;
+* for digital back-propagation at the simulation rate (pre-v1
+  ``full_line_model(dbp=[...])``): to ≈ 3e-6 RMS at 1–8 steps per span.
 """
 
 from __future__ import annotations
@@ -23,9 +25,18 @@ import pytest
 for _dependency in ("tensorflow", "sklearn", "ssfm_gpu"):  # pip install "hpcom[legacy]"
     pytest.importorskip(_dependency)
 
-from hpcom import EDFA, Fiber, Link, WDMConfig, WDMTransmitter  # noqa: E402
+from hpcom import (  # noqa: E402
+    EDFA,
+    DigitalBackPropagation,
+    Fiber,
+    Link,
+    SingleCarrierTransmitter,
+    WDMConfig,
+    WDMTransmitter,
+)
 from hpcom._legacy.channel import (  # noqa: E402
     create_channel_parameters,
+    full_line_model,
     full_line_model_wdm,
 )
 
@@ -138,3 +149,94 @@ def test_both_converge_identically_as_the_step_is_refined(chains):
         assert change_v1 > 1e-4  # the step error is real and resolved…
         assert abs(change_legacy - change_v1) < 0.02 * change_v1  # …and the same in both
     assert _rms(chains[1.0][1], chains[0.5][1]) < _rms(chains[2.0][1], chains[1.0][1]) / 4
+
+
+# ---------------------------------------------------------------------------
+# Digital back-propagation: pre-v1 full_line_model(dbp=[...]) vs v1
+# ---------------------------------------------------------------------------
+
+DBP_STEPS = (1, 2, 4, 8)
+
+
+@pytest.fixture(scope="module")
+def dbp_chains():
+    """steps/span → (pre-v1 DBP symbols, v1 DBP symbols, sent), single channel, unit power."""
+    m, nsym, n_spans, p_dbm = 64, 1 << 11, 4, 6.0
+    p_ave = 1e-3 * 10 ** (p_dbm / 10)
+    levels = np.arange(8) * 2 - 7
+    wdm = {
+        **_legacy_wdm(),
+        "n_channels": 1,
+        "n_symbols": nsym,
+        "m_order": m,
+        "modulation_type": "64qam",
+        "n_bits_symbol": 6,
+        "p_ave_dbm": p_dbm,
+        "p_ave": p_ave,
+        "scale_coef": float(np.sqrt(2 * np.mean(levels**2))) / np.sqrt(p_ave / 2),
+    }
+    bits = np.random.default_rng(0).integers(0, 2, (2, nsym * 6), dtype=np.uint8)
+    channel = create_channel_parameters(
+        n_spans=n_spans,
+        z_span=80,
+        alpha_db=0.2,
+        gamma=1.27,
+        noise_figure_db=-200,
+        dispersion_parameter=16.8,
+        dz=1,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        legacy = full_line_model(
+            channel,
+            wdm,
+            bits=tuple(["".join(map(str, bits[p]))] for p in range(2)),
+            dbp=list(DBP_STEPS),
+        )
+    tx = SingleCarrierTransmitter(
+        modulation_order=m,
+        symbol_rate_hz=RS,
+        n_symbols=nsym,
+        samples_per_symbol=SPS,
+        roll_off=BETA,
+        polarization="dual",
+        launch_power_per_channel_dbm=p_dbm,
+    )
+    sent = tx.generate(bits=bits)
+    fiber = Fiber(
+        length_km=80,
+        alpha_db_per_km=0.2,
+        beta2_s2_per_m=channel["beta2"] * 1e-3,
+        gamma_per_w_per_km=1.27,
+        n_steps=80,
+        polarization="dual",
+    )
+    amp = EDFA(gain_db=10 * np.log10(channel["gain"]), noise_figure_db=None)
+    link = Link.from_spans(n_spans, fiber, amp)
+    out = link.propagate(sent.field, sent.dt_s)
+    result = {}
+    for i, steps in enumerate(DBP_STEPS):
+        dbp = DigitalBackPropagation(link=link, steps_per_span=steps, samples_per_symbol=None)
+        rx = tx.matched_receiver(equalize="data_aided", compensation=dbp)
+        v1 = np.asarray(rx.receive(out, sent.dt_s, reference=sent).symbols)
+        pre = np.array(
+            [legacy["points_x_dbp_shifted"][i], legacy["points_y_dbp_shifted"][i]]
+        ) / np.sqrt(p_ave / 2)
+        result[steps] = (pre, v1, np.asarray(sent.symbols))
+    return result
+
+
+@pytest.mark.parametrize("steps", DBP_STEPS)
+def test_dbp_matches_pre_v1_full_rate_dbp(dbp_chains, steps):
+    pre, v1, sent = dbp_chains[steps]
+    assert _rms(pre, v1) < 1e-5
+    snr = 10 * np.log10(1 / np.mean(np.abs(v1 - sent) ** 2))
+    np.testing.assert_allclose(snr, 10 * np.log10(1 / np.mean(np.abs(pre - sent) ** 2)), atol=0.01)
+
+
+def test_dbp_improves_with_steps_identically_in_both(dbp_chains):
+    snrs = [
+        10 * np.log10(1 / np.mean(np.abs(dbp_chains[s][1] - dbp_chains[s][2]) ** 2))
+        for s in DBP_STEPS
+    ]
+    assert all(a + 4 < b for a, b in itertools.pairwise(snrs))  # ≈ 21 → 28 → 41 → 53 dB

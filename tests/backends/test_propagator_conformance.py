@@ -27,6 +27,7 @@ class StubFiber:
 
     length_km: float = 80.0
     alpha_db_per_km: float = 0.0
+    beta1_s_per_m: float = 0.0
     beta2_s2_per_m: float = -2.16e-26
     beta3_s3_per_m: float = 0.0
     gamma_per_w_per_km: float = 1.27
@@ -128,6 +129,45 @@ def test_third_order_dispersion_delays_pulse_centroid(any_backend, beta3_sign):
     expected = beta3 * fiber.length_km * 1e3 / (4.0 * t0**2)
     assert np.sign(centroid) == beta3_sign
     np.testing.assert_allclose(centroid, expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize("delay_samples", [5, -12])
+def test_group_delay_shifts_the_field_exactly(any_backend, delay_samples):
+    """β₁ delays the field by β₁L: an exact circular shift for a whole number of samples."""
+    dt, length_km = 1e-12, 40.0
+    fiber = StubFiber(
+        length_km=length_km,
+        beta1_s_per_m=delay_samples * dt / (length_km * 1e3),
+        beta2_s2_per_m=0.0,
+        gamma_per_w_per_km=0.0,
+        n_steps=3,
+    )
+    a0 = _random_field((1024,), 1.0)
+    out = get_propagator(any_backend).propagate(a0, fiber, dt_s=dt)
+    np.testing.assert_allclose(out, np.roll(a0, delay_samples), atol=1e-12)
+
+
+@pytest.mark.parametrize("polarization", ["single", "dual"])
+def test_group_delay_commutes_with_dispersion_and_nonlinearity(nonlinear_backend, polarization):
+    """A whole-sample β₁h per step shifts the β₁ = 0 output (the Kerr step is pointwise).
+
+    Fractional per-step delays commute only up to the grid's aliasing of the
+    nonlinear products — like any frame change of a sampled NLSE.
+    """
+    dt, n, n_steps, per_step = 1e-12, 1024, 25, 2  # whole samples per full step
+    shape = (2, n) if polarization == "dual" else (n,)
+    base = StubFiber(
+        length_km=50.0, beta3_s3_per_m=1.2e-40, n_steps=n_steps, polarization=polarization
+    )
+    delay = n_steps * per_step  # the two half steps add up to one more full step
+    delayed = replace(base, beta1_s_per_m=delay * dt / (base.length_km * 1e3))
+    a0 = _random_field(shape, 0.05)
+    prop = get_propagator(nonlinear_backend)
+    np.testing.assert_allclose(
+        prop.propagate(a0, delayed, dt_s=dt),
+        np.roll(prop.propagate(a0, base, dt_s=dt), delay, axis=-1),
+        atol=1e-11,
+    )
 
 
 def test_loss_follows_beer_lambert(any_backend):

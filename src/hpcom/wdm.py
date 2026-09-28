@@ -12,7 +12,10 @@ offset corresponds to a *lower* optical frequency (see :doc:`/physics`).
 :class:`WDMTransmitter` builds one RRC-shaped stream per channel (and
 polarisation), shifts stream ``i`` by :math:`e^{2\pi i f_i t}` and sums them.
 :class:`WDMReceiver` compensates dispersion on the composite field, then
-shifts each selected channel back to baseband and matched-filters it.
+shifts each selected channel back to baseband and matched-filters it — or,
+with ``compensation=`` (e.g. digital back-propagation), shifts each channel
+down first and runs the stage per channel on band-limited, resampled
+samples.
 """
 
 from __future__ import annotations
@@ -195,13 +198,22 @@ class WDMReceiver(PulseShapedReceiver):
         reference: TransmittedSignal | None = None,
     ) -> WDMReceivedSymbols:
         x = self._compensate_dispersion(self._check_field(field), dt_s)
-        freqs = self.wdm.channel_frequencies_hz()[list(self.selected_channels)]
-        t = np.arange(x.shape[-1]) * dt_s
-        downshift = np.exp(-2j * np.pi * freqs[:, None] * t)  # (n_sel, n)
-        streams = x[..., None, :] * downshift  # (*pol, n_sel, n)
         ref = self.reference(reference)[1] if reference is not None else None
-        out = self._demodulate(streams, ref)
+        out = self._receive_field(x, dt_s, ref)
         return WDMReceivedSymbols(receiver=self, channels=self.selected_channels, **out)
+
+    def _baseband(
+        self, field: npt.NDArray[np.complex128], dt_s: float
+    ) -> npt.NDArray[np.complex128]:
+        freqs = np.asarray(self._channel_offsets_hz())
+        t = np.arange(field.shape[-1]) * dt_s
+        downshift = np.exp(-2j * np.pi * freqs[:, None] * t)  # (n_sel, n)
+        streams: npt.NDArray[np.complex128] = field[..., None, :] * downshift  # (*pol, n_sel, n)
+        return streams
+
+    def _channel_offsets_hz(self) -> tuple[float, ...]:
+        freqs = self.wdm.channel_frequencies_hz()[list(self.selected_channels)]
+        return tuple(float(f) for f in freqs)
 
 
 WDMSignal.model_rebuild()

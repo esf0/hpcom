@@ -8,6 +8,7 @@ Building blocks (all immutable, validated pydantic models)::
         OFDMConfig, OFDMTransmitter, OFDMReceiver,          # CP-OFDM
         PilotConfig, ConstellationConfig,                   # pilots, shaping
         Fiber, EDFA, AdditiveNoise, Link,                   # the channel
+        DigitalBackPropagation,                             # receiver DSP
         Simulation, Result, Metrics,                        # run + score
     )
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 from hpcom import _legacy_alias
 from hpcom._version import __version__
 from hpcom.amplifier import EDFA, Amplifier
+from hpcom.dsp import Compensator, DigitalBackPropagation
 from hpcom.fiber import Fiber
 from hpcom.link import Link
 from hpcom.metrics import Metrics, StreamMetrics
@@ -63,8 +65,10 @@ __all__ = [
     "EDFA",
     "AdditiveNoise",
     "Amplifier",
+    "Compensator",
     "ConstantCompositionDM",
     "ConstellationConfig",
+    "DigitalBackPropagation",
     "Fiber",
     "Link",
     "Metrics",

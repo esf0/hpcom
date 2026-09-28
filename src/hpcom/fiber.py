@@ -29,6 +29,12 @@ class Fiber(HpcomModel):
         Span length ``L`` in km.
     alpha_db_per_km
         Power attenuation in dB/km (``P(L) = P(0)·10^(−α_dB L/10)``).
+    beta1_s_per_m
+        Group delay per metre β₁ in s/m *relative to the simulation's
+        retarded-time frame* — 0 in normal use (the frame moves with the
+        carrier's group velocity). A nonzero value delays the field by
+        ``β₁L``; digital back-propagation uses it to evaluate the dispersion
+        of a WDM channel at the channel's own frequency.
     beta2_s2_per_m
         Group-velocity dispersion β₂ in s²/m (negative = anomalous; SSMF ≈
         −2.17e-26). Use :func:`hpcom.units.dispersion_to_beta2` to convert
@@ -51,6 +57,7 @@ class Fiber(HpcomModel):
 
     length_km: float = Field(gt=0)
     alpha_db_per_km: float = Field(default=0.2, ge=0)
+    beta1_s_per_m: float = 0.0
     beta2_s2_per_m: float = -2.16e-26
     beta3_s3_per_m: float = 0.0
     gamma_per_w_per_km: float = Field(default=1.27, ge=0)

@@ -6,6 +6,7 @@ import json
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from helpers import b2b_link, sc_pair, wdm_pair
 from hpcom import (
@@ -13,6 +14,7 @@ from hpcom import (
     AdditiveNoise,
     ConstantCompositionDM,
     ConstellationConfig,
+    DigitalBackPropagation,
     Fiber,
     Link,
     OFDMConfig,
@@ -263,6 +265,50 @@ def test_unseeded_run_can_be_replayed_exactly_from_its_metadata():
     )
     np.testing.assert_array_equal(replay.received_field, first.received_field)
     assert replay.metrics == first.metrics
+
+
+# ---------------------------------------------------------------------------
+# Paired evaluation of other receivers on the same received field
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_with_the_same_receiver_reproduces_run():
+    sim = _noisy_sim(5)
+    first = sim.run()
+    again = sim.evaluate(first)
+    np.testing.assert_array_equal(again.received_field, first.received_field)
+    assert again.metrics == first.metrics
+    assert again.stream_metrics == first.stream_metrics
+    assert again.metadata.seed_entropy == first.metadata.seed_entropy
+
+
+def test_evaluate_scores_another_receiver_on_the_same_field_and_replays():
+    sim = _noisy_sim(None)
+    first = sim.run()
+    dbp_rx = sim.receiver.replace(
+        cd_compensation_s2=0.0,
+        compensation=DigitalBackPropagation(link=sim.link, steps_per_span=2),
+    )
+    paired = sim.evaluate(first, dbp_rx)
+    np.testing.assert_array_equal(paired.received_field, first.received_field)
+    np.testing.assert_array_equal(paired.transmitted.bits, first.transmitted.bits)
+    assert paired.metrics != first.metrics
+    assert paired.metadata.config["receiver"]["compensation"] is not None
+    replay = (
+        Simulation.model_validate(paired.metadata.config)
+        .replace(seed=paired.metadata.seed_entropy)
+        .run()
+    )
+    assert replay.metrics == paired.metrics
+
+
+def test_evaluate_rejects_foreign_results_and_incompatible_receivers():
+    sim = _noisy_sim(5)
+    other = _noisy_sim(5, tx_seed=1).run()  # a different transmitter (its own seed)
+    with pytest.raises(ValueError, match="different transmitter"):
+        sim.evaluate(other)
+    with pytest.raises(ValidationError, match="incompatible simulation"):
+        sim.evaluate(sim.run(), sim.receiver.replace(roll_off=0.3))
 
 
 def test_result_summary_is_json_serialisable():

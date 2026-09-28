@@ -25,7 +25,10 @@ pre-v1                                    v1
 ``full_line_model_wdm(channel, wdm)``     ``Simulation(transmitter, link, receiver).run()``
 ``channels_type='all'`` / ``'middle'``    ``WDMReceiver(channels=None)`` / ``channels=(N//2,)``
 ``nonlinear_shift``                       ``equalize="data_aided"``
-``dbp=[steps]``                           ``link.backpropagate(field, dt_s, steps_per_span=…)``
+``dbp=[steps]``                           ``compensation=DigitalBackPropagation(link=…,
+                                          steps_per_span=…, samples_per_symbol=None)``
+``dbp_model_wdm``                         ``DigitalBackPropagation(…, samples_per_symbol=…)``
+``noise_figure_db=-200`` (noiseless)      ``EDFA(…, noise_figure_db=None)``
 ``result['ber_x']``, ``['q_x']``, …       ``result.stream(polarization=0, channel=…)``
 ``create_ofdm_parameters`` / …            :class:`~hpcom.OFDMTransmitter`,
                                           :class:`~hpcom.OFDMReceiver`
@@ -48,6 +51,12 @@ Numerical differences
   (scalar). To reproduce a pre-v1 result, raise ``noise_figure_db``
   accordingly. The pre-v1 idiom ``noise_figure_db=-200`` for a noiseless
   amplifier is ``EDFA(gain_db=…, noise_figure_db=None)``.
+* **Digital back-propagation**: pre-v1 ``full_line_model(dbp=[…])``
+  back-propagated at the simulation rate; ``samples_per_symbol=None``
+  reproduces it (3e-6 RMS). Pre-v1 ``dbp_model_wdm`` re-generated a
+  waveform from given symbols at the reduced rate and back-propagated that;
+  v1 instead band-limits and resamples the *received* field, as a
+  receiver's ADC does, and runs the matched filter at that rate.
 * **Random bits** come from NumPy's ``SeedSequence``/``Generator`` instead of
   Python's ``random``; the same seed gives different bits. Pass ``bits=`` for
   bit-exact comparisons.

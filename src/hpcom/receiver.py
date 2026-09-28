@@ -15,8 +15,15 @@ Processing chain of every receiver:
    :math:`\exp[-i\,\beta_2L\,\omega^2/2 + i\,\beta_3L\,\omega^3/6]`, the
    inverse of the fiber's dispersive phase (see :doc:`/physics`). Set
    ``cd_compensation_s2 = link.total_dispersion_s2`` (and ``_s3``).
+
+   *Or*, for pulse-shaped receivers, a **compensation stage**
+   (``compensation=``, e.g. :class:`~hpcom.dsp.DigitalBackPropagation`) run
+   per channel on realistic front-end samples: shifted to baseband,
+   band-limited and resampled to the stage's rate (see
+   :class:`~hpcom.dsp.Compensator`).
 2. **Waveform-specific demodulation** to symbol-rate samples (matched
-   filter, or FFT for OFDM).
+   filter — at the compensation stage's rate if one is set — or FFT for
+   OFDM).
 3. **Equalisation** by one complex gain ``g`` per stream (polarisation ×
    channel), ``y = raw / g``, chosen by ``equalize``:
 
@@ -61,6 +68,8 @@ from hpcom._model import (
 )
 from hpcom._pulse import Convolution, matched_filter
 from hpcom._typing import ComplexArray, Polarization
+from hpcom.dsp.compensation import Compensator
+from hpcom.dsp.frontend import lowpass, resample
 from hpcom.modulation.spec import ModulationSpec
 from hpcom.pilots import PilotConfig
 from hpcom.transmitter import (
@@ -340,6 +349,12 @@ class PulseShapedReceiver(Receiver, ABC):
     The pulse fields (``samples_per_symbol``, ``roll_off``,
     ``pulse_span_symbols``, ``convolution``) and ``pilots`` must equal the
     transmitter's; see :class:`~hpcom.transmitter.PulseShapedTransmitter`.
+
+    ``compensation`` (optional) is a :class:`~hpcom.dsp.Compensator` — e.g.
+    :class:`~hpcom.dsp.DigitalBackPropagation` — run per channel on the
+    samples returned by :meth:`front_end`, in place of
+    ``cd_compensation_s2``/``_s3`` (which must then be 0). The matched filter
+    then runs at the stage's ``samples_per_symbol``.
     """
 
     samples_per_symbol: int = Field(default=8, ge=2)
@@ -347,9 +362,17 @@ class PulseShapedReceiver(Receiver, ABC):
     pulse_span_symbols: int | None = Field(default=None, ge=1)
     convolution: Convolution = "circular"
     pilots: PilotConfig | None = None
+    compensation: Polymorphic[Compensator] | None = None
 
     @model_validator(mode="after")
     def _validate_pulse_rx(self) -> PulseShapedReceiver:
+        if self.compensation is not None and (
+            self.cd_compensation_s2 != 0.0 or self.cd_compensation_s3 != 0.0
+        ):
+            raise ValueError(
+                "`compensation` already compensates dispersion; "
+                "leave cd_compensation_s2 and cd_compensation_s3 at 0"
+            )
         if self.convolution == "linear" and self.pulse_span_symbols is None:
             raise ValueError('convolution="linear" needs a finite `pulse_span_symbols`')
         if self.equalize == "pilot" and self.pilots is None:
@@ -380,15 +403,127 @@ class PulseShapedReceiver(Receiver, ABC):
                 )
         return issues
 
+    # ---- front end and compensation ----------------------------------------
+
+    def front_end(
+        self, field: ComplexArray, dt_s: float
+    ) -> tuple[npt.NDArray[np.complex128], float]:
+        """The samples the compensation stage receives, and their sample period.
+
+        Every selected channel shifted to baseband, low-passed to
+        ``compensation.bandwidth_hz`` and resampled to
+        ``compensation.samples_per_symbol`` (steps 1–3 of
+        :class:`~hpcom.dsp.Compensator`): shape ``(*pol, n)`` for a single
+        carrier, ``(*pol, n_selected, n)`` for WDM. Without ``compensation``,
+        the baseband channels at the simulation rate.
+
+        When the front end changes nothing (``samples_per_symbol`` ``None``
+        or equal to the receiver's, ``bandwidth_hz`` ``None``) the stage
+        processes the **whole received field** once, centred at 0 Hz —
+        full-field processing (for WDM, full-field DBP) — and this returns
+        that field, ``(*pol, n)``.
+
+        Use it to feed a custom algorithm, or to build datasets, from exactly
+        what the receiver's compensation stage sees.
+        """
+        x = self._check_field(field)
+        if self._full_field_compensation:
+            return x.copy(), dt_s
+        return self._front_end(self._baseband(x, dt_s), dt_s)
+
+    @property
+    def _full_field_compensation(self) -> bool:
+        """``True`` if ``compensation`` runs once on the whole field (identity front end)."""
+        comp = self.compensation
+        return (
+            comp is not None
+            and comp.bandwidth_hz is None
+            and comp.samples_per_symbol in (None, self.samples_per_symbol)
+        )
+
+    def _baseband(
+        self, field: npt.NDArray[np.complex128], dt_s: float
+    ) -> npt.NDArray[np.complex128]:
+        """Shift the channel(s) to 0 Hz (identity for a single carrier)."""
+        del dt_s
+        return field
+
+    def _channel_offsets_hz(self) -> tuple[float, ...] | None:
+        """Baseband frequency of each channel along axis −2 (``None``: no channel axis, 0 Hz)."""
+        return None
+
+    def _front_end(
+        self, streams: npt.NDArray[np.complex128], dt_s: float
+    ) -> tuple[npt.NDArray[np.complex128], float]:
+        comp = self.compensation
+        if comp is None:
+            return streams, dt_s
+        sps_in, n = self.samples_per_symbol, streams.shape[-1]
+        if n % sps_in:
+            raise ValueError(f"field length {n} is not a multiple of samples_per_symbol={sps_in}")
+        sps_out = comp.samples_per_symbol or sps_in
+        symbol_rate_hz = 1.0 / (dt_s * sps_in)
+        rate_hz = sps_out * symbol_rate_hz
+        if comp.bandwidth_hz is not None:
+            if comp.bandwidth_hz > rate_hz * (1.0 + 1e-12):
+                raise ValueError(
+                    f"compensation.bandwidth_hz = {comp.bandwidth_hz:.4g} Hz exceeds the "
+                    f"front-end sampling rate {rate_hz:.4g} Hz ({sps_out} samples/symbol "
+                    f"at {symbol_rate_hz:.4g} Bd); raise samples_per_symbol"
+                )
+            streams = lowpass(streams, dt_s, comp.bandwidth_hz)
+        if sps_out != sps_in:
+            streams = resample(streams, n // sps_in * sps_out)
+        return streams, 1.0 / rate_hz
+
+    def _receive_field(
+        self,
+        field: npt.NDArray[np.complex128],
+        dt_s: float,
+        reference_data: npt.NDArray[np.complex128] | None,
+    ) -> Detection:
+        """Field → baseband → front end → compensation → matched filter → detection."""
+        comp = self.compensation
+        if comp is not None and self._full_field_compensation:
+            field = self._checked(comp.compensate(field, dt_s), field.shape)
+            comp = None
+        streams = self._baseband(field, dt_s)
+        if comp is None:
+            return self._demodulate(streams, reference_data, self.samples_per_symbol)
+        samples, dt_c = self._front_end(streams, dt_s)
+        offsets = self._channel_offsets_hz()
+        if offsets is None:
+            compensated = self._checked(comp.compensate(samples, dt_c), samples.shape)
+        else:
+            compensated = np.empty_like(samples)
+            for c, f_hz in enumerate(offsets):
+                one = samples[..., c, :]
+                compensated[..., c, :] = self._checked(
+                    comp.compensate(one, dt_c, frequency_offset_hz=f_hz), one.shape
+                )
+        return self._demodulate(
+            compensated, reference_data, comp.samples_per_symbol or self.samples_per_symbol
+        )
+
+    def _checked(self, out: ComplexArray, shape: tuple[int, ...]) -> npt.NDArray[np.complex128]:
+        arr = np.asarray(out, dtype=np.complex128)
+        if arr.shape != shape:
+            raise ValueError(
+                f"{type(self.compensation).__name__}.compensate returned shape {arr.shape}, "
+                f"expected {shape}"
+            )
+        return arr
+
     def _demodulate(
         self,
         streams: npt.NDArray[np.complex128],
         reference_data: npt.NDArray[np.complex128] | None,
+        samples_per_symbol: int,
     ) -> Detection:
-        """Matched filter → split data/pilot slots → :meth:`_detect`."""
+        """Matched filter at ``samples_per_symbol`` → split data/pilot slots → :meth:`_detect`."""
         slots = matched_filter(
             streams,
-            self.samples_per_symbol,
+            samples_per_symbol,
             self.roll_off,
             self.pulse_span_symbols,
             self.convolution,
@@ -429,7 +564,7 @@ class SingleCarrierReceiver(PulseShapedReceiver):
     ) -> SingleCarrierReceivedSymbols:
         x = self._compensate_dispersion(self._check_field(field), dt_s)
         ref = self.reference(reference)[1] if reference is not None else None
-        out = self._demodulate(x, ref)
+        out = self._receive_field(x, dt_s, ref)
         return SingleCarrierReceivedSymbols(receiver=self, **out)
 
 
