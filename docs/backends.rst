@@ -30,6 +30,23 @@ existing TensorFlow stack, a platform without a JAX GPU build). Both
 implement every scheme and pass the same conformance suite; their results
 agree with NumPy to rounding.
 
+*Measured* (``benchmarks/backends.py``; NVIDIA RTX 3070 Laptop GPU, JAX
+0.11.2 / CUDA 12 against NumPy on the same PC's CPU; dual polarisation,
+80 km, 100 steps; seconds per span). Every JAX result agrees with NumPy to
+≤ 3e-13:
+
+============ ======================= ======================= ======================= =======================
+samples      Strang (uniform)        Suzuki (4th order)      RK4IP                   local error 1e-5
+============ ======================= ======================= ======================= =======================
+16 384       0.075 → 0.019 (4×)      0.38 → 0.077 (5×)       0.31 → 0.051 (6×)       2.31 → 0.149 (16×)
+65 536       0.74 → 0.043 (17×)      3.85 → 0.18 (21×)       3.43 → 0.13 (26×)       14.7 → 0.36 (41×)
+262 144      4.09 → 0.153 (27×)      19.3 → 0.73 (27×)       15.9 → 0.49 (32×)       50.4 → 1.46 (35×)
+============ ======================= ======================= ======================= =======================
+
+*JAX memory.* By default JAX reserves 75 % of the GPU memory when it starts;
+set ``XLA_PYTHON_CLIENT_PREALLOCATE=false`` to allocate on demand when the
+GPU is shared (``benchmarks/gpu_validation.sh`` does).
+
 Select one per fiber (``Fiber(..., backend="jax")``,
 ``fiber.with_backend("jax")``). Backends are imported lazily:
 ``import hpcom`` never imports JAX or TensorFlow, and asking for an uninstalled

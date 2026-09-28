@@ -30,3 +30,4 @@ docs/_build/
 
 # Notebooks scratch
 .ipynb_checkpoints/
+.venv-*/

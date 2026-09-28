@@ -37,8 +37,8 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   FWM-aware step count, adaptive local-error method (Sinkin 2003);
   NumPy + TF (GPU); CPU-fallback warning mechanism.
   DBP for OFDM receivers done. JAX backend (`backend="jax"`, every scheme)
-  added and passing the conformance suite on CPU; GPU validation queued on
-  the node `bugatti` (`benchmarks/gpu_validation.sh`). TensorFlow backend:
+  added; the full suite passes with JAX on the local RTX 3070 (separate env,
+  `benchmarks/gpu_validation.sh`), 4–41× faster than NumPy (docs/backends.rst). TensorFlow backend:
   kept and supported alongside JAX for systems where it suits better
   (maintainer, 2026-09-28); new schemes go into both. Later ideas: multicore fibers. NFT: not in hpcom for now — the
   maintainer's separate NFT project will be integrated later. Rust: the maintainer will write it
