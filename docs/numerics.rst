@@ -98,9 +98,9 @@ Scheme options
 
 ``Fiber.scheme`` (:class:`hpcom.numerics.Scheme`; a method name is accepted
 as shorthand) selects how each step is integrated. The default is the
-symmetric step :eq:`strang-step`. The options below all keep the split-step
-structure, so both backends run them through one kernel and backward
-propagation stays exact.
+symmetric step :eq:`strang-step`. All options except RK4IP keep the
+split-step structure, so both backends run them through one kernel and
+backward propagation stays exact.
 
 Kerr-step position :math:`r`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -183,6 +183,90 @@ Backward, the same Kerr points are visited in reverse: the traversal uses
 position :math:`1-r` and negated lengths, i.e. the exact inverse
 :math:`S_r(h)^{-1} = D(-rh)\,N(-c)\,D(-(1-r)h)` — for every position, Kerr
 length and filter [``test_every_split_step_scheme_is_exactly_invertible``].
+
+
+Fourth-order methods
+^^^^^^^^^^^^^^^^^^^^
+
+**Symmetric compositions.** If :math:`S(h)` is symmetric and second order,
+:math:`\Phi(h) = S(w_1h)\cdots S(w_sh)` with palindromic weights is fourth
+order when
+
+.. math::
+
+   \sum_i w_i = 1, \qquad \sum_i w_i^3 = 0
+
+(the :math:`h^3` error terms cancel; [Yoshida1990]_, [Suzuki1990]_,
+[Hairer2006]_, ch. II on composition methods):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 48 30
+
+   * - ``method``
+     - Weights
+     - Kerr steps / FFTs per step
+   * - ``"ssfm4-yoshida"``
+     - :math:`(w_1, w_0, w_1)`, :math:`w_1 = \frac{1}{2-2^{1/3}} \approx 1.3512`,
+       :math:`w_0 = 1-2w_1 \approx -1.7024` [Yoshida1990]_
+     - 3 / 6
+   * - ``"ssfm4-suzuki"``
+     - :math:`(p, p, 1-4p, p, p)`, :math:`p = \frac{1}{4-4^{1/3}} \approx 0.4145`
+       [Suzuki1990]_
+     - 5 / 10
+
+Each stage is a symmetric step (:math:`r = 1/2`), so the sub-steps merge as
+in :eq:`span` and the compositions run in the split-step kernel on every
+backend, with any step placement, effective Kerr length or intensity filter.
+The middle stage has a *negative* length: its linear part then amplifies by
+:math:`e^{\alpha|w_0h|/2}` and the Kerr phase is reversed — exact flows run
+backwards, which is harmless for loss this small. Backward propagation is
+still exact.
+
+**RK4IP** [Hult2007]_ (``"rk4ip"``). In the interaction picture
+:math:`A_I = D(-z)A`, the equation becomes :math:`\partial_z A_I =
+D(-z)\hat N(D(z)A_I)` and is integrated with the classical fourth-order
+Runge–Kutta method, the reference point placed mid-step so that each stage
+needs one dispersion half step:
+
+.. math::
+
+   \begin{aligned}
+   A_I &= D(h/2)A, &
+   k_1 &= D(h/2)\,[h\hat N(A)], \\
+   k_2 &= h\hat N\big(A_I + k_1/2\big), &
+   k_3 &= h\hat N\big(A_I + k_2/2\big), \\
+   k_4 &= h\hat N\big(D(h/2)(A_I + k_3)\big), &
+   A(z+h) &= D(h/2)\big[A_I + \tfrac{k_1}{6} + \tfrac{k_2}{3} + \tfrac{k_3}{3}\big] + \tfrac{k_4}{6},
+   \end{aligned}
+
+with :math:`\hat N(A) = i\gamma_\mathrm{eff}PA`: four Kerr evaluations and
+8 FFTs per step. RK4 is not time-reversible, so backward propagation is the
+same method with :math:`h < 0` — accurate (the round trip errs by
+:math:`O(h^{\ge 4})`), not exact [``test_rk4ip_backward_is_a_fourth_order_but_not_exact_inverse``].
+The effective Kerr length and the intensity filter do not apply.
+
+**Measured.** Same field as the placement table (30 GHz, 10 mW, 80 km,
+0.2 dB/km), relative error against Suzuki at 5120 steps (which agrees with
+RK4IP at 5120 steps to 3e-12) [``test_fourth_order_methods_converge_as_h4``]:
+
+============== ======= ======= ======= ======= ======= ======= ============
+steps K        10      40      80      160     320     640     FFTs/step
+============== ======= ======= ======= ======= ======= ======= ============
+Strang         —       3.1e-3  5.3e-4  1.3e-4  3.1e-5  7.7e-6  2
+Yoshida        1.4e-1  1.7e-3  1.3e-4  6.0e-6  3.8e-7  2.4e-8  6
+Suzuki         5.1e-2  5.1e-4  2.9e-5  3.9e-7  2.2e-8  1.3e-9  10
+RK4IP          4.4e-2  6.5e-4  4.1e-5  9.6e-7  6.0e-8  3.8e-9  8
+============== ======= ======= ======= ======= ======= ======= ============
+
+The ratio per step doubling reaches 16 from :math:`K \approx 160`
+(15.8–16.1); at coarse steps the fourth-order methods are pre-asymptotic.
+Per FFT they match Strang near 1e-4 and win by orders of magnitude below:
+at ≈ 2500 FFTs per span Strang reaches 1.9e-6, RK4IP 6.0e-8 and Suzuki
+2.2e-8 (3200 FFTs). On the exact second-order soliton over a period the
+error falls 16× per halving and Suzuki at 800 steps (7.7e-9) is
+≈ 40 000× more accurate than Strang at 800 steps
+[``test_fourth_order_methods_on_the_second_order_soliton``].
 
 
 Order of accuracy
@@ -427,6 +511,10 @@ Backends and GPU policy
      - ✓
      - ✓ (GPU)
      - exact, no steps
+   * - Fourth order: Yoshida, Suzuki compositions; RK4IP
+     - ✓
+     - ✓ (GPU)
+     - exact, no steps
 
 Policy for new schemes: a scheme that can run on a GPU gets its GPU
 implementation (TensorFlow now, JAX planned) and must pass the conformance
@@ -445,10 +533,10 @@ Not implemented yet; listed with the literature they follow.
   [Musetti2018]_.
 * **Adaptive local-error control** (step doubling, third-order accurate)
   [Sinkin2003]_.
-* **Higher-order methods**: fourth-order symmetric compositions of the
-  Strang step [Yoshida1990]_, [Muslu2005]_; Runge–Kutta in the interaction
-  picture (RK4IP) [Hult2007]_. A comparison of split-step variants for
-  optical links is [Shao2014]_.
+* **Sixth and higher order** compositions (e.g. a triple jump of the
+  fourth-order step) and embedded RK schemes with error control
+  [Muslu2005]_. A comparison of split-step variants for optical links is
+  [Shao2014]_.
 
 
 References
@@ -477,6 +565,9 @@ References
 .. [Francia1999] C. Francia, "Constant step-size analysis in numerical
    simulation for correct four-wave-mixing power evaluation in optical fiber
    transmission systems," *IEEE Photon. Technol. Lett.* 11(1), 69–71, 1999.
+
+.. [Hairer2006] E. Hairer, C. Lubich, G. Wanner, *Geometric Numerical
+   Integration*, 2nd ed. Springer, 2006.
 
 .. [Hult2007] J. Hult, "A fourth-order Runge–Kutta in the interaction
    picture method for simulating supercontinuum generation in optical
@@ -512,6 +603,10 @@ References
 
 .. [Strang1968] G. Strang, "On the construction and comparison of difference
    schemes," *SIAM J. Numer. Anal.* 5(3), 506–517, 1968.
+
+.. [Suzuki1990] M. Suzuki, "Fractal decomposition of exponential operators with
+   applications to many-body theories and Monte Carlo simulations," *Phys.
+   Lett. A* 146(6), 319–323, 1990.
 
 .. [Yoshida1990] H. Yoshida, "Construction of higher order symplectic
    integrators," *Phys. Lett. A* 150(5–7), 262–268, 1990.

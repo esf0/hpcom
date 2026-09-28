@@ -22,7 +22,7 @@ import tensorflow as tf
 
 from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
-    COMPOSITION_WEIGHTS,
+    ALL_METHODS,
     Propagator,
     check_field_shape,
     effective_gamma_per_m,
@@ -68,11 +68,33 @@ def _ssfm_sequence(
     return tf.signal.ifft(spectrum)
 
 
+@tf.function(reduce_retracing=True)
+def _rk4ip(a: Any, exponent: Any, sizes: Any, gamma_eff: Any, dual: bool) -> Any:
+    """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), per-step lengths."""
+
+    def kerr(x: Any) -> Any:
+        power = tf.math.real(x) ** 2 + tf.math.imag(x) ** 2
+        if dual:
+            power = tf.reduce_sum(power, axis=-2, keepdims=True)
+        return tf.complex(tf.zeros_like(power), gamma_eff * power) * x
+
+    for i in tf.range(tf.shape(sizes)[0]):
+        h = tf.cast(sizes[i], tf.complex128)
+        half = tf.exp(exponent * (h / 2.0))
+        a_ip = tf.signal.ifft(tf.signal.fft(a) * half)
+        k1 = tf.signal.ifft(tf.signal.fft(h * kerr(a)) * half)
+        k2 = h * kerr(a_ip + k1 / 2.0)
+        k3 = h * kerr(a_ip + k2 / 2.0)
+        k4 = h * kerr(tf.signal.ifft(tf.signal.fft(a_ip + k3) * half))
+        a = tf.signal.ifft(tf.signal.fft(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) * half) + k4 / 6.0
+    return a
+
+
 class TensorFlowPropagator(Propagator):
     """Scalar NLSE / Manakov SSFM on TensorFlow (see module docstring)."""
 
     name = "tensorflow"
-    supported_methods = frozenset(COMPOSITION_WEIGHTS)
+    supported_methods = ALL_METHODS
 
     def propagate(
         self,
@@ -95,6 +117,14 @@ class TensorFlowPropagator(Propagator):
                 tf.constant(np.exp(exponent * (h / 2.0))),
                 tf.constant(gamma_eff * h, dtype=tf.float64),
                 tf.constant(sizes.size, dtype=tf.int32),
+                dual,
+            )
+        elif fiber.scheme.method == "rk4ip":
+            out = _rk4ip(
+                tf.constant(a),
+                tf.constant(exponent),
+                tf.constant(sizes, dtype=tf.float64),
+                tf.constant(gamma_eff, dtype=tf.float64),
                 dual,
             )
         else:

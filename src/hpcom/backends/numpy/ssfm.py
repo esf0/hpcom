@@ -16,11 +16,12 @@ with ``D(h) = IFFT · exp(h·L̂(ω)) · FFT`` and
 :func:`~hpcom.backends.base.effective_gamma_per_m`. For uniform steps every
 inner linear sub-step is ``D(h)`` and is computed once.
 
-Every other ``fiber.scheme`` (Kerr position, effective Kerr length,
-filtered Kerr step, compositions) and step placement runs the general
-sub-step sequence of :func:`hpcom.backends.base.split_step_sequence`,
-``D(m_J) N(c_J) … N(c_1) D(m_0)``, optionally with low-pass filtered power
-in ``N``.
+Every other split-step ``fiber.scheme`` (Kerr position, effective Kerr
+length, filtered Kerr step, fourth-order compositions) and step placement
+runs the general sub-step sequence of
+:func:`hpcom.backends.base.split_step_sequence`, ``D(m_J) N(c_J) … N(c_1)
+D(m_0)``, optionally with low-pass filtered power in ``N``. ``"rk4ip"`` is
+the fourth-order Runge–Kutta in the interaction picture (Hult 2007).
 
 ``N`` does not change ``|A|``, so running the same sub-steps in reverse order
 with negated lengths is the exact inverse: backward propagation undoes
@@ -34,7 +35,7 @@ import numpy as np
 
 from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
-    COMPOSITION_WEIGHTS,
+    ALL_METHODS,
     Propagator,
     check_field_shape,
     effective_gamma_per_m,
@@ -63,7 +64,7 @@ class NumpySSFMPropagator(Propagator):
     """Scalar NLSE / Manakov split-step schemes (see module docstring)."""
 
     name = "numpy"
-    supported_methods = frozenset(COMPOSITION_WEIGHTS)
+    supported_methods = ALL_METHODS
 
     def propagate(
         self,
@@ -80,6 +81,8 @@ class NumpySSFMPropagator(Propagator):
         dual = fiber.polarization == "dual"
         if uses_fast_path(fiber):
             return self._uniform(a, exponent, sizes, gamma_eff, dual)
+        if fiber.scheme.method == "rk4ip":
+            return self._rk4ip(a, exponent, sizes, gamma_eff, dual)
         linear, kerr = split_step_sequence(fiber, direction)
         response = kerr_filter_response(a.shape[-1], dt_s, fiber)
         return self._sequence(a, exponent, linear, kerr, gamma_eff, dual, response)
@@ -101,6 +104,32 @@ class NumpySSFMPropagator(Propagator):
             spectrum *= d_full if step < n_steps - 1 else d_half
         out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
         return out
+
+    @staticmethod
+    def _rk4ip(
+        a: np.ndarray, exponent: np.ndarray, sizes: np.ndarray, gamma_eff: float, dual: bool
+    ) -> ComplexArray:
+        """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), 8 FFTs per step."""
+
+        def kerr(x: np.ndarray) -> np.ndarray:  # N̂(x)·x = iγ_eff P(x) x
+            out: np.ndarray = 1j * gamma_eff * _kerr_power(x, dual, None) * x
+            return out
+
+        for h in sizes:
+            half = np.exp(exponent * (h / 2.0))
+
+            def disperse(x: np.ndarray, half: np.ndarray = half) -> np.ndarray:
+                out: np.ndarray = np.fft.ifft(np.fft.fft(x, axis=-1) * half, axis=-1)
+                return out
+
+            a_ip = disperse(a)
+            k1 = disperse(h * kerr(a))
+            k2 = h * kerr(a_ip + k1 / 2.0)
+            k3 = h * kerr(a_ip + k2 / 2.0)
+            k4 = h * kerr(disperse(a_ip + k3))
+            a = disperse(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
+        result: ComplexArray = a
+        return result
 
     @staticmethod
     def _sequence(

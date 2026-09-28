@@ -120,3 +120,48 @@ def test_unsupported_scheme_falls_back_to_numpy_with_a_warning(monkeypatch):
         out = fiber.replace(backend="plain-only").propagate(x, 1e-11)
     np.testing.assert_array_equal(out, fiber.propagate(x, 1e-11))
     assert isinstance(backends.get_propagator("plain-only"), Propagator)
+
+
+@pytest.mark.parametrize("method", ["ssfm4-yoshida", "ssfm4-suzuki", "rk4ip"])
+def test_fourth_order_methods(method):
+    s = Scheme(method=method)
+    assert s.order == 4
+    assert s.is_split_step == (method != "rk4ip")
+    assert (
+        Fiber.model_validate_json(Fiber(length_km=1.0, scheme=method).model_dump_json()).scheme == s
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"method": "rk4ip", "kerr_length": "effective"},
+        {"method": "rk4ip", "kerr_filter_bandwidth_hz": 1e9},
+        {"method": "rk4ip", "nonlinear_position": 0.2},
+        {"method": "ssfm4-yoshida", "nonlinear_position": 0.2},
+    ],
+)
+def test_options_that_do_not_apply_are_rejected(kwargs):
+    with pytest.raises(ValidationError):
+        Scheme(**kwargs)
+
+
+def test_composition_weights_are_symmetric_and_sum_to_one():
+    from hpcom.backends.base import COMPOSITION_WEIGHTS
+
+    for weights in COMPOSITION_WEIGHTS.values():
+        assert sum(weights) == pytest.approx(1.0, abs=1e-15)
+        assert tuple(reversed(weights)) == weights
+    w1, w0, _ = COMPOSITION_WEIGHTS["ssfm4-yoshida"]
+    assert w1 == pytest.approx(1 / (2 - 2 ** (1 / 3))) and w0 < 0
+    # Fourth-order condition for symmetric compositions of a second-order step: Σ w³ = 0.
+    for name in ("ssfm4-yoshida", "ssfm4-suzuki"):
+        assert sum(w**3 for w in COMPOSITION_WEIGHTS[name]) == pytest.approx(0.0, abs=1e-14)
+
+
+def test_composition_sequence_has_one_kerr_step_per_stage():
+    fiber = Fiber(length_km=10.0, n_steps=2, scheme="ssfm4-suzuki")
+    linear, kerr = split_step_sequence(fiber, "forward")
+    assert kerr.size == 10 and linear.size == 11
+    assert kerr.sum() == pytest.approx(10e3) and linear.sum() == pytest.approx(10e3)
+    assert np.sum(kerr < 0) == 2  # the negative middle stage of each step

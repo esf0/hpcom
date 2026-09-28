@@ -149,11 +149,20 @@ def check_field_shape(field: np.ndarray, fiber: FiberLike) -> None:
         raise ValueError(f"unknown fiber polarization {fiber.polarization!r}")
 
 
-#: Sub-step weights of the symmetric compositions of the Strang step, per method.
-COMPOSITION_WEIGHTS: dict[str, tuple[float, ...]] = {"ssfm": (1.0,)}
+_CBRT2, _CBRT4 = 2.0 ** (1.0 / 3.0), 4.0 ** (1.0 / 3.0)
+_YOSHIDA_W1 = 1.0 / (2.0 - _CBRT2)
+_SUZUKI_P = 1.0 / (4.0 - _CBRT4)
+
+#: Sub-step weights of the symmetric compositions of the Strang step, per method:
+#: Yoshida's triple jump and Suzuki's fractal (5-stage) fourth-order compositions.
+COMPOSITION_WEIGHTS: dict[str, tuple[float, ...]] = {
+    "ssfm": (1.0,),
+    "ssfm4-yoshida": (_YOSHIDA_W1, 1.0 - 2.0 * _YOSHIDA_W1, _YOSHIDA_W1),
+    "ssfm4-suzuki": (_SUZUKI_P, _SUZUKI_P, 1.0 - 4.0 * _SUZUKI_P, _SUZUKI_P, _SUZUKI_P),
+}
 
 #: Every ``Scheme.method`` hpcom defines.
-ALL_METHODS: frozenset[str] = frozenset(COMPOSITION_WEIGHTS)
+ALL_METHODS: frozenset[str] = frozenset(COMPOSITION_WEIGHTS) | {"rk4ip"}
 
 
 def attenuation_per_m(fiber: FiberLike) -> float:

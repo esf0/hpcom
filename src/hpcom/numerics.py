@@ -11,6 +11,15 @@ hpcom, ``ssfm-gpu`` and OptiCommPy's ``ssfm``.
 * ``"ssfm"`` — one split step per step: linear :math:`r h`, Kerr, linear
   :math:`(1-r)h`, with :math:`r` = ``nonlinear_position``. Second order for
   :math:`r = 1/2`, first order otherwise.
+* ``"ssfm4-yoshida"`` — the symmetric step composed as a triple jump
+  :math:`S(w_1h)S(w_0h)S(w_1h)`, :math:`w_1 = 1/(2-2^{1/3})`,
+  :math:`w_0 = 1-2w_1` (Yoshida 1990): fourth order, 3 Kerr steps per step.
+* ``"ssfm4-suzuki"`` — the fractal composition
+  :math:`S(ph)^2S((1-4p)h)S(ph)^2`, :math:`p = 1/(4-4^{1/3})` (Suzuki 1990):
+  fourth order with a smaller error constant, 5 Kerr steps per step.
+* ``"rk4ip"`` — fourth-order Runge–Kutta in the interaction picture
+  (Hult 2007): 4 Kerr evaluations and 8 FFTs per step. Not time-reversible,
+  so backward propagation is accurate to fourth order, not exact.
 
 Kerr-step options (split-step methods only)
 
@@ -35,13 +44,13 @@ from hpcom._model import HpcomModel
 __all__ = ["KerrFilterShape", "KerrLength", "Scheme", "SchemeMethod"]
 
 #: Integration methods (see the module docstring).
-SchemeMethod = Literal["ssfm"]
+SchemeMethod = Literal["ssfm", "ssfm4-yoshida", "ssfm4-suzuki", "rk4ip"]
 #: Length used in the Kerr phase of a split step.
 KerrLength = Literal["step", "effective"]
 #: Shape of the intensity filter of a filtered Kerr step.
 KerrFilterShape = Literal["gaussian", "rectangular"]
 
-_SPLIT_STEP: frozenset[str] = frozenset({"ssfm"})
+_SPLIT_STEP: frozenset[str] = frozenset({"ssfm", "ssfm4-yoshida", "ssfm4-suzuki"})
 
 
 class Scheme(HpcomModel):
@@ -107,7 +116,9 @@ class Scheme(HpcomModel):
     @property
     def order(self) -> int:
         """Global order of accuracy in the step for the unfiltered equation."""
-        return 2 if self.nonlinear_position == 0.5 else 1
+        if self.method == "ssfm":
+            return 2 if self.nonlinear_position == 0.5 else 1
+        return 4
 
     @property
     def is_default(self) -> bool:

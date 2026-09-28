@@ -406,7 +406,13 @@ SCHEMES = {
     "filtered-rectangular": StubScheme(
         kerr_filter_bandwidth_hz=20e9, kerr_filter_shape="rectangular"
     ),
+    "yoshida4": StubScheme(method="ssfm4-yoshida"),
+    "suzuki4": StubScheme(method="ssfm4-suzuki"),
+    "suzuki4-effective-filtered": StubScheme(
+        method="ssfm4-suzuki", kerr_length="effective", kerr_filter_bandwidth_hz=20e9
+    ),
 }
+FOURTH_ORDER = ("ssfm4-yoshida", "ssfm4-suzuki", "rk4ip")
 
 
 def _scheme_params():
@@ -518,6 +524,70 @@ def test_filtered_kerr_step_is_a_pure_phase(nonlinear_backend, shape):
     np.testing.assert_allclose(np.sum(np.abs(out) ** 2), np.sum(np.abs(field) ** 2), rtol=1e-12)
 
 
+@functools.cache
+def _fourth_order_reference(backend: str) -> np.ndarray:
+    field, dt = _order_test_field()
+    fiber = replace(_ORDER_BASE, n_steps=5120, scheme=StubScheme(method="ssfm4-suzuki"))
+    return get_propagator(backend).propagate(field, fiber, dt_s=dt)
+
+
+@pytest.mark.parametrize("method", FOURTH_ORDER)
+def test_fourth_order_methods_converge_as_h4(nonlinear_backend, method):
+    """Halving the step divides the error by ≈ 16 (Yoshida, Suzuki, RK4IP; asymptotic regime)."""
+    field, dt = _order_test_field()
+    ref = _fourth_order_reference(nonlinear_backend)
+    prop = get_propagator(nonlinear_backend)
+    errors = [
+        np.linalg.norm(
+            prop.propagate(
+                field, replace(_ORDER_BASE, n_steps=k, scheme=StubScheme(method=method)), dt_s=dt
+            )
+            - ref
+        )
+        / np.linalg.norm(ref)
+        for k in (160, 320, 640)
+    ]
+    ratios = [a / b for a, b in itertools.pairwise(errors)]
+    assert all(14 < q < 18.5 for q in ratios), ratios
+    # The reference (Suzuki) and RK4IP are independent schemes: they agree to 1e-8 here.
+    assert errors[-1] < 1e-7
+
+
+def test_rk4ip_agrees_with_numpy_reference(nonlinear_backend):
+    fiber = StubFiber(
+        length_km=80.0,
+        alpha_db_per_km=0.2,
+        beta3_s3_per_m=1.2e-40,
+        n_steps=13,
+        polarization="dual",
+        scheme=StubScheme(method="rk4ip"),
+        **PLACEMENTS["log-k1/3"],
+    )
+    field = _random_field((2, 2048), 0.1)
+    ref = get_propagator("numpy").propagate(field, fiber, dt_s=1e-12)
+    out = get_propagator(nonlinear_backend).propagate(field, fiber, dt_s=1e-12)
+    np.testing.assert_allclose(out, ref, rtol=0, atol=1e-12 * np.max(np.abs(ref)))
+
+
+def test_rk4ip_backward_is_a_fourth_order_but_not_exact_inverse(nonlinear_backend):
+    """RK4 is not time-reversible: the round trip is not exact (unlike the split steps).
+
+    Its error vanishes at least as fast as h⁴ (measured ≈ 30× per halving —
+    the leading forward and backward errors partly cancel).
+    """
+    field, dt = _order_test_field()
+    prop = get_propagator(nonlinear_backend)
+    errors = []
+    for k in (80, 160, 320):
+        fiber = replace(_ORDER_BASE, n_steps=k, scheme=StubScheme(method="rk4ip"))
+        back = prop.propagate(
+            prop.propagate(field, fiber, dt_s=dt), fiber, dt_s=dt, direction="backward"
+        )
+        errors.append(np.linalg.norm(back - field) / np.linalg.norm(field))
+    assert errors[-1] > 1e-10
+    assert all(a / b > 14 for a, b in itertools.pairwise(errors)), errors
+
+
 # ---------------------------------------------------------------------------
 # Exact solutions of the NLSE / Manakov equation
 # ---------------------------------------------------------------------------
@@ -536,6 +606,27 @@ def _satsuma_yajima(tau: np.ndarray, xi: float, p0: float) -> np.ndarray:
     num = 4 * (np.cosh(3 * tau) + 3 * np.exp(4j * xi) * np.cosh(tau)) * np.exp(1j * xi / 2)
     den = np.cosh(4 * tau) + 4 * np.cosh(2 * tau) + 3 * np.cos(4 * xi)
     return np.sqrt(p0) * num / den
+
+
+@pytest.mark.parametrize("method", FOURTH_ORDER)
+def test_fourth_order_methods_on_the_second_order_soliton(nonlinear_backend, method):
+    """Exact N = 2 soliton over a full period: error ÷16 per step halving."""
+    tau, dt = _soliton_grid()
+    p0 = abs(_B2) / (_GAMMA * _T0**2)
+    a0, expected = _satsuma_yajima(tau, 0.0, p0), _satsuma_yajima(tau, np.pi / 2, p0)
+    errors = []
+    for n_steps in (400, 800, 1600):
+        fiber = StubFiber(
+            length_km=np.pi / 2 * _LD / 1e3,
+            beta2_s2_per_m=_B2,
+            gamma_per_w_per_km=_GAMMA * 1e3,
+            n_steps=n_steps,
+            scheme=StubScheme(method=method),
+        )
+        out = get_propagator(nonlinear_backend).propagate(a0, fiber, dt_s=dt)
+        errors.append(np.max(np.abs(out - expected)) / np.max(np.abs(a0)))
+    assert all(14 < a / b < 18 for a, b in itertools.pairwise(errors)), errors
+    assert errors[-1] < 1e-7
 
 
 @pytest.mark.parametrize("xi", [np.pi / 4, np.pi / 2])
