@@ -8,7 +8,12 @@
   :func:`nearest_symbol_indices` — flat helpers.
 """
 
-from hpcom.modulation.constellations import bits_per_symbol, square_qam
+from hpcom.modulation.constellations import (
+    DEFAULT_QAM_LABELING,
+    SquareQAMLabeling,
+    bits_per_symbol,
+    square_qam,
+)
 from hpcom.modulation.dm import (
     ConstantCompositionDM,
     composition_from_pmf,
@@ -20,9 +25,11 @@ from hpcom.modulation.shaping import ConstellationConfig, apsk, natural_labels
 from hpcom.modulation.spec import ModulationSpec
 
 __all__ = [
+    "DEFAULT_QAM_LABELING",
     "ConstantCompositionDM",
     "ConstellationConfig",
     "ModulationSpec",
+    "SquareQAMLabeling",
     "apsk",
     "bits_per_symbol",
     "bits_to_symbols",

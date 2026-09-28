@@ -32,18 +32,20 @@ def test_constellation_has_unit_average_power(order: int):
     np.testing.assert_allclose(avg_power, 1.0, atol=1e-12)
 
 
+@pytest.mark.parametrize("labeling", ["q_descending", "q_ascending"])
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
-def test_bit_labels_unique_per_symbol(order: int):
-    _, bit_labels = square_qam(order)
+def test_bit_labels_unique_per_symbol(order: int, labeling):
+    _, bit_labels = square_qam(order, labeling)
     # Each symbol has a unique bit pattern
     seen = {tuple(row) for row in bit_labels}
     assert len(seen) == order
 
 
+@pytest.mark.parametrize("labeling", ["q_descending", "q_ascending"])
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
-def test_bit_labels_gray_along_each_axis(order: int):
+def test_bit_labels_gray_along_each_axis(order: int, labeling):
     """Adjacent constellation points along I or Q must differ by exactly one bit."""
-    _, bit_labels = square_qam(order)
+    _, bit_labels = square_qam(order, labeling)
     side = round(float(np.sqrt(order)))
     # Symbols are laid out in a row-major (Q, I) grid.
     for q in range(side):

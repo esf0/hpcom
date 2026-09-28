@@ -95,6 +95,12 @@ class EDFA(Amplifier):
     phase-insensitive amplifier (``F ≥ 2 − 1/G``, i.e. ≈ 3 dB) but still
     yields ASE: ``n_sp = 1/2``.
 
+    ``noise_figure_db=None`` is an **ideal noiseless amplifier** — exact gain
+    :math:`\sqrt{G}\,A_\text{in}`, ``n_sp = 0``, no random numbers drawn.
+    It is not a physical device (no finite ``F`` gives it); use it to isolate
+    deterministic effects such as fibre nonlinearity or a DSP algorithm. It
+    replaces the pre-v1 idiom ``noise_figure_db=-200``.
+
     .. note::
        Earlier conventions, per polarisation and relative to the level above
        at high gain: pre-v1 hpcom injected ``hν(G−1)F`` in the Manakov model
@@ -104,7 +110,7 @@ class EDFA(Amplifier):
     """
 
     gain_db: float = Field(ge=0)
-    noise_figure_db: float = Field(default=5.0, ge=0)
+    noise_figure_db: float | None = Field(default=5.0, ge=0)
     wavelength_m: float = Field(default=1550e-9, gt=0)
 
     @property
@@ -113,26 +119,36 @@ class EDFA(Amplifier):
         return db_to_linear(self.gain_db)
 
     @property
+    def is_noiseless(self) -> bool:
+        """``True`` when no ASE is added: ``noise_figure_db=None`` or ``gain_db=0``."""
+        return self.noise_figure_db is None or self.gain_linear == 1.0
+
+    @property
     def noise_figure_linear(self) -> float:
-        """Noise figure ``F = 10^(noise_figure_db/10)``."""
+        """Noise figure ``F = 10^(noise_figure_db/10)``; ``nan`` for the ideal noiseless amplifier."""
+        if self.noise_figure_db is None:
+            return float("nan")
         return db_to_linear(self.noise_figure_db)
 
     @property
     def spontaneous_emission_factor(self) -> float:
         """Population-inversion factor ``n_sp = (G F − 1) / (2 (G − 1))``.
 
-        Undefined (returned as ``nan``) for ``G = 1``, where no ASE is emitted.
+        ``0`` for the ideal noiseless amplifier (``noise_figure_db=None``);
+        undefined (returned as ``nan``) for ``G = 1``, where no ASE is emitted.
         """
         g = self.gain_linear
         if g == 1.0:
             return float("nan")
+        if self.noise_figure_db is None:
+            return 0.0
         return (g * self.noise_figure_linear - 1.0) / (2.0 * (g - 1.0))
 
     @property
     def ase_psd_per_polarization_w_per_hz(self) -> float:
         """One-sided ASE power spectral density per polarisation, ``n_sp h ν (G−1)``, in W/Hz."""
         g = self.gain_linear
-        if g == 1.0:
+        if self.is_noiseless:
             return 0.0
         h_nu = PLANCK_J_S * wavelength_to_frequency_hz(self.wavelength_m)
         return (g * self.noise_figure_linear - 1.0) * h_nu / 2.0

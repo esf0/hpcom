@@ -10,8 +10,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hpcom.modulation import bits_per_symbol, bits_to_symbols, symbols_to_bits
+from hpcom.modulation import (
+    DEFAULT_QAM_LABELING,
+    bits_per_symbol,
+    bits_to_symbols,
+    symbols_to_bits,
+)
 from hpcom.modulation.constellations import square_qam
+
+LABELINGS = ["q_descending", "q_ascending"]
 
 
 @pytest.mark.parametrize("order", [4, 16, 64, 256, 1024])
@@ -27,33 +34,57 @@ def test_constellation_points_are_distinct(order: int):
     assert len({(float(z.real), float(z.imag)) for z in constellation}) == order
 
 
+@pytest.mark.parametrize("labeling", LABELINGS)
 @pytest.mark.parametrize("order", [4, 16, 64, 256, 1024])
-def test_every_bit_pattern_appears_exactly_once(order: int):
+def test_every_bit_pattern_appears_exactly_once(order: int, labeling):
     """All M unique k-bit patterns must label distinct symbols, no repeats."""
-    _, labels = square_qam(order)
+    _, labels = square_qam(order, labeling)
     k = bits_per_symbol(order)
     packed = (labels.astype(np.int64) * (1 << np.arange(k - 1, -1, -1))).sum(axis=1)
     assert sorted(packed.tolist()) == list(range(order))
 
 
-def test_qpsk_fixed_mapping():
+_R = 1.0 / np.sqrt(2.0)
+_QPSK_TABLES = {
+    # q_descending (pre-v1 hpcom): Q bit 0 → upper row (+1).
+    "q_descending": {
+        (0, 0): complex(-_R, +_R),
+        (0, 1): complex(+_R, +_R),
+        (1, 0): complex(-_R, -_R),
+        (1, 1): complex(+_R, -_R),
+    },
+    # q_ascending: Q bit 0 → lower row (−1).
+    "q_ascending": {
+        (0, 0): complex(-_R, -_R),
+        (0, 1): complex(+_R, -_R),
+        (1, 0): complex(-_R, +_R),
+        (1, 1): complex(+_R, +_R),
+    },
+}
+
+
+@pytest.mark.parametrize("labeling", sorted(_QPSK_TABLES))
+def test_qpsk_fixed_mapping(labeling):
     """QPSK is the most-tested edge of the table — pin exact bit→symbol values.
 
-    Convention from constellations.py: bit_labels are MSB-first
-    ``[q_bits, i_bits]``. For QPSK (side=2), Gray = [0, 1], so q_bit=i_bit=0
-    selects the level −1, q_bit=i_bit=1 selects +1. Unit-power normalization
-    divides by ``√2``.
+    Labels are MSB-first ``[q_bits, i_bits]``; the I bit selects −1/+1 left
+    to right in both conventions, the Q bit counts rows from the top
+    (``q_descending``, the default) or from the bottom (``q_ascending``).
+    Unit-power normalization divides by ``√2``.
     """
-    inv_sqrt2 = 1.0 / np.sqrt(2.0)
-    cases = {
-        (0, 0): complex(-inv_sqrt2, -inv_sqrt2),  # q=0,i=0 → level (-1,-1)
-        (0, 1): complex(+inv_sqrt2, -inv_sqrt2),
-        (1, 0): complex(-inv_sqrt2, +inv_sqrt2),
-        (1, 1): complex(+inv_sqrt2, +inv_sqrt2),
-    }
-    for bits_in, expected in cases.items():
-        symbols = bits_to_symbols(np.array(bits_in, dtype=np.uint8), 4)
+    for bits_in, expected in _QPSK_TABLES[labeling].items():
+        symbols = bits_to_symbols(np.array(bits_in, dtype=np.uint8), 4, labeling)
         np.testing.assert_allclose(symbols, [expected], atol=1e-12)
+
+
+def test_default_labeling_is_the_pre_v1_one():
+    assert DEFAULT_QAM_LABELING == "q_descending"
+    np.testing.assert_array_equal(square_qam(16)[1], square_qam(16, "q_descending")[1])
+
+
+def test_unknown_labeling_is_rejected():
+    with pytest.raises(ValueError, match="labeling must be one of"):
+        square_qam(16, "natural")  # type: ignore[arg-type]
 
 
 def test_16qam_corner_amplitudes():
@@ -68,42 +99,60 @@ def test_16qam_corner_amplitudes():
     assert n_corners == 4
 
 
+@pytest.mark.parametrize("labeling", LABELINGS)
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
-def test_symbols_to_bits_inverse_of_bits_to_symbols(order: int):
+def test_symbols_to_bits_inverse_of_bits_to_symbols(order: int, labeling):
     """For on-grid symbols, demap is the exact inverse of map."""
     rng = np.random.default_rng(0)
     k = bits_per_symbol(order)
     n = 200
     bits = rng.integers(0, 2, size=n * k, dtype=np.uint8)
-    symbols = bits_to_symbols(bits, order)
-    recovered = symbols_to_bits(symbols, order)
+    symbols = bits_to_symbols(bits, order, labeling)
+    recovered = symbols_to_bits(symbols, order, labeling)
     np.testing.assert_array_equal(bits, recovered)
 
 
+@pytest.mark.parametrize("labeling, corner", [("q_descending", 1j), ("q_ascending", -1j)])
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
-def test_all_zero_bits_map_to_bottom_left_corner(order: int):
-    """Gray code starts at 0 → level index 0 → minimum coordinate on each axis.
+def test_all_zero_bits_map_to_a_left_corner(order: int, labeling, corner):
+    """Gray code starts at 0 → level index 0 → minimum I, and the first Q row.
 
-    So an all-zero bit pattern always maps to the bottom-left corner. This
-    pins the bit ordering against accidental MSB/LSB swap regressions.
-    Note: all-ones does NOT map to a corner for ``order ≥ 16`` because
-    Gray code 0b11…1 inverts to binary 0b10…0 = side/2, an inner level.
+    So an all-zero bit pattern maps to the top-left corner (``q_descending``)
+    or the bottom-left corner (``q_ascending``). This pins the bit ordering
+    against accidental MSB/LSB swap regressions. Note: all-ones does NOT map
+    to a corner for ``order ≥ 16`` because Gray code 0b11…1 inverts to binary
+    0b10…0 = side/2, an inner level.
     """
     k = bits_per_symbol(order)
-    constellation, _ = square_qam(order)
+    constellation, _ = square_qam(order, labeling)
     min_real = float(np.min(constellation.real))
-    min_imag = float(np.min(constellation.imag))
-    zeros = bits_to_symbols(np.zeros(k, dtype=np.uint8), order)
-    np.testing.assert_allclose(zeros[0], complex(min_real, min_imag), atol=1e-12)
+    max_imag = float(np.max(constellation.imag))
+    zeros = bits_to_symbols(np.zeros(k, dtype=np.uint8), order, labeling)
+    np.testing.assert_allclose(zeros[0], min_real + corner * max_imag, atol=1e-12)
 
 
+@pytest.mark.parametrize("order", [4, 16, 64, 256, 1024, 4096])
+def test_the_two_labelings_are_complex_conjugates(order: int):
+    """Same points; the label of ``s`` under one is the label of ``conj(s)`` under the other."""
+    points_d, labels_d = square_qam(order, "q_descending")
+    points_a, labels_a = square_qam(order, "q_ascending")
+    np.testing.assert_array_equal(points_d, points_a)
+    bits = np.random.default_rng(order).integers(0, 2, 64 * bits_per_symbol(order), dtype=np.uint8)
+    np.testing.assert_array_equal(
+        bits_to_symbols(bits, order, "q_descending"),
+        np.conj(bits_to_symbols(bits, order, "q_ascending")),
+    )
+    assert not np.array_equal(labels_d, labels_a)
+
+
+@pytest.mark.parametrize("labeling", LABELINGS)
 @pytest.mark.parametrize("order", [4, 16, 64, 256])
-def test_axis_nearest_neighbors_differ_by_one_bit(order: int):
+def test_axis_nearest_neighbors_differ_by_one_bit(order: int, labeling):
     """For square-QAM with separable Gray coding, any two symbols whose
     constellation coordinates differ by one Δ on a single axis must differ
     in exactly one bit label. This is the *defining* Gray property and
     catches MSB/LSB swaps or row/column transposition bugs."""
-    constellation, labels = square_qam(order)
+    constellation, labels = square_qam(order, labeling)
     side = int(np.sqrt(order))
     # Δ between adjacent levels in the normalized constellation.
     levels = np.unique(np.round(constellation.real, 12))

@@ -18,7 +18,7 @@ from pydantic import model_validator
 
 from hpcom._model import ComplexArrayField, FloatArrayField, HpcomModel, UInt8ArrayField
 from hpcom._typing import ComplexArray, _is_power_of_two
-from hpcom.modulation.constellations import square_qam
+from hpcom.modulation.constellations import DEFAULT_QAM_LABELING, SquareQAMLabeling, square_qam
 from hpcom.modulation.mapping import nearest_symbol_indices, pack_bits_msb_first
 
 #: Tolerance on ``E[|s|²] = 1`` and on ``Σ p = 1``.
@@ -127,9 +127,19 @@ class ConstellationConfig(HpcomModel):
     # ---- factories -------------------------------------------------------
 
     @classmethod
-    def from_square_qam(cls, modulation_order: int) -> ConstellationConfig:
-        """Gray-coded square QAM (shared, cached instance)."""
-        return _square_qam_config(modulation_order)
+    def from_square_qam(
+        cls, modulation_order: int, labeling: SquareQAMLabeling = DEFAULT_QAM_LABELING
+    ) -> ConstellationConfig:
+        """Gray-coded square QAM (shared, cached instance).
+
+        ``labeling`` selects the bit-labelling convention
+        (:data:`~hpcom.modulation.constellations.SquareQAMLabeling`); the
+        default reproduces pre-v1 hpcom. Transmitters and receivers built with
+        ``modulation_order=M`` use the default; pass
+        ``constellation=ConstellationConfig.from_square_qam(M, labeling=...)``
+        to select the other.
+        """
+        return _square_qam_config(modulation_order, labeling)
 
     @classmethod
     def from_points(
@@ -193,8 +203,8 @@ class ConstellationConfig(HpcomModel):
 
 
 @cache
-def _square_qam_config(modulation_order: int) -> ConstellationConfig:
-    points, labels = square_qam(modulation_order)
+def _square_qam_config(modulation_order: int, labeling: SquareQAMLabeling) -> ConstellationConfig:
+    points, labels = square_qam(modulation_order, labeling)
     return ConstellationConfig(points=points, bit_labels=labels)
 
 

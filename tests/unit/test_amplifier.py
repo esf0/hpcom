@@ -102,6 +102,29 @@ def test_unit_gain_is_noiseless_identity_and_draws_no_random_numbers():
     assert np.isnan(edfa.spontaneous_emission_factor)
 
 
+@pytest.mark.parametrize("gain_db", [0.0, 16.0, 30.0])
+def test_noiseless_amplifier_is_exact_gain_and_draws_no_random_numbers(gain_db):
+    edfa = EDFA(gain_db=gain_db, noise_figure_db=None)
+    field = np.random.default_rng(3).standard_normal((2, 64)) * (1 + 0.5j)
+    rng = np.random.default_rng(7)
+    state = rng.bit_generator.state
+    out = edfa.amplify(field, 1e-12, rng=rng)
+    np.testing.assert_array_equal(out, field * np.sqrt(edfa.gain_linear))
+    assert rng.bit_generator.state == state
+    assert edfa.is_noiseless
+    assert edfa.ase_psd_per_polarization_w_per_hz == 0.0
+    assert edfa.ase_variance_per_sample(1e-12) == 0.0
+    assert np.isnan(edfa.noise_figure_linear)
+
+
+def test_noiseless_amplifier_has_zero_inversion_factor_and_round_trips_through_json():
+    edfa = EDFA(gain_db=16.0, noise_figure_db=None)
+    assert edfa.spontaneous_emission_factor == 0.0
+    assert EDFA.model_validate_json(edfa.model_dump_json()) == edfa
+    assert not EDFA(gain_db=16.0).is_noiseless
+    assert EDFA(gain_db=0.0).is_noiseless
+
+
 def test_zero_noise_figure_still_adds_ase():
     """NF = 0 dB (F = 1) is below the quantum limit but still gives n_sp = 1/2 > 0."""
     edfa = EDFA(gain_db=20.0, noise_figure_db=0.0)

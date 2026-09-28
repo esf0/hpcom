@@ -7,7 +7,7 @@ import numpy.typing as npt
 
 from hpcom._typing import ComplexArray
 from hpcom.backends.kernels import get_kernels
-from hpcom.modulation.constellations import bits_per_symbol, square_qam
+from hpcom.modulation.constellations import DEFAULT_QAM_LABELING, SquareQAMLabeling
 
 
 def pack_bits_msb_first(bit_groups: npt.NDArray[np.uint8]) -> npt.NDArray[np.intp]:
@@ -30,16 +30,23 @@ def nearest_symbol_indices(received: ComplexArray, points: ComplexArray) -> npt.
     return flat.reshape(rx.shape)
 
 
-def bits_to_symbols(bits: npt.NDArray[np.uint8], modulation_order: int) -> ComplexArray:
+def bits_to_symbols(
+    bits: npt.NDArray[np.uint8],
+    modulation_order: int,
+    labeling: SquareQAMLabeling = DEFAULT_QAM_LABELING,
+) -> ComplexArray:
     """Map a flat bit stream to Gray-coded square-QAM symbols (unit average power)."""
     from hpcom.modulation.shaping import ConstellationConfig
 
-    return ConstellationConfig.from_square_qam(modulation_order).map(bits)
+    return ConstellationConfig.from_square_qam(modulation_order, labeling).map(bits)
 
 
-def symbols_to_bits(received: ComplexArray, modulation_order: int) -> npt.NDArray[np.uint8]:
+def symbols_to_bits(
+    received: ComplexArray,
+    modulation_order: int,
+    labeling: SquareQAMLabeling = DEFAULT_QAM_LABELING,
+) -> npt.NDArray[np.uint8]:
     """Hard-decision demap of received samples to square-QAM bits (flat, MSB first)."""
-    bits_per_symbol(modulation_order)
-    points, labels = square_qam(modulation_order)
-    idx = nearest_symbol_indices(np.asarray(received).reshape(-1), points)
-    return labels[idx].reshape(-1)
+    from hpcom.modulation.shaping import ConstellationConfig
+
+    return ConstellationConfig.from_square_qam(modulation_order, labeling).demap(received)

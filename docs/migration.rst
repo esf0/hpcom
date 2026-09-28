@@ -34,16 +34,20 @@ pre-v1                                    v1
 Numerical differences
 ---------------------
 
-* **Same bits, same field** up to complex conjugation: pre-v1 constellation
-  points are the conjugates of v1's (mirroring the spectrum, so pre-v1 WDM
-  channel ``i`` is v1 channel ``N−1−i``). Launch-power scaling is identical.
-  The pre-v1 RRC was a time-sampled, window-truncated impulse response
-  (≈3e-4 relative field difference); v1 uses the exact RRC by default.
+* **Same bits, same field.** The default square-QAM labelling
+  (``labeling="q_descending"``) is the pre-v1 one, and launch-power scaling
+  is identical, so the same bits give the same symbols and the same WDM
+  field, channel for channel. The pre-v1 RRC was a time-sampled,
+  window-truncated impulse response (≈3e-4 relative field difference); v1
+  uses the exact RRC by default. The alternative labelling
+  ``ConstellationConfig.from_square_qam(M, labeling="q_ascending")`` maps
+  the same bits to the complex-conjugate symbols (same BER/GMI statistics).
 * **ASE noise**: v1 follows the standard per-polarisation PSD
   :math:`n_\mathrm{sp}h\nu(G-1)` (see :doc:`physics`). Pre-v1 injected more
   noise — equivalent to a noise figure 3 dB higher (Manakov) or 6 dB higher
   (scalar). To reproduce a pre-v1 result, raise ``noise_figure_db``
-  accordingly.
+  accordingly. The pre-v1 idiom ``noise_figure_db=-200`` for a noiseless
+  amplifier is ``EDFA(gain_db=…, noise_figure_db=None)``.
 * **Random bits** come from NumPy's ``SeedSequence``/``Generator`` instead of
   Python's ``random``; the same seed gives different bits. Pass ``bits=`` for
   bit-exact comparisons.

@@ -180,7 +180,10 @@ receives variance :math:`S_\mathrm{ASE}/\Delta t`. A single-polarisation
 field only receives the co-polarised ASE (the orthogonal part cannot reach a
 single-polarisation coherent receiver). ``noise_figure_db = 0`` is below the
 quantum limit :math:`F \ge 2 - 1/G` but still gives :math:`n_\mathrm{sp}=1/2`.
-[``tests/unit/test_amplifier.py``]
+``noise_figure_db=None`` is the ideal noiseless amplifier (:math:`n_\mathrm{sp}
+= 0`, exact gain :math:`\sqrt{G}`, no random numbers drawn) — not a physical
+device, but the right tool for isolating nonlinearity or DSP; it replaces the
+pre-v1 ``noise_figure_db=-200``. [``tests/unit/test_amplifier.py``]
 
 For :math:`N` spans with gain equal to span loss, the ASE-limited SNR after
 the matched filter is
@@ -407,10 +410,12 @@ replayed exactly:
 Relation to pre-v1 hpcom
 ------------------------
 
-For the same bits, the pre-v1 WDM transmitter's field equals the complex
-conjugate of hpcom's (legacy constellation points are the conjugates, times
-their RMS) with legacy channel :math:`i` carrying hpcom channel
-:math:`N-1-i`. Power conventions agree exactly. The only numerical difference
-is the pulse: legacy samples the RRC impulse response over the window
-(≈3e-4 relative difference in the field); with that filter substituted the
-fields agree to 1e-11. [``tests/numerical/test_legacy_parity.py``]
+For the same bits, the pre-v1 WDM transmitter's field equals hpcom's with
+the default labelling ``"q_descending"`` (legacy constellation points are
+hpcom's times their RMS), channel for channel; with ``"q_ascending"`` it is
+the complex conjugate, with legacy channel :math:`i` carrying hpcom channel
+:math:`N-1-i`. Power conventions agree exactly. The only numerical
+difference is the pulse: legacy samples the RRC impulse response over the
+window (≈3e-4 relative difference in the field); with that filter
+substituted the fields agree to 1e-11.
+[``tests/numerical/test_legacy_parity.py``]
