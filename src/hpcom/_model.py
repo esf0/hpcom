@@ -43,6 +43,7 @@ from pydantic import (
     WithJsonSchema,
     WrapSerializer,
 )
+from pydantic_core import PydanticSerializationError
 
 __all__ = [
     "BoolArrayView",
@@ -189,6 +190,9 @@ def _class_key(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+_REPR_KEY = "repr"
+
+
 def _resolve_polymorphic(value: Any) -> Any:
     """Turn ``{"type": "pkg.module.Class", ...}`` back into an instance.
 
@@ -198,6 +202,11 @@ def _resolve_polymorphic(value: Any) -> Any:
     """
     if isinstance(value, Mapping) and _TYPE_KEY in value:
         key = value[_TYPE_KEY]
+        if set(value) == {_TYPE_KEY, _REPR_KEY}:
+            raise ValueError(
+                f"{key!r} was recorded only by its repr ({value[_REPR_KEY]!r}) because it is "
+                "not an HpcomModel; it cannot be restored from JSON"
+            )
         cls = HpcomModel._registry.get(key)
         if cls is None:
             raise ValueError(
@@ -214,6 +223,13 @@ def _tag_polymorphic(
         # Dump with the *runtime* class so subclass fields are kept.
         data = value.model_dump(mode=info.mode)
         return {_TYPE_KEY: _class_key(type(value)), **data}
+    if info.mode == "json":
+        try:
+            return handler(value)
+        except PydanticSerializationError:
+            # A duck-typed component (e.g. a user's link element that is not an
+            # HpcomModel): record what it was rather than fail the whole dump.
+            return {_TYPE_KEY: _class_key(type(value)), _REPR_KEY: repr(value)}
     return handler(value)
 
 

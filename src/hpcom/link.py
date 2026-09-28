@@ -5,7 +5,10 @@ instances (built-ins: :class:`~hpcom.fiber.Fiber`,
 :class:`~hpcom.amplifier.Amplifier`). New components — filters, DCMs,
 couplers — slot in by implementing ``apply(field, dt_s, *, rng)``; to take
 part in :meth:`Link.backpropagate` they also implement
-``apply_inverse(field, dt_s)``.
+``apply_inverse(field, dt_s)``. Components that derive from
+:class:`~hpcom._model.HpcomModel` are stored in full in a simulation's JSON
+provenance; any other object is recorded by its ``repr`` only (the run works,
+but the configuration cannot be reloaded).
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ class Link(HpcomModel):
     def _validate(self) -> Link:
         for i, el in enumerate(self.elements):
             if not callable(getattr(el, "apply", None)):
-                raise TypeError(
+                raise ValueError(
                     f"Link element {i} ({type(el).__name__}) does not implement "
                     "apply(field, dt_s, *, rng)"
                 )

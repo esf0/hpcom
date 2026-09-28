@@ -300,7 +300,7 @@ class Receiver(ModulationSpec, ABC):
             num = np.sum(np.conj(reference) * raw, axis=-1)
             gain = num / np.sum(np.abs(reference) ** 2, axis=-1)
             return gain
-        raise ValueError(f"unknown equalize mode {mode!r}")
+        raise AssertionError(f"unreachable: equalize={mode!r}")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------

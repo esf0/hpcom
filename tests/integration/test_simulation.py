@@ -296,3 +296,23 @@ def test_mean_nonlinear_phase_rotation_is_removed_by_the_data_aided_equaliser(no
     ).run()
     assert aided.metrics.ber < 1e-2 < blind.metrics.ber
     assert np.degrees(np.angle(aided.received.gain)) > 20
+
+
+def test_duck_typed_link_components_run_and_are_recorded_by_repr():
+    """Regression: a non-HpcomModel link element used to crash run() while dumping provenance."""
+
+    class HalfAttenuator:
+        def apply(self, field, dt_s, *, rng=None):
+            return field * 0.5
+
+        def __repr__(self) -> str:
+            return "HalfAttenuator()"
+
+    tx, rx = sc_pair()
+    sim = Simulation(transmitter=tx, link=Link(elements=(HalfAttenuator(),)), receiver=rx, seed=0)
+    result = sim.run()
+    assert result.metrics.ber == 0.0
+    element = result.metadata.config["link"]["elements"][0]
+    assert element["repr"] == "HalfAttenuator()" and element["type"].endswith("HalfAttenuator")
+    with pytest.raises(ValueError, match="recorded only by its repr"):
+        Simulation.model_validate(result.metadata.config)

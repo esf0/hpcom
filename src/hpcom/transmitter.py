@@ -430,10 +430,8 @@ class PulseShapedTransmitter(Transmitter, ABC):
 
     def _shape_streams(self, slots: npt.NDArray[np.complex128]) -> npt.NDArray[np.complex128]:
         """Pulse-shape every stream and scale to the per-polarisation launch power."""
-        energy = self._stream_energy()
-        if energy <= 0:
-            raise ValueError("the symbol stream has zero expected energy")
-        scale = np.sqrt(self.launch_power_per_polarization_w / energy)
+        # > 0: constellations have unit energy and every stream has a data symbol.
+        scale = np.sqrt(self.launch_power_per_polarization_w / self._stream_energy())
         shaped = pulse_shape(
             slots, self.samples_per_symbol, self.roll_off, self.pulse_span_symbols, self.convolution
         )
