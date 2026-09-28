@@ -22,6 +22,9 @@ Direction: TypeAlias = Literal["forward", "backward"]
 #: Polarization mode of an optical fiber.
 Polarization: TypeAlias = Literal["single", "dual"]
 
+#: Placement of the split-step steps along a span (see ``docs/numerics.rst``).
+StepDistribution: TypeAlias = Literal["uniform", "logarithmic"]
+
 
 @runtime_checkable
 class FiberLike(Protocol):
@@ -51,6 +54,10 @@ class FiberLike(Protocol):
     def gamma_per_w_per_km(self) -> float: ...
     @property
     def n_steps(self) -> int: ...
+    @property
+    def step_distribution(self) -> StepDistribution: ...
+    @property
+    def step_log_factor(self) -> float: ...
     @property
     def polarization(self) -> Polarization: ...
 

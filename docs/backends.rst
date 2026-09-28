@@ -33,9 +33,12 @@ Adding a propagator
 1. Subclass :class:`~hpcom.backends.Propagator` and implement
    ``propagate(field, fiber, dt_s, direction="forward")``. The contract
    (shapes, dtype, equation and sign conventions, exact backward inverse) is
-   in the class docstring and in :doc:`physics`; the helpers
-   :func:`~hpcom.backends.base.linear_operator_exponent` and
-   :func:`~hpcom.backends.base.effective_gamma_per_m` give the operators.
+   in the class docstring, :doc:`physics` and :doc:`numerics`; the helpers
+   :func:`~hpcom.backends.base.linear_operator_exponent`,
+   :func:`~hpcom.backends.base.effective_gamma_per_m`,
+   :func:`~hpcom.backends.base.step_sizes_m` and
+   :func:`~hpcom.backends.base.merged_linear_steps` give the operators and
+   the step sequence (every ``step_distribution`` must be supported).
 2. Register it::
 
       from hpcom.backends import register_propagator
@@ -45,9 +48,12 @@ Adding a propagator
    ``tests/backends/test_propagator_conformance.py`` over every available
    backend, so once the backend is registered at import time (e.g. from
    ``hpcom/backends/__init__.py``) it is held to the same closed-form
-   dispersion, β₃ sign, exact SPM/Manakov phase, soliton, energy
-   conservation, exact inverse, second-order convergence and
-   ``ssfm-gpu``-parity tests as the built-ins.
+   dispersion, β₁/β₃, exact SPM/Manakov phase, solitons (N = 1, 2, vector),
+   FWM and modulation-instability closed forms, energy conservation, exact
+   inverse and second-order convergence for every step placement, and
+   ``ssfm-gpu``-parity tests as the built-ins. A backend that runs on the
+   CPU only must warn when it is used where a GPU scheme was expected
+   (:doc:`numerics`, *Backends and GPU policy*).
 
 
 DSP kernel sets

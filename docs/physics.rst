@@ -112,8 +112,10 @@ Split-step solver
 ^^^^^^^^^^^^^^^^^
 
 Every nonlinear backend implements the symmetric (Strang) split-step Fourier
-method with the loss inside the linear operator. With :math:`h = L/n` and
-``n = fiber.n_steps``,
+method with the loss inside the linear operator. :doc:`numerics` gives the
+full derivation, the order of accuracy, non-uniform step placement
+(``step_distribution``) and the literature. For uniform steps
+:math:`h = L/n` with ``n = fiber.n_steps``,
 
 .. math::
 

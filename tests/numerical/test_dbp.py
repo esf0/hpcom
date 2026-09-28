@@ -175,6 +175,55 @@ def test_one_sample_per_symbol_dbp_saturates_at_the_lost_roll_off(sc_nonlinear):
 
 
 # ---------------------------------------------------------------------------
+# Step placement within each back-propagated span
+# ---------------------------------------------------------------------------
+
+CLE = {"step_distribution": "logarithmic", "step_log_factor": 1 / 3}
+NLP = {"step_distribution": "logarithmic", "step_log_factor": 1.0}
+
+
+@pytest.mark.parametrize("steps", [2, 4, 8])
+def test_constant_local_error_placement_beats_uniform_steps(sc_nonlinear, steps):
+    """k = 1/3 (short steps at the high-power end of each span): +3–6 dB at 2–8 steps/span."""
+    uniform = _dbp_snr(sc_nonlinear, steps_per_span=steps, samples_per_symbol=4)
+    cle = _dbp_snr(sc_nonlinear, steps_per_span=steps, samples_per_symbol=4, **CLE)
+    assert cle > uniform + 2
+
+
+def test_equal_nonlinear_phase_placement_over_concentrates_the_steps(sc_nonlinear):
+    """k = 1 (Bosco/NLP rule): ≈ 32 dB vs uniform 38 and k = 1/3 43 dB at 4 steps/span."""
+    snr = {
+        name: _dbp_snr(sc_nonlinear, steps_per_span=4, samples_per_symbol=4, **kw)
+        for name, kw in (("uniform", {}), ("nlp", NLP), ("cle", CLE))
+    }
+    assert snr["nlp"] < snr["uniform"] < snr["cle"]
+
+
+def test_dbp_inverts_a_link_simulated_with_logarithmic_steps():
+    fiber = Fiber.ssmf(length_km=80, n_steps=30, polarization="dual").with_steps(
+        distribution="logarithmic", log_factor=1 / 3
+    )
+    link = Link.from_spans(3, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=None))
+    tx = SingleCarrierTransmitter(
+        modulation_order=64,
+        symbol_rate_hz=32e9,
+        n_symbols=512,
+        polarization="dual",
+        launch_power_per_channel_dbm=8.0,
+    )
+    sent = tx.generate(rng=np.random.default_rng(0))
+    out = link.propagate(sent.field, sent.dt_s)
+    exact = tx.matched_receiver(compensation=_dbp(link, samples_per_symbol=None))
+    mismatched = tx.matched_receiver(
+        compensation=_dbp(link, samples_per_symbol=None, step_distribution="uniform")
+    )
+    x = sent.symbols
+    assert _snr_db(exact.receive(out, sent.dt_s, reference=sent).symbols, x) > 200
+    # Another placement is an accurate (≈ 77 dB) but not an exact inverse.
+    assert _snr_db(mismatched.receive(out, sent.dt_s, reference=sent).symbols, x) < 120
+
+
+# ---------------------------------------------------------------------------
 # WDM: DBP bandwidth
 # ---------------------------------------------------------------------------
 

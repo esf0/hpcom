@@ -108,6 +108,9 @@ def test_ssfm_rejects_zero_steps():
         beta3_s3_per_m: float = 0.0
         gamma_per_w_per_km: float = 1.0
         n_steps: int = 0
+        step_distribution: str = "uniform"
+        step_log_factor: float = 1.0
+        beta1_s_per_m: float = 0.0
         polarization: str = "single"
 
     with pytest.raises(ValueError, match="n_steps must be >= 1"):

@@ -1,9 +1,10 @@
 """Symmetric split-step Fourier propagation on TensorFlow (GPU when available).
 
 Implements exactly the step sequence of the NumPy reference backend
-(:mod:`hpcom.backends.numpy.ssfm`) — ``D(h/2) [N(h) D(h)]… N(h) D(h/2)`` —
-with the linear operator precomputed in NumPy and the step loop compiled with
-:func:`tf.function`. Results agree with the NumPy backend to FFT rounding
+(:mod:`hpcom.backends.numpy.ssfm`) — ``D(h₁/2) N(h₁) D((h₁+h₂)/2) … N(h_K)
+D(h_K/2)`` for any step placement — with the step loop compiled with
+:func:`tf.function`. Uniform steps reuse one precomputed ``D(h)``; other
+placements evaluate each merged linear sub-step on the device. Results agree with the NumPy backend to FFT rounding
 (≈1e-13 relative) and with the original ``ssfm-gpu`` kernels this backend
 replaces (golden data in ``tests/numerical/_data/tf_parity_v0.npz``).
 
@@ -23,7 +24,8 @@ from hpcom.backends.base import (
     check_field_shape,
     effective_gamma_per_m,
     linear_operator_exponent,
-    signed_length_m,
+    merged_linear_steps,
+    step_sizes_m,
 )
 
 
@@ -46,6 +48,16 @@ def _ssfm(a: Any, d_full: Any, d_half: Any, phase_per_watt: Any, n_steps: Any, d
     return tf.signal.ifft(spectrum * d_half)
 
 
+@tf.function(reduce_retracing=True)
+def _ssfm_variable(a: Any, exponent: Any, merged: Any, phases: Any, dual: bool) -> Any:
+    """Symmetric scheme with per-step lengths: ``merged`` (K+1 linear sub-steps), ``phases`` (K)."""
+    spectrum = tf.signal.fft(a) * tf.exp(exponent * tf.cast(merged[0], tf.complex128))
+    for i in tf.range(tf.shape(phases)[0]):
+        a = _kerr(tf.signal.ifft(spectrum), phases[i], dual)
+        spectrum = tf.signal.fft(a) * tf.exp(exponent * tf.cast(merged[i + 1], tf.complex128))
+    return tf.signal.ifft(spectrum)
+
+
 class TensorFlowPropagator(Propagator):
     """Scalar NLSE / Manakov SSFM on TensorFlow (see module docstring)."""
 
@@ -60,20 +72,27 @@ class TensorFlowPropagator(Propagator):
     ) -> ComplexArray:
         a = np.asarray(field, dtype=np.complex128)
         check_field_shape(a, fiber)
-        length_m = signed_length_m(fiber, direction)
-        n_steps = int(fiber.n_steps)
-        if n_steps < 1:
-            raise ValueError(f"fiber.n_steps must be >= 1, got {n_steps}")
-
-        h = length_m / n_steps
+        sizes = step_sizes_m(fiber, direction)
         exponent = linear_operator_exponent(a.shape[-1], dt_s, fiber)
-        out = _ssfm(
-            tf.constant(a),
-            tf.constant(np.exp(exponent * h)),
-            tf.constant(np.exp(exponent * (h / 2.0))),
-            tf.constant(effective_gamma_per_m(fiber) * h, dtype=tf.float64),
-            tf.constant(n_steps, dtype=tf.int32),
-            fiber.polarization == "dual",
-        )
+        gamma_eff = effective_gamma_per_m(fiber)
+        dual = fiber.polarization == "dual"
+        if fiber.step_distribution == "uniform":
+            h = sizes[0]
+            out = _ssfm(
+                tf.constant(a),
+                tf.constant(np.exp(exponent * h)),
+                tf.constant(np.exp(exponent * (h / 2.0))),
+                tf.constant(gamma_eff * h, dtype=tf.float64),
+                tf.constant(sizes.size, dtype=tf.int32),
+                dual,
+            )
+        else:
+            out = _ssfm_variable(
+                tf.constant(a),
+                tf.constant(exponent),
+                tf.constant(merged_linear_steps(sizes), dtype=tf.float64),
+                tf.constant(gamma_eff * sizes, dtype=tf.float64),
+                dual,
+            )
         result: ComplexArray = np.asarray(out.numpy(), dtype=np.complex128)
         return result

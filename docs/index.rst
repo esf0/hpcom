@@ -48,6 +48,7 @@ back-propagation.
 
    concepts
    physics
+   numerics
    backends
    migration
 

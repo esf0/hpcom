@@ -65,6 +65,66 @@ def signed_length_m(fiber: FiberLike, direction: Direction) -> float:
     raise ValueError(f"direction must be 'forward' or 'backward', got {direction!r}")
 
 
+def step_boundaries_m(fiber: FiberLike) -> npt.NDArray[np.float64]:
+    r"""Step boundaries :math:`0 = z_0 < z_1 < … < z_K = L` of a span, in metres.
+
+    ``"uniform"``: :math:`z_n = nL/K`. ``"logarithmic"`` with factor
+    :math:`k` (``fiber.step_log_factor``) and power attenuation :math:`\alpha`:
+
+    .. math::
+
+        z_n = -\frac{1}{k\alpha}\ln\!\left(1 - n\,\frac{1 - e^{-k\alpha L}}{K}\right),
+
+    so every step carries the same share of :math:`\int e^{-k\alpha z}\,dz`
+    (``k = 1``: equal nonlinear phase per step). Without loss it is uniform.
+    Derivation and references: ``docs/numerics.rst``.
+    """
+    k_steps = int(fiber.n_steps)
+    if k_steps < 1:
+        raise ValueError(f"fiber.n_steps must be >= 1, got {k_steps}")
+    length_m = fiber.length_km * 1e3
+    n = np.arange(k_steps + 1, dtype=np.float64)
+    if fiber.step_distribution == "uniform":
+        return n * (length_m / k_steps)
+    if fiber.step_distribution != "logarithmic":
+        raise ValueError(f"unknown step_distribution {fiber.step_distribution!r}")
+    rate = fiber.step_log_factor * fiber.alpha_db_per_km * np.log(10.0) / 10.0 / 1e3  # kα, 1/m
+    if rate * length_m == 0.0:
+        return n * (length_m / k_steps)
+    delta = -np.expm1(-rate * length_m) / k_steps
+    z: npt.NDArray[np.float64] = -np.log1p(-n * delta) / rate
+    z[-1] = length_m  # exact end point despite rounding
+    return z
+
+
+def step_sizes_m(fiber: FiberLike, direction: Direction) -> npt.NDArray[np.float64]:
+    """Signed step lengths in the order they are taken.
+
+    Forward: :math:`h_1, …, h_K` from the span input. Backward: the same
+    steps from the span output, negated (:math:`-h_K, …, -h_1`) — the exact
+    reverse of the forward sequence.
+    """
+    sign = 1.0 if signed_length_m(fiber, direction) > 0 else -1.0
+    if int(fiber.n_steps) < 1:
+        raise ValueError(f"fiber.n_steps must be >= 1, got {fiber.n_steps}")
+    if fiber.step_distribution == "uniform":
+        h = np.full(int(fiber.n_steps), sign * fiber.length_km * 1e3 / int(fiber.n_steps))
+        return h
+    sizes = np.diff(step_boundaries_m(fiber))
+    return sign * (sizes if sign > 0 else sizes[::-1])
+
+
+def merged_linear_steps(sizes: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Lengths of the ``K+1`` linear sub-steps of the symmetric scheme.
+
+    ``[h₁/2, (h₁+h₂)/2, …, (h_{K−1}+h_K)/2, h_K/2]`` — adjacent half steps merged.
+    """
+    merged = np.empty(sizes.size + 1)
+    merged[0], merged[-1] = sizes[0] / 2.0, sizes[-1] / 2.0
+    merged[1:-1] = (sizes[:-1] + sizes[1:]) / 2.0
+    return merged
+
+
 def check_field_shape(field: np.ndarray, fiber: FiberLike) -> None:
     """Validate ``field`` against ``fiber.polarization`` (see :class:`Propagator`)."""
     if fiber.polarization == "single":

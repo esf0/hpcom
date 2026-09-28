@@ -19,7 +19,7 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from hpcom._model import HpcomModel, Polymorphic
-from hpcom._typing import ComplexArray, LinkComponent
+from hpcom._typing import ComplexArray, LinkComponent, StepDistribution
 from hpcom.amplifier import Amplifier
 from hpcom.fiber import Fiber
 
@@ -119,6 +119,8 @@ class Link(HpcomModel):
         steps_per_span: int | None = None,
         nonlinearity_scale: float = 1.0,
         backend: str | None = None,
+        step_distribution: StepDistribution | None = None,
+        step_log_factor: float | None = None,
     ) -> ComplexArray:
         """Digital back-propagation: undo the link deterministically, last element first.
 
@@ -138,18 +140,20 @@ class Link(HpcomModel):
             ``0`` gives linear chromatic-dispersion compensation.
         backend
             Propagator for the backward fibers (``None`` = each fiber's own).
+        step_distribution, step_log_factor
+            Step placement for every fiber (``None`` = each fiber's own); see
+            :meth:`Fiber.with_steps`.
         """
         out = field
         for el in reversed(self.elements):
             if isinstance(el, Fiber):
+                fiber = el.with_steps(steps_per_span, step_distribution, step_log_factor)
                 changes: dict[str, object] = {
                     "gamma_per_w_per_km": el.gamma_per_w_per_km * nonlinearity_scale
                 }
-                if steps_per_span is not None:
-                    changes["n_steps"] = steps_per_span
                 if backend is not None:
                     changes["backend"] = backend
-                out = el.replace(**changes).apply_inverse(out, dt_s)
+                out = fiber.replace(**changes).apply_inverse(out, dt_s)
             elif callable(inverse := getattr(el, "apply_inverse", None)):
                 out = inverse(out, dt_s)
             else:

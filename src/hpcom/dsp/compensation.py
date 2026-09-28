@@ -17,7 +17,7 @@ import numpy.typing as npt
 from pydantic import Field, model_validator
 
 from hpcom._model import HpcomModel
-from hpcom._typing import ComplexArray
+from hpcom._typing import ComplexArray, StepDistribution
 from hpcom.fiber import Fiber
 from hpcom.link import Link
 
@@ -126,6 +126,12 @@ class DigitalBackPropagation(Compensator):
     steps_per_span
         Split-step count for every fiber (``None``: each fiber's own
         ``n_steps``, i.e. the forward model's).
+    step_distribution, step_log_factor
+        Step placement within each span (``None``: each fiber's own):
+        ``"uniform"`` or ``"logarithmic"`` with factor :math:`k` — short
+        steps where the power is high, i.e. at the end of each backward span
+        (Asif et al.); see :class:`~hpcom.fiber.Fiber` and
+        ``docs/numerics.rst``.
     nonlinearity_scale
         Multiplies every fiber's γ (the "optimised γ" of practical DBP);
         ``0`` gives linear dispersion compensation.
@@ -136,11 +142,15 @@ class DigitalBackPropagation(Compensator):
 
     link: Link
     steps_per_span: int | None = Field(ge=1)
+    step_distribution: StepDistribution | None = None
+    step_log_factor: float | None = Field(default=None, gt=0)
     nonlinearity_scale: float = Field(default=1.0, ge=0.0)
     backend: str | None = None
 
     @model_validator(mode="after")
     def _validate_invertible(self) -> DigitalBackPropagation:
+        if self.step_log_factor is not None and self.step_distribution != "logarithmic":
+            raise ValueError('step_log_factor needs step_distribution="logarithmic"')
         for el in self.link.elements:
             if not isinstance(el, Fiber) and not callable(getattr(el, "apply_inverse", None)):
                 raise ValueError(
@@ -176,8 +186,7 @@ class DigitalBackPropagation(Compensator):
             "beta1_s_per_m": b1 - b2 * omega_k + b3 * omega_k**2 / 2.0,
             "beta2_s2_per_m": b2 - b3 * omega_k,
         }
-        if self.steps_per_span is not None:
-            changes["n_steps"] = self.steps_per_span
+        fiber = fiber.with_steps(self.steps_per_span, self.step_distribution, self.step_log_factor)
         if self.backend is not None:
             changes["backend"] = self.backend
         elif self.nonlinearity_scale == 0.0:

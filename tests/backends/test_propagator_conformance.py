@@ -10,6 +10,7 @@ the end.
 
 from __future__ import annotations
 
+import functools
 import itertools
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -33,7 +34,21 @@ class StubFiber:
     beta3_s3_per_m: float = 0.0
     gamma_per_w_per_km: float = 1.27
     n_steps: int = 100
+    step_distribution: str = "uniform"
+    step_log_factor: float = 1.0
     polarization: str = "single"
+
+
+#: Step placements every nonlinear backend must support (docs/numerics.rst).
+PLACEMENTS = {
+    "uniform": {},
+    "log-k1": {"step_distribution": "logarithmic", "step_log_factor": 1.0},
+    "log-k1/3": {"step_distribution": "logarithmic", "step_log_factor": 1 / 3},
+}
+
+
+def _placement_params():
+    return [pytest.param(kw, id=name) for name, kw in PLACEMENTS.items()]
 
 
 def _random_field(shape: tuple[int, ...], scale: float, seed: int = 0) -> np.ndarray:
@@ -267,15 +282,17 @@ def test_fundamental_soliton_is_stationary_up_to_its_phase(nonlinear_backend):
     assert err < 2e-5, f"soliton deviates by {err:.2e} of its amplitude"
 
 
+@pytest.mark.parametrize("placement", _placement_params())
 @pytest.mark.parametrize("polarization", ["single", "dual"])
-def test_backward_propagation_is_exact_inverse(any_backend, polarization):
-    """Same steps with negated length undo forward propagation to rounding (loss, β₃, Kerr)."""
+def test_backward_propagation_is_exact_inverse(any_backend, polarization, placement):
+    """The steps in reverse order with negated lengths undo forward propagation to rounding."""
     fiber = StubFiber(
         length_km=80.0,
         alpha_db_per_km=0.2,
         beta3_s3_per_m=1.2e-40,
         n_steps=50,
         polarization=polarization,
+        **placement,
     )
     shape = (1024,) if polarization == "single" else (2, 1024)
     field = _random_field(shape, 5e-2)
@@ -286,26 +303,82 @@ def test_backward_propagation_is_exact_inverse(any_backend, polarization):
     np.testing.assert_allclose(back, field, rtol=0, atol=1e-12 * np.max(np.abs(field)))
 
 
-def test_split_step_error_is_second_order(nonlinear_backend):
-    """Halving the step divides the global error by ≈4 (symmetric Strang splitting).
-
-    Needs the asymptotic regime (small dispersive and Kerr phase per step):
-    a 30 GHz band-limited random signal at 10 mW over 80 km, 80–320 steps.
-    """
+def _order_test_field() -> tuple[np.ndarray, float]:
+    """30 GHz band-limited random signal at 10 mW (asymptotic regime over 80 km)."""
     n, dt = 4096, 2e-12
     spectrum = np.fft.fft(_random_field((n,), 1.0))
     spectrum[np.abs(np.fft.fftfreq(n, dt)) > 30e9] = 0.0
     field = np.fft.ifft(spectrum)
-    field *= np.sqrt(10e-3 / np.mean(np.abs(field) ** 2))
-    base = StubFiber(length_km=80.0, alpha_db_per_km=0.2)
-    prop = get_propagator(nonlinear_backend)
-    ref = prop.propagate(field, replace(base, n_steps=8192), dt_s=dt)
-    errors = [
-        np.linalg.norm(prop.propagate(field, replace(base, n_steps=k), dt_s=dt) - ref)
-        for k in (80, 160, 320)
+    return field * np.sqrt(10e-3 / np.mean(np.abs(field) ** 2)), dt
+
+
+_ORDER_BASE = StubFiber(length_km=80.0, alpha_db_per_km=0.2)
+
+
+@functools.cache
+def _order_reference(backend: str) -> np.ndarray:
+    field, dt = _order_test_field()
+    return get_propagator(backend).propagate(field, replace(_ORDER_BASE, n_steps=16384), dt_s=dt)
+
+
+def _order_errors(backend: str, placement: dict, steps: tuple[int, ...]) -> list[float]:
+    field, dt = _order_test_field()
+    ref = _order_reference(backend)
+    prop = get_propagator(backend)
+    return [
+        float(
+            np.linalg.norm(
+                prop.propagate(field, replace(_ORDER_BASE, n_steps=k, **placement), dt_s=dt) - ref
+            )
+            / np.linalg.norm(ref)
+        )
+        for k in steps
     ]
-    ratios = [errors[0] / errors[1], errors[1] / errors[2]]
-    assert all(3.8 < r < 4.4 for r in ratios), f"convergence ratios {ratios} (expected ≈ 4)"
+
+
+@pytest.mark.parametrize(
+    ("placement", "steps"),
+    [
+        pytest.param(PLACEMENTS["uniform"], (80, 160, 320), id="uniform"),
+        pytest.param(PLACEMENTS["log-k1/3"], (80, 160, 320), id="log-k1/3"),
+        # k = 1 stretches the tail steps ≈ e^{αL} = 40×; it reaches the asymptote later.
+        pytest.param(PLACEMENTS["log-k1"], (640, 1280, 2560), id="log-k1"),
+    ],
+)
+def test_split_step_error_is_second_order(nonlinear_backend, placement, steps):
+    """Halving every step divides the global error by ≈ 4, for any smooth placement.
+
+    Symmetric (Strang) splitting has local error O(h³); a placement that
+    scales as L/K keeps Σ h³ = O(K⁻²). Needs the asymptotic regime: a 30 GHz
+    signal at 10 mW over 80 km with 0.2 dB/km.
+    """
+    errors = _order_errors(nonlinear_backend, placement, steps)
+    ratios = [a / b for a, b in itertools.pairwise(errors)]
+    assert all(3.8 < r < 4.6 for r in ratios), f"convergence ratios {ratios} (expected ≈ 4)"
+
+
+def test_placement_changes_the_error_constant_not_the_order(nonlinear_backend):
+    """Same regime at 320 steps: constant-local-error placement (k = 1/3) beats uniform,
+    equal-nonlinear-phase placement (k = 1) is worse — its long tail steps dominate
+    (cf. Musetti, Serena & Bononi 2018; docs/numerics.rst)."""
+    uniform, cle, nlp = (
+        _order_errors(nonlinear_backend, PLACEMENTS[name], (320,))[0]
+        for name in ("uniform", "log-k1/3", "log-k1")
+    )
+    assert cle < 0.6 * uniform
+    assert nlp > 2 * uniform
+
+
+def test_logarithmic_steps_without_loss_are_uniform(nonlinear_backend):
+    field = _random_field((2, 1024), 5e-2)
+    lossless = StubFiber(length_km=80.0, beta3_s3_per_m=1.2e-40, n_steps=40, polarization="dual")
+    prop = get_propagator(nonlinear_backend)
+    np.testing.assert_allclose(
+        prop.propagate(field, replace(lossless, **PLACEMENTS["log-k1"]), dt_s=1e-12),
+        prop.propagate(field, lossless, dt_s=1e-12),
+        rtol=0,
+        atol=1e-13 * np.max(np.abs(field)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +446,9 @@ def test_manakov_vector_soliton_keeps_its_shape_polarisation_and_exact_phase(
     assert np.max(np.abs(out - expected)) / np.sqrt(p0) < 5e-5
 
 
-def _fwm_idler_ratio(backend: str, spacing_bins: int, n_steps: int) -> float:
+def _fwm_idler_ratio(
+    backend: str, spacing_bins: int, n_steps: int, placement: dict | None = None
+) -> float:
     """Simulated / closed-form idler power of degenerate FWM (pumps at 0 and +Δf, idler at −Δf)."""
     n, fs, p = 512, 1.28e12, 1e-5  # 2.5 GHz bins; 10 µW pumps keep the Kerr phase mismatch ≈ 2e-4
     alpha_db, length_m = 0.2, 50e3
@@ -387,6 +462,7 @@ def _fwm_idler_ratio(backend: str, spacing_bins: int, n_steps: int) -> float:
         beta2_s2_per_m=_B2,
         gamma_per_w_per_km=_GAMMA * 1e3,
         n_steps=n_steps,
+        **(placement or {}),
     )
     out = get_propagator(backend).propagate(a0, fiber, dt_s=1 / fs)
     idler = np.abs(np.fft.fft(out)[-spacing_bins] / n) ** 2
@@ -403,9 +479,12 @@ def test_degenerate_fwm_matches_the_closed_form_efficiency(nonlinear_backend, sp
     assert abs(_fwm_idler_ratio(nonlinear_backend, spacing_bins, 1600) - 1) < 1e-3
 
 
-def test_spurious_fwm_of_coarse_steps_vanishes_as_h_squared(nonlinear_backend):
-    """At 100 GHz (ΔβL ≈ 430) coarse steps overestimate FWM; the error falls ≈ 16× per 4× steps."""
-    errors = [abs(_fwm_idler_ratio(nonlinear_backend, 40, s) - 1) for s in (400, 1600, 6400)]
+@pytest.mark.parametrize("placement", _placement_params())
+def test_spurious_fwm_of_coarse_steps_vanishes_as_h_squared(nonlinear_backend, placement):
+    """At 100 GHz (ΔβL ≈ 430) coarse steps misestimate FWM; the error falls ≈ 16× per 4× steps."""
+    errors = [
+        abs(_fwm_idler_ratio(nonlinear_backend, 40, s, placement) - 1) for s in (400, 1600, 6400)
+    ]
     assert errors[0] > 1e-2 and errors[-1] < 1e-3
     for coarse, fine in itertools.pairwise(errors):
         assert coarse / fine > 10
@@ -449,14 +528,16 @@ def test_modulation_instability_matches_linear_stability_theory(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("placement", _placement_params())
 @pytest.mark.parametrize("polarization", ["single", "dual"])
-def test_agrees_with_numpy_reference(nonlinear_backend, polarization):
+def test_agrees_with_numpy_reference(nonlinear_backend, polarization, placement):
     fiber = StubFiber(
         length_km=80.0,
         alpha_db_per_km=0.2,
         beta3_s3_per_m=1.2e-40,
         n_steps=60,
         polarization=polarization,
+        **placement,
     )
     shape = (4096,) if polarization == "single" else (2, 4096)
     field = _random_field(shape, 0.1)

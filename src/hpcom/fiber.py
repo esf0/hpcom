@@ -10,16 +10,17 @@ be shared across simulations and threads. Numerical work is delegated to the
 from __future__ import annotations
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from hpcom._model import HpcomModel
-from hpcom._typing import ComplexArray, Direction, Polarization
+from hpcom._typing import ComplexArray, Direction, Polarization, StepDistribution
 from hpcom.backends import get_propagator
+from hpcom.backends.base import step_boundaries_m
 from hpcom.units import dispersion_slope_to_beta3, dispersion_to_beta2
 
 
 class Fiber(HpcomModel):
-    """A single span of optical fiber.
+    r"""A single span of optical fiber.
 
     Units are SI except where the field name says otherwise.
 
@@ -45,8 +46,18 @@ class Fiber(HpcomModel):
         Kerr nonlinearity γ in 1/(W·km). For ``polarization="dual"`` the
         Manakov equation uses (8/9)·γ.
     n_steps
-        Number of nonlinear steps of the split-step solver for this span
-        (step ``L/n_steps``). Ignored by the ``"numpy-linear"`` backend.
+        Number of nonlinear steps ``K`` of the split-step solver for this
+        span. Ignored by the ``"numpy-linear"`` backend.
+    step_distribution
+        Placement of the ``K`` steps: ``"uniform"`` (``h = L/K``) or
+        ``"logarithmic"`` — short steps where the power is high, each step
+        carrying the same share of :math:`\int e^{-k\alpha z}dz` (see
+        :attr:`step_boundaries_km` and ``docs/numerics.rst``).
+    step_log_factor
+        :math:`k` of the logarithmic placement: ``1`` equal nonlinear phase
+        per step (Bosco et al. 2000), ``1/3`` constant local error of the
+        symmetric scheme (Zhang & Hayee 2008); ``→ 0`` tends to uniform. Only
+        allowed with ``step_distribution="logarithmic"``.
     polarization
         ``"single"`` → scalar NLSE on fields of shape ``(..., n)``;
         ``"dual"`` → Manakov equation on fields of shape ``(..., 2, n)``.
@@ -62,6 +73,8 @@ class Fiber(HpcomModel):
     beta3_s3_per_m: float = 0.0
     gamma_per_w_per_km: float = Field(default=1.27, ge=0)
     n_steps: int = Field(default=100, ge=1)
+    step_distribution: StepDistribution = "uniform"
+    step_log_factor: float = Field(default=1.0, gt=0)
     polarization: Polarization = "single"
     backend: str = "numpy"
 
@@ -103,6 +116,17 @@ class Fiber(HpcomModel):
 
     # ---- derived quantities ---------------------------------------------
 
+    @model_validator(mode="after")
+    def _validate_steps(self) -> Fiber:
+        if self.step_distribution == "uniform" and self.step_log_factor != 1.0:
+            raise ValueError('step_log_factor applies only to step_distribution="logarithmic"')
+        return self
+
+    @property
+    def step_boundaries_km(self) -> tuple[float, ...]:
+        """Step boundaries :math:`0 = z_0 < … < z_K = L` in km (``step_distribution``)."""
+        return tuple(float(z) / 1e3 for z in step_boundaries_m(self))
+
     @property
     def length_m(self) -> float:
         return self.length_km * 1e3
@@ -131,6 +155,27 @@ class Fiber(HpcomModel):
         return self.beta3_s3_per_m * self.length_m
 
     # ---- propagation ----------------------------------------------------
+
+    def with_steps(
+        self,
+        n_steps: int | None = None,
+        distribution: StepDistribution | None = None,
+        log_factor: float | None = None,
+    ) -> Fiber:
+        """Copy with another step count or placement; ``None`` keeps this fiber's.
+
+        Setting ``distribution`` resets ``step_log_factor`` to ``log_factor``
+        (default 1); ``log_factor`` alone needs a logarithmic fiber.
+        """
+        changes: dict[str, object] = {}
+        if n_steps is not None:
+            changes["n_steps"] = n_steps
+        if distribution is not None:
+            changes["step_distribution"] = distribution
+            changes["step_log_factor"] = 1.0 if log_factor is None else log_factor
+        elif log_factor is not None:
+            changes["step_log_factor"] = log_factor
+        return self.replace(**changes) if changes else self
 
     def with_backend(self, backend: str) -> Fiber:
         """Return a copy of this fiber that propagates on ``backend``."""
