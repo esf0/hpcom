@@ -23,6 +23,10 @@ datasets.
 - **Backends**: NumPy (reference, always available), JAX (recommended for
   GPU) and TensorFlow (GPU, kept for systems where it suits better); a
   registry and conformance test suites for adding more.
+- **Differentiable mode** (`hpcom.autodiff`, JAX): gradients of fibers,
+  links and DBP in every physical parameter and the input field —
+  parameter fitting, learned DBP, end-to-end training — with checkpointed
+  or constant-memory (reversible) adjoints.
 - **Metrics**: data-aided BER, SER, EVM, SNR, Q-factor, MI and GMI, per
   polarisation and WDM channel.
 - **Trustworthy**: every convention is written down as formulas in the
@@ -68,7 +72,7 @@ rotation. `result.save("run.npz")` / `Result.load(...)` store a run with its
 full configuration.
 
 More in [`examples/`](examples/): BER vs SNR against theory, a launch-power
-sweep, Manakov propagation, dataset generation, custom waveforms, WDM, OFDM,
+sweep, Manakov propagation, dataset generation, custom waveforms, WDM, OFDM, learned DBP,
 probabilistic shaping and digital back-propagation.
 
 ## Conventions at a glance

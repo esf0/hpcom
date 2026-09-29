@@ -50,6 +50,7 @@ back-propagation.
    concepts
    physics
    numerics
+   autodiff
    backends
    migration
 

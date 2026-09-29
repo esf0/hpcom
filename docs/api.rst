@@ -62,6 +62,13 @@ Link components
 .. automodule:: hpcom.numerics
    :members:
 
+Differentiable propagation
+--------------------------
+
+.. automodule:: hpcom.autodiff
+   :members:
+   :imported-members:
+
 Simulation, results, metrics
 ----------------------------
 

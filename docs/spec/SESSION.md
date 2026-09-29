@@ -66,6 +66,16 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   `tests/numerical/_data/make_gnlse_golden.sh`). Next (maintainer's order):
   differentiable JAX mode → PMD → SDM transceivers → lasers (CGLE, saturable
   gain) → GN/EGN. Planned numerics: adaptive RK4IP.
+- Differentiable JAX mode done (`hpcom.autodiff`, docs/autodiff.rst):
+  `propagate` / `propagate_link` / `amplify` / `backpropagate` /
+  `compensate` as pure JAX functions; `FiberParameters` (ps/km units,
+  float32-safe), `AmplifierParameters`; gradient modes store / checkpoint
+  (√J) / reversible (exact inverse-step adjoint, O(1) memory); multicore via
+  eigen-decomposition + Daleckii–Krein custom JVP. Validated vs NumPy
+  (values), finite differences and closed forms (gradients); example 10
+  (learned per-span DBP, +4.3 dB at 1 step/span). Next in D: differentiable
+  transceivers (pulse shaping, matched filter, soft demapper, GMI loss) for
+  end-to-end learning; JaxPropagator could delegate to the autodiff core.
 - Laser phase noise, PMD, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.

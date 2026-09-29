@@ -250,6 +250,30 @@ def uses_fast_path(fiber: FiberLike) -> bool:
     )
 
 
+def split_step_substeps(
+    fiber: FiberLike, direction: Direction
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+    """Geometry of :func:`split_step_sequence`: linear lengths, signed sub-steps, Kerr position.
+
+    Returns ``(m, h, r)``: the ``J+1`` linear lengths, the ``J`` signed
+    sub-step lengths :math:`w_i h` and the Kerr position along the traversal
+    (:math:`r` forward, :math:`1-r` backward).
+    """
+    scheme = fiber.scheme
+    if scheme.method not in COMPOSITION_WEIGHTS:
+        raise ValueError(f"{scheme.method!r} is not a split-step method")
+    sizes = step_sizes_m(fiber, direction)
+    weights = np.asarray(COMPOSITION_WEIGHTS[scheme.method], dtype=np.float64)
+    sub = (sizes[:, None] * weights[None, :]).ravel()
+    r = float(scheme.nonlinear_position)
+    r_trav = r if direction == "forward" else 1.0 - r
+    pre, post = r_trav * sub, (1.0 - r_trav) * sub
+    linear = np.empty(sub.size + 1)
+    linear[0], linear[-1] = pre[0], post[-1]
+    linear[1:-1] = post[:-1] + pre[1:]
+    return linear, sub, r_trav
+
+
 def split_step_sequence(
     fiber: FiberLike, direction: Direction
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -267,20 +291,10 @@ def split_step_sequence(
     :math:`(e^{\alpha r|h|} - e^{-\alpha(1-r)|h|})/\alpha` with the sign of
     :math:`h`. See ``docs/numerics.rst``.
     """
-    scheme = fiber.scheme
-    if scheme.method not in COMPOSITION_WEIGHTS:
-        raise ValueError(f"{scheme.method!r} is not a split-step method")
-    sizes = step_sizes_m(fiber, direction)
-    weights = np.asarray(COMPOSITION_WEIGHTS[scheme.method], dtype=np.float64)
-    sub = (sizes[:, None] * weights[None, :]).ravel()
-    r = float(scheme.nonlinear_position)
-    r_trav = r if direction == "forward" else 1.0 - r
-    pre, post = r_trav * sub, (1.0 - r_trav) * sub
-    linear = np.empty(sub.size + 1)
-    linear[0], linear[-1] = pre[0], post[-1]
-    linear[1:-1] = post[:-1] + pre[1:]
+    linear, sub, _ = split_step_substeps(fiber, direction)
+    r = float(fiber.scheme.nonlinear_position)
     alpha = attenuation_per_m(fiber)
-    if scheme.kerr_length == "step" or alpha == 0.0:
+    if fiber.scheme.kerr_length == "step" or alpha == 0.0:
         return linear, sub
     mag = np.abs(sub)
     kerr = np.sign(sub) * (np.exp(alpha * r * mag) - np.exp(-alpha * (1.0 - r) * mag)) / alpha

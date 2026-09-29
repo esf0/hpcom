@@ -127,5 +127,5 @@ follow_imports_for_stubs = true
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "hpcom.backends.jax.*"
+module = ["hpcom.backends.jax.*", "hpcom.autodiff.*"]
 disallow_untyped_decorators = false
