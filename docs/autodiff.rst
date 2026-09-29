@@ -1,11 +1,13 @@
 Differentiable propagation (JAX)
 ================================
 
-:mod:`hpcom.autodiff` runs hpcom's propagation as pure JAX functions, so
-that :func:`jax.grad`, :func:`jax.jit` and :func:`jax.vmap` apply to a fiber,
-a link or digital back-propagation. Use it to fit fiber parameters to
-measurements, to learn back-propagation or equaliser parameters, or to train
-transmitters and receivers end to end through a physical channel model.
+:mod:`hpcom.autodiff` runs hpcom's whole chain — transmitter, fiber link,
+receiver, demapper and information rates — as pure JAX functions, so that
+:func:`jax.grad`, :func:`jax.jit` and :func:`jax.vmap` apply to any part of
+it. Use it to fit fiber parameters to measurements, to learn
+back-propagation or equaliser parameters (or plug a neural network into the
+receiver), or to train transmitters and receivers end to end through a
+physical channel model.
 
 .. contents::
    :local:
@@ -33,6 +35,23 @@ What is differentiable
    * - :func:`~hpcom.autodiff.backpropagate`, :func:`~hpcom.autodiff.compensate`
      - the field, the receiver's link model (every fiber and amplifier
        parameter, span by span) and the nonlinearity scale :math:`\xi`
+   * - :func:`~hpcom.autodiff.constellation`, :func:`~hpcom.autodiff.modulate`
+     - the constellation points (geometric shaping; normalised to unit
+       power wherever used), the PMF logits (probabilistic shaping), the
+       launch power, the data symbols
+   * - :func:`~hpcom.autodiff.sample_symbols`
+     - the PMF, through straight-through Gumbel-softmax sampling (exact
+       constellation points forward, relaxed one-hot gradient backward)
+   * - :func:`~hpcom.autodiff.demodulate`
+     - the field, the DBP stage's link model and :math:`\xi`, or the
+       parameters of any JAX function used as the compensation stage (e.g.
+       a neural network); dispersion compensation, front end (low-pass,
+       resampling), matched filter and equaliser are exact and
+       differentiable
+   * - :func:`~hpcom.autodiff.information_rates`, :func:`~hpcom.autodiff.bit_llrs`,
+       :func:`~hpcom.autodiff.snr_db`
+     - the received samples, points and PMF — MI and GMI (the estimators of
+       :mod:`hpcom.metrics`) as training objectives, exact bit LLRs
 
 The pydantic configuration (:class:`~hpcom.Fiber`, :class:`~hpcom.Link`,
 :class:`~hpcom.DigitalBackPropagation`) fixes the *structure* — lengths,
@@ -41,7 +60,9 @@ and is a static argument under :func:`jax.jit`. The continuous values are
 pytrees; ``FiberParameters.from_fiber`` / ``to_fiber`` convert both ways,
 so a fitted parameter set goes back into an ordinary simulation.
 
-Every fixed-step scheme is supported: the symmetric split step with any
+Not differentiable: hard decisions, BER/SER, distribution matchers (CCDM)
+— use the GMI, the LLRs or Gumbel sampling instead — and the adaptive
+local-error scheme. Every fixed-step scheme is supported: the symmetric split step with any
 Kerr position, effective Kerr length or intensity filter, the Yoshida and
 Suzuki compositions, and RK4IP. The adaptive local-error method is not —
 its step sequence depends on the field — and is rejected.
@@ -223,10 +244,22 @@ Validation
    * - Noise
      - :func:`~hpcom.autodiff.amplify` has the EDFA's ASE variance; the
        gradient of the noise power in the noise figure is exact.
+   * - Transceivers
+     - :func:`~hpcom.autodiff.modulate` equals ``generate(symbols=…)`` and
+       :func:`~hpcom.autodiff.demodulate` equals ``receive(...).symbols``
+       (1e-12) for single carrier, dual polarisation with pilots and FIR
+       pulses, linear convolution, 3-channel dual-polarisation WDM (channel
+       subsets, band-limited front end) and probabilistic shaping, with CD
+       compensation, DBP at 2 samples/symbol and full-field DBP;
+       :func:`~hpcom.autodiff.information_rates` equals
+       :func:`hpcom.metrics.information_rates` (1e-12) and the GMI from the
+       LLRs; gradients through transmitter → link → DBP receiver → GMI equal
+       finite differences; Gumbel samples have the softmax frequencies.
    * - Applications
      - L-BFGS on exact gradients recovers (α, β₂, β₃, γ) of a 20 km span
        from 3–30 % off to 1e-6; gradient descent on the DBP nonlinearity
-       scale lands on the grid-search optimum.
+       scale lands on the grid-search optimum; learned geometric and
+       probabilistic shaping beat QAM on new data.
 
 
 Example: learned DBP
@@ -259,13 +292,31 @@ the span accumulates :math:`L_\mathrm{eff}P_\mathrm{in}`, a ratio of 0.7 for
 80 km (see also the effective Kerr length in :doc:`numerics`).
 
 
+Example: end-to-end learning
+----------------------------
+
+``examples/11_end_to_end_learning.py`` trains 64 constellation points and
+the launch power jointly, by Adam on the GMI after the whole chain —
+pulse shaping, 20 × 80 km of SSMF with EDFA noise, CD compensation, matched
+filter, data-aided phase recovery, bit-wise demapper — with a fresh batch of
+data and noise per step (150 steps, 45 s on a laptop CPU). Scored by
+:class:`~hpcom.Simulation` on new data (mean of 8 draws): 64-QAM at its best
+launch power (−3 dBm) 5.484 b/sym, the learned constellation 5.534 b/sym.
+On the AWGN channel at :math:`E_s/N_0` = 12 dB the same machinery gives
++0.05 b/sym for 16 learned points over 16-QAM (geometric shaping) and
++0.16 b/sym for a learned 64-QAM PMF over uniform (probabilistic shaping by
+Gumbel-softmax; capacity is 0.11 b/sym above the shaped rate)
+[``test_learned_*_beats_*``].
+
+
 Relation to other work
 ----------------------
 
 Differentiable split-step models are established in optical communications:
 learned digital back-propagation [HagerPfister2018]_, [HagerPfister2021]_,
-end-to-end autoencoders through the NLSE [Li2018]_, and JAX signal-processing
-libraries [Fan2020]_. What :mod:`hpcom.autodiff` adds is the same validated
+end-to-end autoencoders through the NLSE [Li2018]_, joint geometric and
+probabilistic shaping by Gumbel-softmax [Stark2019]_, and JAX
+signal-processing libraries [Fan2020]_. What :mod:`hpcom.autodiff` adds is the same validated
 simulator — every fixed-step scheme, the generalised NLSE, Manakov and
 multicore fibers, amplifier noise, DBP at channel offsets — differentiable
 in all its physical parameters, with gradients checked against finite
@@ -297,6 +348,10 @@ References
 
 .. [Higham2008] N. J. Higham, *Functions of Matrices: Theory and
    Computation*, SIAM, 2008.
+
+.. [Stark2019] M. Stark, F. Ait Aoudia, J. Hoydis, "Joint learning of
+   geometric and probabilistic constellation shaping," *IEEE Globecom
+   Workshops* 2019.
 
 .. [Li2018] S. Li, C. Häger, N. Garcia, H. Wymeersch, "Achievable
    information rates for nonlinear fiber communication via end-to-end

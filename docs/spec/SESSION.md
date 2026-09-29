@@ -73,9 +73,13 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   (√J) / reversible (exact inverse-step adjoint, O(1) memory); multicore via
   eigen-decomposition + Daleckii–Krein custom JVP. Validated vs NumPy
   (values), finite differences and closed forms (gradients); example 10
-  (learned per-span DBP, +4.3 dB at 1 step/span). Next in D: differentiable
-  transceivers (pulse shaping, matched filter, soft demapper, GMI loss) for
-  end-to-end learning; JaxPropagator could delegate to the autodiff core.
+  (learned per-span DBP, +4.3 dB at 1 step/span). Differentiable
+  transceivers done: constellation (GS points, PS logits + Gumbel
+  straight-through), modulate, demodulate (CDC, WDM selection, front end,
+  DBP or any JAX compensator, matched filter, equalisers), MI/GMI/LLRs;
+  equal to the NumPy chain to 1e-12; example 11 (end-to-end GS + launch
+  power through 20×80 km, +0.05 b/sym). Open: JaxPropagator could delegate
+  to the autodiff core; OFDM not in autodiff yet.
 - Laser phase noise, PMD, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.

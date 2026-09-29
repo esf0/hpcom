@@ -9,7 +9,13 @@ propagators, differentiable with :func:`jax.grad`, compilable with
 * :func:`amplify`, :func:`propagate_link` — EDFAs with reparameterised ASE
   from a JAX PRNG key, whole links;
 * :func:`backpropagate`, :func:`compensate` — digital back-propagation with
-  a trainable link model and nonlinearity scale (learned DBP).
+  a trainable link model and nonlinearity scale (learned DBP);
+* :func:`constellation`, :func:`sample_symbols`, :func:`modulate` — the
+  transmitter with trainable constellation points, PMF and launch power;
+* :func:`demodulate` — the receiver chain, with DBP or any JAX function as
+  its compensation stage;
+* :func:`information_rates`, :func:`bit_llrs`, :func:`snr_db` — MI, GMI and
+  soft demapping as training objectives.
 
 The configuration objects (:class:`~hpcom.Fiber`, :class:`~hpcom.Link`, …)
 fix the structure; the continuous parameters are pytrees —
@@ -55,16 +61,36 @@ from hpcom.autodiff._link import (
     link_parameters,
     propagate_link,
 )
+from hpcom.autodiff._transceiver import (
+    CompensateFn,
+    TransmitterParameters,
+    bit_llrs,
+    constellation,
+    demodulate,
+    information_rates,
+    modulate,
+    sample_symbols,
+    snr_db,
+)
 
 __all__ = [
     "AmplifierParameters",
+    "CompensateFn",
     "FiberParameters",
     "GradientMode",
     "LinkParameters",
+    "TransmitterParameters",
     "amplify",
     "backpropagate",
+    "bit_llrs",
     "compensate",
+    "constellation",
+    "demodulate",
+    "information_rates",
     "link_parameters",
+    "modulate",
     "propagate",
     "propagate_link",
+    "sample_symbols",
+    "snr_db",
 ]

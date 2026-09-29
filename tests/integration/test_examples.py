@@ -23,4 +23,4 @@ def test_example_runs(script: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_there_are_examples():
-    assert len(EXAMPLES) >= 10
+    assert len(EXAMPLES) >= 11
