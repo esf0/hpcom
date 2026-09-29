@@ -204,4 +204,10 @@ class DigitalBackPropagation(Compensator):
             changes["backend"] = self.backend
         elif self.nonlinearity_scale == 0.0:
             changes["backend"] = "numpy-linear"
+        skew = getattr(fiber, "core_beta1_offsets_s_per_m", None)
+        if skew is not None and omega_k != 0.0:
+            # Each core's skew δβ₁,m adds the constant −δβ₁,m·ω_k at the channel frequency.
+            offsets = getattr(fiber, "core_beta0_offsets_per_m", None)
+            base = np.zeros(len(skew)) if offsets is None else np.asarray(offsets)
+            changes["core_beta0_offsets_per_m"] = base - np.asarray(skew) * omega_k
         return fiber.replace(**changes)

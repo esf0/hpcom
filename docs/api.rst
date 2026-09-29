@@ -42,6 +42,10 @@ Link components
 .. automodule:: hpcom.fiber
    :members:
 
+.. automodule:: hpcom.multicore
+   :members:
+   :show-inheritance:
+
 .. automodule:: hpcom.amplifier
    :members:
    :show-inheritance:

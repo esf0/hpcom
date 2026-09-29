@@ -16,7 +16,9 @@ from hpcom.backends.base import (
     ALL_METHODS,
     Propagator,
     check_field_shape,
+    core_axis,
     linear_operator_exponent,
+    multicore_linear_system,
     signed_length_m,
 )
 
@@ -37,6 +39,14 @@ class LinearNumpyPropagator(Propagator):
         a = np.asarray(field, dtype=np.complex128)
         check_field_shape(a, fiber)
         length_m = signed_length_m(fiber, direction)
-        transfer = np.exp(linear_operator_exponent(a.shape[-1], dt_s, fiber) * length_m)
-        out: ComplexArray = np.fft.ifft(np.fft.fft(a, axis=-1) * transfer, axis=-1)
-        return out
+        if fiber.n_cores == 1:
+            transfer = np.exp(linear_operator_exponent(a.shape[-1], dt_s, fiber) * length_m)
+            out: ComplexArray = np.fft.ifft(np.fft.fft(a, axis=-1) * transfer, axis=-1)
+            return out
+        vectors, exponent = multicore_linear_system(a.shape[-1], dt_s, fiber)
+        axis = core_axis(fiber)
+        x = np.moveaxis(np.fft.fft(a, axis=-1), axis, -1)  # (..., n, M)
+        z = (np.conj(np.swapaxes(vectors, -1, -2)) @ x[..., None])[..., 0]
+        y = (vectors @ (z * np.exp(exponent * length_m))[..., None])[..., 0]
+        coupled: ComplexArray = np.fft.ifft(np.moveaxis(y, -1, axis), axis=-1)
+        return coupled

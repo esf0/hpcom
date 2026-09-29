@@ -1,6 +1,6 @@
 # Session resume — hpcom v1
 
-**Last updated: 2026-09-28.** Branch `dev`. 1650 tests pass (≈3 min); ruff,
+**Last updated: 2026-09-28.** Branch `dev`. 1731 tests pass (≈4 min); ruff,
 ruff-format, mypy (strict) and the Sphinx build (`-W`) are clean. A core-only
 install (numpy, scipy, pydantic) passes too, with TF/legacy tests skipped.
 
@@ -40,9 +40,14 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   added; the full suite passes with JAX on the local RTX 3070 (separate env,
   `benchmarks/gpu_validation.sh`), 4–41× faster than NumPy (docs/backends.rst). TensorFlow backend:
   kept and supported alongside JAX for systems where it suits better
-  (maintainer, 2026-09-28); new schemes go into both. Later ideas: multicore fibers. NFT: not in hpcom for now — the
+  (maintainer, 2026-09-28); new schemes go into both. NFT: not in hpcom for now — the
   maintainer's separate NFT project will be integrated later. Rust: the maintainer will write it
   themselves later.
+- Multicore fibers done (`hpcom.MulticoreFiber`, weakly coupled, exact linear
+  step, all schemes/backends, validated vs coupler/Jensen/supermode/hexagonal
+  exact solutions). Next for SDM: single-core → multicore transceivers
+  (per-core Tx/Rx, Simulation scoring per core); random coupling;
+  strongly coupled (generalised Manakov).
 - Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data
   (regenerate with `tests/numerical/_data/make_opticommpy_golden.py` in a
   separate env — OptiCommPy needs numba), N = 2 soliton, Manakov vector

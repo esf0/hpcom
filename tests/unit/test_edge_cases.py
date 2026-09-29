@@ -87,12 +87,32 @@ def test_unknown_package_attribute():
 def test_field_shape_checks():
     class F:
         polarization = "single"
+        n_cores = 1
 
-    with pytest.raises(ValueError, match="time"):
+    with pytest.raises(ValueError, match=r"expects a field of shape \(\.\.\., n_samples\)"):
         check_field_shape(np.array(1.0 + 0j), F())
     F.polarization = "triple"
     with pytest.raises(ValueError, match="unknown fiber polarization"):
         check_field_shape(np.ones(4, complex), F())
+
+
+@pytest.mark.parametrize(
+    ("polarization", "good", "bad"),
+    [
+        ("single", (3, 8), [(8,), (2, 8), (3,)]),
+        ("dual", (3, 2, 8), [(2, 8), (3, 8), (2, 3, 8)]),
+    ],
+)
+def test_multicore_field_shape_checks(polarization, good, bad):
+    class F:
+        n_cores = 3
+
+    F.polarization = polarization
+    check_field_shape(np.ones(good, complex), F())
+    check_field_shape(np.ones((5, *good), complex), F())  # batch axes are fine
+    for shape in bad:
+        with pytest.raises(ValueError, match="3-core"):
+            check_field_shape(np.ones(shape, complex), F())
 
 
 def test_ssfm_rejects_zero_steps():
@@ -112,6 +132,7 @@ def test_ssfm_rejects_zero_steps():
         step_log_factor: float = 1.0
         beta1_s_per_m: float = 0.0
         scheme: object = None
+        n_cores: int = 1
         polarization: str = "single"
 
     with pytest.raises(ValueError, match="n_steps must be >= 1"):

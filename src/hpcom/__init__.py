@@ -32,6 +32,7 @@ from hpcom.fiber import Fiber
 from hpcom.link import Link
 from hpcom.metrics import Metrics, StreamMetrics
 from hpcom.modulation import ConstantCompositionDM, ConstellationConfig
+from hpcom.multicore import MulticoreFiber
 from hpcom.noise import AdditiveNoise
 from hpcom.numerics import Scheme
 from hpcom.ofdm import (
@@ -73,6 +74,7 @@ __all__ = [
     "Fiber",
     "Link",
     "Metrics",
+    "MulticoreFiber",
     "OFDMConfig",
     "OFDMReceivedSymbols",
     "OFDMReceiver",

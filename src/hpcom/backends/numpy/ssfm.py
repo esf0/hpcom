@@ -40,16 +40,18 @@ from hpcom.backends.base import (
     Propagator,
     attenuation_per_m,
     check_field_shape,
+    core_axis,
     effective_gamma_per_m,
     kerr_filter_response,
     linear_operator_exponent,
+    multicore_linear_system,
     signed_length_m,
     split_step_sequence,
     step_sizes_m,
     uses_fast_path,
 )
 
-#: Precompute every distinct linear operator when there are at most this many.
+#: Linear operators cached per propagation (the first this many distinct lengths).
 _MAX_CACHED_OPERATORS = 16
 
 
@@ -63,8 +65,43 @@ def _kerr_power(a: np.ndarray, dual: bool, response: np.ndarray | None) -> np.nd
     return power
 
 
+class _Disperser:
+    """Exact linear step ``spectrum ↦ e^{m L̂} spectrum`` (single- or multicore)."""
+
+    def __init__(self, fiber: FiberLike, n_samples: int, dt_s: float) -> None:
+        self._cache: dict[float, np.ndarray] = {}
+        if fiber.n_cores == 1:
+            self._exponent = linear_operator_exponent(n_samples, dt_s, fiber)
+            self._vectors = None
+        else:
+            vectors, self._exponent = multicore_linear_system(n_samples, dt_s, fiber)
+            self._vectors = vectors
+            self._adjoint = np.conj(np.swapaxes(vectors, -1, -2))
+            self._axis = core_axis(fiber)
+
+    def factor(self, m: float) -> np.ndarray:
+        key = float(m)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        value: np.ndarray = np.exp(self._exponent * m)
+        if len(self._cache) < _MAX_CACHED_OPERATORS:
+            self._cache[key] = value
+        return value
+
+    def __call__(self, spectrum: np.ndarray, m: float) -> np.ndarray:
+        if self._vectors is None:
+            out: np.ndarray = spectrum * self.factor(m)
+            return out
+        x = np.moveaxis(spectrum, self._axis, -1)  # (..., n, M)
+        z = (self._adjoint @ x[..., None])[..., 0] * self.factor(m)
+        y = (self._vectors @ z[..., None])[..., 0]
+        moved: np.ndarray = np.moveaxis(y, -1, self._axis)
+        return moved
+
+
 class NumpySSFMPropagator(Propagator):
-    """Scalar NLSE / Manakov split-step schemes (see module docstring)."""
+    """Scalar NLSE / Manakov / multicore propagation schemes (see module docstring)."""
 
     name = "numpy"
     supported_methods = ALL_METHODS
@@ -79,17 +116,18 @@ class NumpySSFMPropagator(Propagator):
         a = np.array(field, dtype=np.complex128)  # always a private copy
         check_field_shape(a, fiber)
         sizes = step_sizes_m(fiber, direction)  # validates n_steps
-        exponent = linear_operator_exponent(a.shape[-1], dt_s, fiber)
         gamma_eff = effective_gamma_per_m(fiber)
         dual = fiber.polarization == "dual"
         if uses_fast_path(fiber):
+            exponent = linear_operator_exponent(a.shape[-1], dt_s, fiber)
             return self._uniform(a, exponent, sizes, gamma_eff, dual)
+        disperse = _Disperser(fiber, a.shape[-1], dt_s)
         if fiber.scheme.method == "rk4ip":
-            return self._rk4ip(a, exponent, sizes, gamma_eff, dual)
+            return self._rk4ip(a, disperse, sizes, gamma_eff, dual)
         if fiber.scheme.method == "ssfm-local-error":
             return self._local_error(
                 a,
-                exponent,
+                disperse,
                 signed_length_m(fiber, direction),
                 float(sizes[0]),
                 float(fiber.scheme.local_error or 0.0),
@@ -100,7 +138,7 @@ class NumpySSFMPropagator(Propagator):
             )
         linear, kerr = split_step_sequence(fiber, direction)
         response = kerr_filter_response(a.shape[-1], dt_s, fiber)
-        return self._sequence(a, exponent, linear, kerr, gamma_eff, dual, response)
+        return self._sequence(a, disperse, linear, kerr, gamma_eff, dual, response)
 
     @staticmethod
     def _uniform(
@@ -122,7 +160,7 @@ class NumpySSFMPropagator(Propagator):
 
     @staticmethod
     def _rk4ip(
-        a: np.ndarray, exponent: np.ndarray, sizes: np.ndarray, gamma_eff: float, dual: bool
+        a: np.ndarray, disperse: _Disperser, sizes: np.ndarray, gamma_eff: float, dual: bool
     ) -> ComplexArray:
         """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), 8 FFTs per step."""
 
@@ -131,25 +169,24 @@ class NumpySSFMPropagator(Propagator):
             return out
 
         for h in sizes:
-            half = np.exp(exponent * (h / 2.0))
 
-            def disperse(x: np.ndarray, half: np.ndarray = half) -> np.ndarray:
-                out: np.ndarray = np.fft.ifft(np.fft.fft(x, axis=-1) * half, axis=-1)
+            def half(x: np.ndarray, h: float = float(h)) -> np.ndarray:
+                out: np.ndarray = np.fft.ifft(disperse(np.fft.fft(x, axis=-1), h / 2.0), axis=-1)
                 return out
 
-            a_ip = disperse(a)
-            k1 = disperse(h * kerr(a))
+            a_ip = half(a)
+            k1 = half(h * kerr(a))
             k2 = h * kerr(a_ip + k1 / 2.0)
             k3 = h * kerr(a_ip + k2 / 2.0)
-            k4 = h * kerr(disperse(a_ip + k3))
-            a = disperse(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
+            k4 = h * kerr(half(a_ip + k3))
+            a = half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
         result: ComplexArray = a
         return result
 
     @staticmethod
     def _local_error(
         a: np.ndarray,
-        exponent: np.ndarray,
+        disperse: _Disperser,
         length_m: float,
         first_step_m: float,
         goal: float,
@@ -170,14 +207,13 @@ class NumpySSFMPropagator(Propagator):
             out: np.ndarray = np.fft.fft(x, axis=-1)
             return out
 
-        spectrum = np.fft.fft(a, axis=-1)
+        spectrum: np.ndarray = np.fft.fft(a, axis=-1)
         z, step = 0.0, abs(first_step_m)
         while z < total * (1.0 - 1e-14):
             big = min(step, total - z)
             h = sign * big / 2.0
-            d_h, d_half = np.exp(exponent * h), np.exp(exponent * (h / 2.0))
-            coarse = kerr(spectrum * d_h, 2.0 * h) * d_h
-            fine = kerr(kerr(spectrum * d_half, h) * d_h, h) * d_half
+            coarse = disperse(kerr(disperse(spectrum, h), 2.0 * h), h)
+            fine = disperse(kerr(disperse(kerr(disperse(spectrum, h / 2.0), h), h), h), h / 2.0)
             delta = np.linalg.norm(fine - coarse) / np.linalg.norm(fine)
             if not np.isfinite(delta):
                 raise FloatingPointError("local-error method: non-finite field")
@@ -200,7 +236,7 @@ class NumpySSFMPropagator(Propagator):
     @staticmethod
     def _sequence(
         a: np.ndarray,
-        exponent: np.ndarray,
+        disperse: _Disperser,
         linear: np.ndarray,
         kerr: np.ndarray,
         gamma_eff: float,
@@ -208,20 +244,10 @@ class NumpySSFMPropagator(Propagator):
         response: np.ndarray | None,
     ) -> ComplexArray:
         """``D(m_J) N(c_J) … D(m_1) N(c_1) D(m_0)`` for any sub-step sequence."""
-        distinct = np.unique(linear)
-        cache = (
-            {float(m): np.exp(exponent * m) for m in distinct}
-            if distinct.size <= _MAX_CACHED_OPERATORS
-            else None
-        )
-
-        def operator(m: float) -> np.ndarray:
-            return cache[float(m)] if cache is not None else np.exp(exponent * m)
-
-        spectrum = np.fft.fft(a, axis=-1) * operator(linear[0])
+        spectrum = disperse(np.fft.fft(a, axis=-1), linear[0])
         for j, c in enumerate(kerr):
             a = np.fft.ifft(spectrum, axis=-1)
             a *= np.exp(1j * (gamma_eff * c) * _kerr_power(a, dual, response))
-            spectrum = np.fft.fft(a, axis=-1) * operator(linear[j + 1])
+            spectrum = disperse(np.fft.fft(a, axis=-1), linear[j + 1])
         out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
         return out

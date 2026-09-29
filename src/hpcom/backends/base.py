@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -135,18 +136,73 @@ def merged_linear_steps(sizes: npt.NDArray[np.float64]) -> npt.NDArray[np.float6
 
 
 def check_field_shape(field: np.ndarray, fiber: FiberLike) -> None:
-    """Validate ``field`` against ``fiber.polarization`` (see :class:`Propagator`)."""
-    if fiber.polarization == "single":
-        if field.ndim < 1:
-            raise ValueError("field must have at least one (time) axis")
-    elif fiber.polarization == "dual":
-        if field.ndim < 2 or field.shape[-2] != 2:
-            raise ValueError(
-                "a dual-polarisation fiber (Manakov) expects a field of shape "
-                f"(..., 2, n_samples); got {field.shape}"
-            )
-    else:
+    """Validate ``field`` against ``fiber.polarization`` and cores (see :class:`Propagator`).
+
+    Single core: ``(..., n)`` / ``(..., 2, n)``; ``M`` cores: ``(..., M, n)`` /
+    ``(..., M, 2, n)``.
+    """
+    if fiber.polarization not in ("single", "dual"):
         raise ValueError(f"unknown fiber polarization {fiber.polarization!r}")
+    dual = fiber.polarization == "dual"
+    cores = int(fiber.n_cores)
+    tail = (2,) if dual else ()
+    if cores > 1:
+        tail = (cores, *tail)
+    if field.ndim < len(tail) + 1 or tuple(field.shape[-len(tail) - 1 : -1]) != tail:
+        layout = ("M, " if cores > 1 else "") + ("2, " if dual else "")
+        what = f"{cores}-core " if cores > 1 else ""
+        raise ValueError(
+            f"a {what}{fiber.polarization}-polarisation fiber expects a field of shape "
+            f"(..., {layout}n_samples){f' with M = {cores}' if cores > 1 else ''}; "
+            f"got {field.shape}"
+        )
+
+
+def core_axis(fiber: FiberLike) -> int:
+    """Axis of the core index in a multicore field (−2 single, −3 dual polarisation)."""
+    return -3 if fiber.polarization == "dual" else -2
+
+
+def multicore_linear_system(
+    n_samples: int, dt_s: float, fiber: Any
+) -> tuple[npt.NDArray[np.complex128], npt.NDArray[np.complex128]]:
+    r"""Eigen-decomposition of the multicore linear operator, per frequency.
+
+    The linear part of the coupled equations is
+    :math:`\partial_z\tilde A = [\,iK(\omega) - \tfrac{\alpha}{2}\,]\tilde A`
+    with the Hermitian matrix
+    :math:`K(\omega) = \operatorname{diag}_m\big(k(\omega) + \delta\beta_m -
+    \delta\beta_{1,m}\omega\big) + \kappa`, :math:`k(\omega) = -\beta_1\omega +
+    \beta_2\omega^2/2 - \beta_3\omega^3/6`. With :math:`K = V\Lambda V^\dagger`,
+
+    .. math:: e^{h[iK - \alpha/2]} = V\,\operatorname{diag}\big(e^{h(i\lambda - \alpha/2)}\big)\,V^\dagger
+
+    exactly, for any :math:`h`. Returns ``(V, exponent)``: ``V`` of shape
+    ``(F, M, M)`` (``F = 1`` when there is no skew, since :math:`K - k(\omega)I`
+    is then frequency independent) and ``exponent`` :math:`i\lambda - \alpha/2`
+    of shape ``(n, M)``.
+    """
+    common = linear_operator_exponent(n_samples, dt_s, fiber)  # i k(ω) − α/2
+    alpha_half = attenuation_per_m(fiber) / 2.0
+    k = ((common + alpha_half) / 1j).real  # k(ω), real
+    kappa = np.asarray(fiber.coupling_per_m, dtype=np.float64)
+    m = kappa.shape[0]
+    beta0 = fiber.core_beta0_offsets_per_m
+    beta1 = fiber.core_beta1_offsets_s_per_m
+    offsets = np.zeros(m) if beta0 is None else np.asarray(beta0, dtype=np.float64)
+    if beta1 is None or not np.any(beta1):
+        mu, vectors = np.linalg.eigh(kappa + np.diag(offsets))
+        lam = k[:, None] + mu[None, :]
+        v = vectors[None].astype(np.complex128)
+    else:
+        omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
+        diag = k[:, None] + offsets[None, :] - omega[:, None] * np.asarray(beta1)[None, :]
+        matrices = np.broadcast_to(kappa, (n_samples, m, m)).copy()
+        matrices[:, np.arange(m), np.arange(m)] = diag
+        lam, vectors = np.linalg.eigh(matrices)
+        v = vectors.astype(np.complex128)
+    exponent: npt.NDArray[np.complex128] = (1j * lam - alpha_half).astype(np.complex128)
+    return v, exponent
 
 
 _CBRT2, _CBRT4 = 2.0 ** (1.0 / 3.0), 4.0 ** (1.0 / 3.0)
@@ -177,7 +233,8 @@ def uses_fast_path(fiber: FiberLike) -> bool:
     """Uniform steps with the plain symmetric split step: one precomputed ``D(h)``."""
     s = fiber.scheme
     return (
-        fiber.step_distribution == "uniform"
+        fiber.n_cores == 1
+        and fiber.step_distribution == "uniform"
         and s.method == "ssfm"
         and s.nonlinear_position == 0.5
         and s.kerr_length == "step"

@@ -70,6 +70,12 @@ class Simulation(HpcomModel):
                 f"link fibers are {sorted(pols)}-polarisation but the transmitter is "
                 f"{self.transmitter.polarization!r}"
             )
+        multicore = sorted({f.n_cores for f in self.link.fibers if f.n_cores > 1})
+        if multicore:
+            issues.append(
+                f"the link has {multicore}-core fibers, but transmitters and receivers are "
+                "single-core; propagate multicore fields with Link.propagate directly"
+            )
         if issues:
             raise ValueError("incompatible simulation:\n  - " + "\n  - ".join(issues))
         n_data = self.transmitter.n_data_symbols_per_stream

@@ -134,6 +134,11 @@ class Fiber(HpcomModel):
         return self
 
     @property
+    def n_cores(self) -> int:
+        """Number of cores (1; see :class:`~hpcom.multicore.MulticoreFiber`)."""
+        return 1
+
+    @property
     def step_boundaries_km(self) -> tuple[float, ...]:
         """Step boundaries :math:`0 = z_0 < … < z_K = L` in km (``step_distribution``)."""
         return tuple(float(z) / 1e3 for z in step_boundaries_m(self))

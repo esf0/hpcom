@@ -49,6 +49,7 @@ class StubFiber:
     step_distribution: str = "uniform"
     step_log_factor: float = 1.0
     scheme: StubScheme = StubScheme()
+    n_cores: int = 1
     polarization: str = "single"
 
 

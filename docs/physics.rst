@@ -185,6 +185,83 @@ and ``tests/numerical/``:
        ``full_line_model(dbp=…)``: 3e-6. [``test_legacy_chain.py``]
 
 
+Multicore fibers
+----------------
+
+:class:`~hpcom.MulticoreFiber` models a weakly coupled multicore fiber: one
+envelope (or Manakov pair) per core, coupled linearly (coupled-mode theory;
+the continuous-discrete NLSE of [Chekhovskoy2016]_, their Eq. 2):
+
+.. math::
+
+   \frac{\partial A_m}{\partial z} = \hat L A_m
+     + i\,\delta\beta_m A_m - \delta\beta_{1,m}\frac{\partial A_m}{\partial t}
+     + i\gamma_\mathrm{eff}P_mA_m + i\sum_{n\ne m}\kappa_{mn}A_n ,
+
+with the single-core operator :math:`\hat L` (loss, :math:`\beta_{1,2,3}`,
+common to all cores), the real symmetric coupling matrix :math:`\kappa`
+(``coupling_per_m``, zero diagonal), a propagation-constant mismatch
+:math:`\delta\beta_m` and a skew :math:`\delta\beta_{1,m}` per core. The Kerr
+term is per core, :math:`P_m = |A_m|^2` (Manakov:
+:math:`|A_{m,x}|^2+|A_{m,y}|^2`, :math:`\gamma_\mathrm{eff} = \tfrac89\gamma`):
+the cores do not overlap, so inter-core XPM and FWM are neglected. Fields
+are ``(..., M, n)`` or ``(..., M, 2, n)``. Layouts:
+:func:`~hpcom.multicore.linear_array_coupling` (two cores: a coupler),
+:func:`~hpcom.multicore.ring_coupling`,
+:func:`~hpcom.multicore.hexagonal_coupling` (7 cores).
+
+**Exact linear step.** In the frequency domain the linear part is
+:math:`\partial_z\tilde A = [iK(\omega) - \alpha/2]\tilde A` with the Hermitian
+matrix :math:`K(\omega) = \operatorname{diag}_m(k(\omega) + \delta\beta_m -
+\delta\beta_{1,m}\omega) + \kappa`, :math:`k(\omega) = -\beta_1\omega +
+\beta_2\omega^2/2 - \beta_3\omega^3/6`. Diagonalising it once,
+:math:`K = V\Lambda V^\dagger`, gives
+:math:`e^{h[iK-\alpha/2]} = V\,\mathrm{diag}(e^{h(i\lambda-\alpha/2)})\,V^\dagger`
+for every step length — exact, with no splitting between dispersion and
+coupling (without skew :math:`V` is frequency independent). Every scheme of
+:doc:`numerics` and every backend (NumPy, JAX, TensorFlow; ``numpy-linear``
+for the linear case) uses it, so a multicore run has the scheme's own order.
+([Chekhovskoy2017]_ approximate the same exponential with Padé; here it is
+exact.)
+
+**Checks** [``tests/backends/test_multicore_conformance.py``, every backend]:
+
+* uncoupled cores are exactly independent single-core fibers;
+* two-core coupler: :math:`P_1 = \cos^2\kappa z`; with mismatch
+  :math:`\pm\delta`, :math:`P_2 = \frac{\kappa^2}{\kappa^2+\delta^2}
+  \sin^2(\sqrt{\kappa^2+\delta^2}\,z)` (1e-13);
+* 7-core hexagonal centre launch against the reduced system
+  :math:`[a, b]' = i\kappa\begin{pmatrix}0&6\\1&2\end{pmatrix}[a, b]` (1e-13);
+* Jensen's nonlinear coherent coupler [Jensen1982]_: CW, lossless,
+  dispersionless, :math:`P_1(z) = \tfrac P2[1 + \mathrm{cn}(2\kappa z\,|\,m)]`,
+  :math:`m = (P/P_c)^2`, :math:`P_c = 4\kappa/\gamma` — second-order
+  convergence to it at :math:`P = 0.5P_c` and :math:`0.9P_c`;
+* the symmetric two-core soliton supermode, stationary with phase
+  :math:`(\kappa + \gamma P_0/2)z`;
+* skew delays core :math:`m` by exactly :math:`\delta\beta_{1,m}L`; energy is
+  conserved and backward propagation is exact with mismatch and skew; all
+  backends agree with NumPy for every scheme; Strang and Suzuki keep orders
+  2 and 4.
+
+Links of multicore fibers with EDFAs (independent ASE per core) and digital
+back-propagation work on multicore fields; transmitters and receivers are
+single-core, so :class:`~hpcom.Simulation` rejects multicore links for now.
+Not modelled: random (bend/twist-induced) coupling, strongly coupled cores
+(the generalised Manakov equations of [Mumtaz2013]_), inter-core
+nonlinearity.
+
+.. [Chekhovskoy2016] I. S. Chekhovskoy, A. M. Rubenchik, O. V. Shtyrina,
+   M. P. Fedoruk, S. K. Turitsyn, "Nonlinear combining and compression in
+   multicore fibers," *Phys. Rev. A* 94, 043848, 2016.
+
+.. [Jensen1982] S. M. Jensen, "The nonlinear coherent coupler," *IEEE J.
+   Quantum Electron.* 18(10), 1580–1583, 1982.
+
+.. [Mumtaz2013] S. Mumtaz, R.-J. Essiambre, G. P. Agrawal, "Nonlinear
+   propagation in multimode and multicore fibers: generalization of the
+   Manakov equations," *J. Lightw. Technol.* 31(3), 398–406, 2013.
+
+
 Launch power
 ------------
 
