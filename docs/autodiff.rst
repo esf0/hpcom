@@ -27,7 +27,8 @@ What is differentiable
      - the input field and every :class:`~hpcom.autodiff.FiberParameters`
        leaf: loss, :math:`\beta_1…\beta_N`, :math:`\gamma`, Raman
        :math:`f_R, \tau_1, \tau_2, \tau_b`, shock time, loss-spectrum values,
-       multicore coupling matrix, core mismatch and skew
+       multicore coupling matrix, core mismatch and skew, PMD coefficient
+       (the realisation's axes stay fixed)
    * - :func:`~hpcom.autodiff.amplify`, :func:`~hpcom.autodiff.propagate_link`
      - the field, fiber parameters, EDFA gain and noise figure (the ASE is
        reparameterised: :math:`n = \sigma(G, F)\,\xi` with :math:`\xi` drawn
@@ -46,7 +47,8 @@ What is differentiable
      - the field, the DBP stage's link model and :math:`\xi`, or the
        parameters of any JAX function used as the compensation stage (e.g.
        a neural network); dispersion compensation, front end (low-pass,
-       resampling), matched filter and equaliser are exact and
+       resampling), matched filter and equalisers — including the MIMO
+       butterfly FIR, solved by the normal equations — are exact and
        differentiable
    * - :func:`~hpcom.autodiff.information_rates`, :func:`~hpcom.autodiff.bit_llrs`,
        :func:`~hpcom.autodiff.snr_db`

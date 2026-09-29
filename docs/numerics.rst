@@ -635,6 +635,15 @@ filtered scheme) and the shock factor :math:`S = 1 - \tau_\mathrm{shock}\omega`.
   returning non-finite values. RK4IP conserves the photon number to its
   fourth-order error [Heidt2009]_.
 
+**PMD** (:doc:`physics`, *Polarisation-mode dispersion*) makes the linear
+operator depend on :math:`z`: a linear sub-step from :math:`z_a` to
+:math:`z_b` is the scalar :math:`e^{(z_b-z_a)\hat L}` times the birefringence
+pieces of the sections it crosses, in the order crossed (backward and
+negative composition sub-steps cross them in reverse). Each piece is exact,
+so every split-step scheme keeps its order and exact invertibility; RK4IP
+uses the pieces of each step's first and second half for its two
+interaction-picture maps.
+
 Measured (``tests/backends/test_gnlse_conformance.py``): on the linearised
 equation around a CW pump — Raman gain, modulation instability, β₂…β₅ and
 the shock factor at once — the error falls by 4.0 (Strang) and 15–16
@@ -680,6 +689,11 @@ Backends and GPU policy
      - ✓ (GPU)
      - ✓ (GPU)
      - linear terms exact
+   * - PMD (coarse-step Manakov-PMD), fixed-step schemes
+     - ✓
+     - ✓ (GPU)
+     - ✓ (GPU)
+     - exact
 
 ``benchmarks/backends.py`` times every backend on the same spans and prints
 its deviation from NumPy (≈ 1e-14 for every scheme);

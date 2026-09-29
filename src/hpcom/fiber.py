@@ -139,6 +139,18 @@ class Fiber(HpcomModel):
     shock_time_s
         :math:`\tau_\mathrm{shock}`; ``None``: :math:`1/\omega_0 = \lambda_0/2\pi c`.
         Only with ``self_steepening``.
+    pmd_ps_per_sqrt_km
+        PMD coefficient :math:`D_\mathrm{PMD}` in ps/√km (0: none; SSMF ≈
+        0.05–0.1). Random birefringence by the coarse-step Manakov-PMD model:
+        the span's mean differential group delay is :math:`D_\mathrm{PMD}\sqrt L`
+        (:func:`~hpcom.backends.base.pmd_realization`). Dual polarisation,
+        single core and a fixed-step scheme only.
+    pmd_sections
+        Birefringence sections per span (independent random axes); ≳ 50 for
+        Maxwellian DGD statistics.
+    pmd_seed
+        Seed of this span's realisation; :meth:`hpcom.Link.from_spans` gives
+        every span its own.
     backend
         Registered propagator name (``"numpy"``, ``"tensorflow"``,
         ``"numpy-linear"``, …); see :mod:`hpcom.backends`.
@@ -161,6 +173,9 @@ class Fiber(HpcomModel):
     raman: RamanResponse | None = None
     self_steepening: bool = False
     shock_time_s: float | None = Field(default=None, ge=0)
+    pmd_ps_per_sqrt_km: float = Field(default=0.0, ge=0)
+    pmd_sections: int = Field(default=100, ge=1)
+    pmd_seed: int = Field(default=0, ge=0)
     backend: str = "numpy"
 
     @classmethod
@@ -225,6 +240,15 @@ class Fiber(HpcomModel):
                 "self_steepening makes the Kerr step non-integrable: use scheme='rk4ip' "
                 f"(got {self.scheme.method!r})"
             )
+        if self.pmd_ps_per_sqrt_km > 0:
+            if self.polarization != "dual":
+                raise ValueError("PMD needs polarization='dual' (the Manakov-PMD equation)")
+            if self.n_cores > 1:
+                raise ValueError("PMD is not implemented for multicore fibers")
+            if self.scheme.method == "ssfm-local-error":
+                raise ValueError(
+                    "PMD needs a fixed-step scheme; the adaptive local-error method is not supported"
+                )
         if self.loss_spectrum is not None:
             carrier = float(self.loss_spectrum.at(self.wavelength_m))
             if not math.isclose(carrier, self.alpha_db_per_km, rel_tol=1e-9, abs_tol=1e-12):
@@ -233,6 +257,11 @@ class Fiber(HpcomModel):
                     f"wavelength_m ({carrier} dB/km); use Fiber.with_loss_spectrum"
                 )
         return self
+
+    @property
+    def mean_dgd_s(self) -> float:
+        """Mean differential group delay of the span, :math:`D_\\mathrm{PMD}\\sqrt L`, in s."""
+        return self.pmd_ps_per_sqrt_km * 1e-12 * math.sqrt(self.length_km)
 
     @property
     def carrier_frequency_hz(self) -> float:
@@ -371,6 +400,17 @@ class Fiber(HpcomModel):
             log_factor=1.0 / 3.0 if rule == "cle" else 1.0,
         )
 
+    def with_pmd(
+        self, pmd_ps_per_sqrt_km: float, *, sections: int | None = None, seed: int | None = None
+    ) -> Fiber:
+        """Copy with polarisation-mode dispersion (``sections``/``seed`` default: this fiber's)."""
+        changes: dict[str, object] = {"pmd_ps_per_sqrt_km": pmd_ps_per_sqrt_km}
+        if sections is not None:
+            changes["pmd_sections"] = sections
+        if seed is not None:
+            changes["pmd_seed"] = seed
+        return self.replace(**changes)
+
     def with_loss_spectrum(self, spectrum: LossSpectrum | None) -> Fiber:
         """Copy with frequency-dependent loss; ``alpha_db_per_km`` becomes its value at λ₀.
 
@@ -410,6 +450,11 @@ class Fiber(HpcomModel):
         w = 2.0 * math.pi * frequency_offset_hz
         if w == 0.0:
             return self
+        if self.pmd_ps_per_sqrt_km > 0:
+            raise ValueError(
+                "a fiber with PMD cannot be recentred on another frequency (its birefringence "
+                "is not a Taylor series); back-propagate it full-field or without PMD"
+            )
         betas = self.dispersion_betas
         shifted = [
             math.fsum(

@@ -62,10 +62,20 @@ class Link(HpcomModel):
         *,
         strict: bool = True,
     ) -> Link:
-        """Uniform link of ``n_spans`` × (``fiber`` → ``amplifier``)."""
+        """Uniform link of ``n_spans`` × (``fiber`` → ``amplifier``).
+
+        With PMD, span ``i`` gets its own birefringence realisation: its
+        ``pmd_seed`` is drawn from ``SeedSequence(fiber.pmd_seed)``.
+        """
         if n_spans < 1:
             raise ValueError(f"n_spans must be >= 1, got {n_spans}")
-        return cls(elements=(fiber, amplifier) * n_spans, strict=strict)
+        if fiber.pmd_ps_per_sqrt_km == 0:
+            return cls(elements=(fiber, amplifier) * n_spans, strict=strict)
+        seeds = np.random.SeedSequence(fiber.pmd_seed).generate_state(n_spans, dtype=np.uint32)
+        elements: list[LinkComponent] = []
+        for seed in seeds:
+            elements += [fiber.replace(pmd_seed=int(seed)), amplifier]
+        return cls(elements=tuple(elements), strict=strict)
 
     # ---- summary quantities ---------------------------------------------
 

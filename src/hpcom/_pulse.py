@@ -152,6 +152,19 @@ def matched_filter(
     convolution: Convolution,
 ) -> npt.NDArray[np.complex128]:
     """RRC matched filter + symbol-rate sampling along the last axis (inverse of :func:`pulse_shape`)."""
+    y = matched_filter_samples(field, samples_per_symbol, roll_off, span_symbols, convolution)
+    out: npt.NDArray[np.complex128] = y[..., ::samples_per_symbol]
+    return out
+
+
+def matched_filter_samples(
+    field: npt.ArrayLike,
+    samples_per_symbol: int,
+    roll_off: float,
+    span_symbols: int | None,
+    convolution: Convolution,
+) -> npt.NDArray[np.complex128]:
+    """The RRC matched filter's output at the input rate (before symbol-rate sampling)."""
     x = np.asarray(field, dtype=np.complex128)
     sps = samples_per_symbol
     n = x.shape[-1]
@@ -159,13 +172,11 @@ def matched_filter(
         raise ValueError(f"field length {n} is not a multiple of samples_per_symbol={sps}")
     if convolution == "circular":
         _, h_rx = _circular_responses(n, sps, roll_off, span_symbols)
-        y = np.fft.ifft(np.fft.fft(x, axis=-1) * h_rx, axis=-1)
-    else:
-        if span_symbols is None:
-            raise ValueError("linear convolution needs a finite pulse_span_symbols")
-        y = _linear_same(x, fir_taps(sps, roll_off, span_symbols) / np.sqrt(sps))
-    out: npt.NDArray[np.complex128] = y[..., ::sps]
-    return out
+        y: npt.NDArray[np.complex128] = np.fft.ifft(np.fft.fft(x, axis=-1) * h_rx, axis=-1)
+        return y
+    if span_symbols is None:
+        raise ValueError("linear convolution needs a finite pulse_span_symbols")
+    return _linear_same(x, fir_taps(sps, roll_off, span_symbols) / np.sqrt(sps))
 
 
 def _linear_same(

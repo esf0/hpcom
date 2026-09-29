@@ -57,6 +57,9 @@ class StubFiber:
     loss_spectrum: Any = None
     raman: Any = None
     effective_shock_time_s: float = 0.0
+    pmd_ps_per_sqrt_km: float = 0.0
+    pmd_sections: int = 100
+    pmd_seed: int = 0
 
 
 #: Step placements every nonlinear backend must support (docs/numerics.rst).

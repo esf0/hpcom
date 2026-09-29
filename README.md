@@ -17,9 +17,10 @@ datasets.
   nonlinearity — symmetric split-step (uniform or logarithmic steps, Kerr
   position, effective Kerr length), fourth-order Yoshida/Suzuki compositions,
   RK4IP and adaptive local-error control; the generalised NLSE (dispersion of
-  any order, loss spectrum, Raman response, self-steepening); weakly coupled
-  multicore fibers; EDFAs with ASE; noise loading by SNR/OSNR; digital
-  back-propagation at realistic sampling rates.
+  any order, loss spectrum, Raman response, self-steepening); polarisation-mode
+  dispersion (coarse-step Manakov-PMD) with a 2×2 MIMO receiver equaliser;
+  weakly coupled multicore fibers; EDFAs with ASE; noise loading by SNR/OSNR;
+  digital back-propagation at realistic sampling rates.
 - **Backends**: NumPy (reference, always available), JAX (recommended for
   GPU) and TensorFlow (GPU, kept for systems where it suits better); a
   registry and conformance test suites for adding more.

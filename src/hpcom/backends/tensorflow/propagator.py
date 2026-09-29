@@ -28,6 +28,7 @@ from hpcom.backends.base import (
     ALL_METHODS,
     LOCAL_ERROR_GROWTH,
     Propagator,
+    apply_jones,
     attenuation_per_m,
     check_field_shape,
     core_axis,
@@ -35,6 +36,8 @@ from hpcom.backends.base import (
     kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    pmd_pieces,
+    pmd_realization,
     shock_factor,
     signed_length_m,
     split_step_sequence,
@@ -72,11 +75,35 @@ def _moveaxis(x: Any, source: int, destination: int) -> Any:
     return tf.transpose(x, order)
 
 
-def _disperse(spectrum: Any, m: Any, lin: Any, axis: int | None) -> Any:
-    """Exact linear step of length ``m``: ``lin = (exponent,)`` or, multicore, ``(exponent, V, V†)``."""
+def _pmd_move(spectrum: Any, lin: Any, move: Any) -> Any:
+    """Birefringence pieces of linear move ``move``: ``lin = (exponent, axes, sections, lengths, ω·Δβ₁/2)``."""
+    _, axes, sections, lengths, half_dgd = lin
+    for p in tf.range(tf.shape(sections)[1]):  # the widest move (shapes relax on retracing)
+        b = tf.cast(tf.gather(axes, sections[move, p]), tf.complex128)
+        theta = half_dgd * lengths[move, p]
+        c = tf.cast(tf.cos(theta), tf.complex128)
+        s = tf.cast(tf.sin(theta), tf.complex128)
+        x, y = spectrum[..., 0, :], spectrum[..., 1, :]
+        spectrum = tf.stack(
+            [
+                (c - 1j * s * b[2]) * x - 1j * s * (b[0] - 1j * b[1]) * y,
+                -1j * s * (b[0] + 1j * b[1]) * x + (c + 1j * s * b[2]) * y,
+            ],
+            axis=-2,
+        )
+    return spectrum
+
+
+def _disperse(spectrum: Any, m: Any, lin: Any, axis: int | None, move: Any = None) -> Any:
+    """Exact linear step of length ``m``.
+
+    ``lin = (exponent,)``; multicore ``(exponent, V, V†)``; with PMD
+    ``(exponent, axes, sections, lengths, ω·Δβ₁/2)`` and the move's index.
+    """
     mc = tf.cast(m, tf.complex128)
     if axis is None:
-        return spectrum * tf.exp(lin[0] * mc)
+        out = spectrum * tf.exp(lin[0] * mc)
+        return _pmd_move(out, lin, move) if len(lin) == 5 else out
     exponent, vectors, adjoint = lin
     x = _moveaxis(spectrum, axis, -1)  # (..., n, M)
     z = tf.linalg.matmul(adjoint, x[..., None])[..., 0] * tf.exp(exponent * mc)
@@ -95,10 +122,10 @@ def _ssfm_sequence(
     axis: int | None,
 ) -> Any:
     """``D(m_J) N(c_J) … N(c_1) D(m_0)``: ``linear`` (J+1 lengths), ``phases`` (J, γ_eff·c)."""
-    spectrum = _disperse(tf.signal.fft(a), linear[0], lin, axis)
+    spectrum = _disperse(tf.signal.fft(a), linear[0], lin, axis, 0)
     for i in tf.range(tf.shape(phases)[0]):
         a = _kerr(tf.signal.ifft(spectrum), phases[i], dual, response if filtered else None)
-        spectrum = _disperse(tf.signal.fft(a), linear[i + 1], lin, axis)
+        spectrum = _disperse(tf.signal.fft(a), linear[i + 1], lin, axis, i + 1)
     return tf.signal.ifft(spectrum)
 
 
@@ -133,15 +160,15 @@ def _rk4ip(
         h = sizes[i]
         hc = tf.cast(h, tf.complex128)
 
-        def half(x: Any, h: Any = h) -> Any:
-            return tf.signal.ifft(_disperse(tf.signal.fft(x), h / 2.0, lin, axis))
+        def half(x: Any, move: Any, h: Any = h) -> Any:  # 2i: z → z + h/2; 2i + 1: to z + h
+            return tf.signal.ifft(_disperse(tf.signal.fft(x), h / 2.0, lin, axis, move))
 
-        a_ip = half(a)
-        k1 = half(hc * kerr(a))
+        a_ip = half(a, 2 * i)
+        k1 = half(hc * kerr(a), 2 * i)
         k2 = hc * kerr(a_ip + k1 / 2.0)
         k3 = hc * kerr(a_ip + k2 / 2.0)
-        k4 = hc * kerr(half(a_ip + k3))
-        a = half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
+        k4 = hc * kerr(half(a_ip + k3, 2 * i + 1))
+        a = half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0, 2 * i + 1) + k4 / 6.0
     return a
 
 
@@ -236,11 +263,30 @@ class TensorFlowPropagator(Propagator):
                 dual,
             )
             return np.asarray(out.numpy(), dtype=np.complex128)
+        pmd = pmd_realization(fiber)
+        if pmd is not None and direction == "backward":
+            a = apply_jones(a, pmd.output_rotation.conj().T)
         if fiber.n_cores == 1:
             lin: tuple[Any, ...] = (
                 tf.constant(linear_operator_exponent(a.shape[-1], dt_s, fiber)),
             )
             axis = None
+            if pmd is not None:
+                start = 0.0 if direction == "forward" else fiber.length_km * 1e3
+                moves = (
+                    np.repeat(sizes / 2.0, 2)
+                    if fiber.scheme.method == "rk4ip"
+                    else split_step_sequence(fiber, direction)[0]
+                )
+                sections, lengths = pmd_pieces(pmd, start, moves)
+                omega = 2.0 * np.pi * np.fft.fftfreq(a.shape[-1], d=dt_s)
+                lin = (
+                    *lin,
+                    tf.constant(pmd.axes),
+                    tf.constant(sections, tf.int64),
+                    tf.constant(lengths),
+                    tf.constant(omega * (pmd.dgd_per_m / 2.0)),
+                )
         else:
             vectors, exponent = multicore_linear_system(a.shape[-1], dt_s, fiber)
             adjoint = np.conj(np.swapaxes(vectors, -1, -2))
@@ -299,4 +345,6 @@ class TensorFlowPropagator(Propagator):
                 axis,
             )
         result: ComplexArray = np.asarray(out.numpy(), dtype=np.complex128)
+        if pmd is not None and direction == "forward":
+            result = apply_jones(result, pmd.output_rotation)
         return result

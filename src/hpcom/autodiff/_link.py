@@ -163,6 +163,7 @@ def backpropagate(
     nonlinearity_scale: Array = 1.0,
     frequency_offset_hz: float = 0.0,
     gradient: GradientMode = "store",
+    include_pmd: bool = False,
 ) -> Array:
     r"""Digital back-propagation through the link model — as :class:`~hpcom.DigitalBackPropagation`.
 
@@ -171,21 +172,26 @@ def backpropagate(
     \xi\gamma` (``nonlinearity_scale``, may be traced), each amplifier as
     the noiseless :math:`1/\sqrt G`. A channel at ``frequency_offset_hz``
     uses the recentred fiber and removes the constant phase
-    :math:`D(\omega_k)L`, as the NumPy implementation does. Differentiable
-    in ``field``, ``params`` (the receiver's link model — learned DBP) and
-    ``nonlinearity_scale``.
+    :math:`D(\omega_k)L`, as the NumPy implementation does. PMD is left
+    out of the backward model unless ``include_pmd`` (an ideal receiver).
+    Differentiable in ``field``, ``params`` (the receiver's link model —
+    learned DBP) and ``nonlinearity_scale``.
     """
     ps = link_parameters(link) if params is None else params
     x = jnp.asarray(field)
     phase = 0.0
     for el, p in zip(reversed(link.elements), reversed(ps), strict=True):
         if isinstance(el, Fiber):
+            assert isinstance(p, FiberParameters)
+            if not include_pmd and el.pmd_ps_per_sqrt_km > 0:
+                el = el.replace(pmd_ps_per_sqrt_km=0.0)
+                p = p._replace(pmd_ps_per_sqrt_km=None)
             model = el.recentred(frequency_offset_hz).with_steps(
                 steps_per_span, step_distribution, step_log_factor
             )
             if scheme is not None:
                 model = model.replace(scheme=scheme)
-            q, phi = _recentred(p, frequency_offset_hz)  # type: ignore[arg-type]
+            q, phi = _recentred(p, frequency_offset_hz)
             q = q._replace(gamma_per_w_per_km=q.gamma_per_w_per_km * nonlinearity_scale)
             x = propagate(x, model, dt_s, params=q, direction="backward", gradient=gradient)
             phase = phase + phi * el.length_km
@@ -229,4 +235,5 @@ def compensate(
         else nonlinearity_scale,
         frequency_offset_hz=frequency_offset_hz,
         gradient=gradient,
+        include_pmd=dbp.include_pmd,
     )

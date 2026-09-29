@@ -260,7 +260,7 @@ too (with :math:`\tfrac89\gamma`). Raman scattering is implemented for single
 polarisation only: averaging the vector Raman response over random
 birefringence leaves terms in the Stokes vector of the field, not only in
 its total power [LinAgrawal2003]_, so the scalar form would be wrong for
-dual polarisation; it will come with the vector (PMD) model. For multicore
+dual polarisation; it is the next step after the PMD model. For multicore
 fibers every term acts per core.
 
 **Numerics.** Raman scattering keeps the Kerr sub-step a pure phase, so
@@ -364,6 +364,85 @@ Per-channel digital back-propagation uses it (`Digital back-propagation`_).
 .. [Stolen1989] R. H. Stolen, J. P. Gordon, W. J. Tomlinson, H. A. Haus,
    "Raman response function of silica-core fibers," *J. Opt. Soc. Am. B*
    6(6), 1159–1166, 1989.
+
+
+Polarisation-mode dispersion
+----------------------------
+
+A dual-polarisation fiber with ``pmd_ps_per_sqrt_km`` :math:`D_\mathrm{PMD} > 0`
+has random birefringence, modelled by the coarse-step Manakov-PMD method
+[Marcuse1997]_: the span is cut into ``pmd_sections`` :math:`N` sections of
+length :math:`L_s = L/N`; section :math:`k` is a Haar-random rotation
+:math:`R_k \in SU(2)` followed by linear birefringence with differential group
+delay :math:`\tau_s`. The rapidly varying birefringence is averaged into the
+Manakov Kerr term (8/9 γ), which is invariant under every :math:`R_k`. With
+:math:`Q_k = R_k\cdots R_1` the span's Jones matrix is
+
+.. math::
+
+   T(\omega) = Q_N\prod_{k=N}^{1} e^{-i\omega\tau_s(\hat b_k\cdot\vec\sigma)/2},
+   \qquad \hat b_k\cdot\vec\sigma = Q_k^\dagger\sigma_3Q_k,
+
+so every linear sub-step applies, exactly, the pieces of the sections it
+crosses (:math:`e^{-i\theta\hat b\cdot\vec\sigma} = \cos\theta - i\sin\theta\,
+\hat b\cdot\vec\sigma`, :math:`\theta = \omega\tau_s\ell/2L_s`) and the span
+ends with :math:`Q_N`. The axes :math:`\hat b_k` are independent and uniform
+on the Poincaré sphere, so :math:`\langle\tau^2\rangle = N\tau_s^2` and, for
+large :math:`N`, the DGD is Maxwellian; hpcom sets
+:math:`\tau_s = \langle\tau\rangle\sqrt{3\pi/8N}` with the mean DGD
+:math:`\langle\tau\rangle = D_\mathrm{PMD}\sqrt L` (``Fiber.mean_dgd_s``).
+The realisation is fixed by ``pmd_seed``, so backward propagation is its
+exact inverse; :meth:`Link.from_spans <hpcom.Link.from_spans>` gives every
+span its own seed. Sign: :math:`\beta_1`-like, the slow principal state is
+delayed by :math:`+\tau/2`. Every fixed-step scheme and every backend
+(``numpy-linear`` too) supports it; not with multicore fibers or the
+adaptive scheme.
+
+**Receiver.** PMD mixes the polarisations with a frequency-dependent
+unitary matrix that a per-stream complex gain cannot undo;
+``equalize="mimo"`` fits a 2×2 butterfly FIR at 2 samples/symbol by least
+squares to the transmitted data (:mod:`hpcom.receiver`). Digital
+back-propagation leaves PMD out of its link model by default (a receiver does
+not know the realisation); ``DigitalBackPropagation(include_pmd=True)`` is the
+ideal, full-field-only alternative.
+
+**Checks** [``tests/backends/test_pmd_conformance.py`` on every backend,
+``tests/numerical/test_pmd.py``]:
+
+.. list-table::
+   :widths: 35 65
+
+   * - DGD statistics
+     - 1500 realisations of 100 km at 1 ps/√km (100 sections): mean DGD
+       within 3 % of :math:`D_\mathrm{PMD}\sqrt L`, :math:`\langle\tau^2\rangle`
+       within 6 % of :math:`3\pi\langle\tau\rangle^2/8`, Kolmogorov–Smirnov test
+       against the Maxwell distribution passed (p > 0.01; measured p = 0.47 at
+       2000).
+   * - Principal states
+     - A 60 ps pulse launched in the slow / fast principal state of a 400 km
+       fiber (DGD from :math:`iT^\dagger dT/d\omega`) arrives :math:`\pm\tau/2`
+       late, to 1 %.
+   * - Rotation invariance
+     - Without DGD the output is :math:`Q_N` times the Manakov solution (1e-10),
+       with dispersion, loss and Kerr.
+   * - Numerics
+     - Unitary Jones matrix; every backend equals ``numpy-linear`` (1e-13);
+       split-step schemes invert exactly; Strang, Suzuki and RK4IP keep orders
+       2, 4 and 4.
+   * - System
+     - Over 10 × 80 km at 0.2 ps/√km a per-stream gain leaves < 15 dB SNR,
+       the MIMO equaliser > 40 dB (single carrier and 3-channel WDM); a known
+       2×2 FIR channel is inverted to rounding; DBP without PMD at 2
+       samples/symbol plus MIMO gains > 3 dB over CD compensation; ideal
+       PMD-aware DBP inverts a noiseless link exactly.
+
+Not modelled yet: the polarisation-averaged vector Raman term, and PMD in
+multicore fibers.
+
+.. [Marcuse1997] D. Marcuse, C. R. Menyuk, P. K. A. Wai, "Application of the
+   Manakov-PMD equation to studies of signal propagation in optical fibers
+   with randomly varying birefringence," *J. Lightw. Technol.* 15(9),
+   1735–1746, 1997.
 
 
 Multicore fibers

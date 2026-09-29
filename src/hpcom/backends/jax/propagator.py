@@ -30,6 +30,7 @@ from hpcom.backends.base import (
     ALL_METHODS,
     LOCAL_ERROR_GROWTH,
     Propagator,
+    apply_jones,
     attenuation_per_m,
     check_field_shape,
     core_axis,
@@ -37,6 +38,8 @@ from hpcom.backends.base import (
     kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    pmd_pieces,
+    pmd_realization,
     shock_factor,
     signed_length_m,
     split_step_sequence,
@@ -57,10 +60,33 @@ def _kerr(a: Any, phase_per_watt: Any, dual: bool, response: Any = None) -> Any:
     return a * jnp.exp(1j * phase_per_watt * p)
 
 
-def _disperse(spectrum: Any, m: Any, lin: Any, axis: int | None) -> Any:
-    """Exact linear step of length ``m``: ``lin = (exponent,)`` or, multicore, ``(exponent, V, V†)``."""
+def _pmd_move(spectrum: Any, lin: Any, move: Any) -> Any:
+    """Birefringence pieces of linear move ``move``: ``lin = (exponent, axes, sections, lengths, ω·Δβ₁/2)``."""
+    _, axes, sections, lengths, half_dgd = lin
+    for p in range(sections.shape[1]):  # static: the widest move
+        b = axes[sections[move, p]]
+        theta = half_dgd * lengths[move, p]
+        c, s = jnp.cos(theta), jnp.sin(theta)
+        x, y = spectrum[..., 0, :], spectrum[..., 1, :]
+        spectrum = jnp.stack(
+            [
+                (c - 1j * s * b[2]) * x - 1j * s * (b[0] - 1j * b[1]) * y,
+                -1j * s * (b[0] + 1j * b[1]) * x + (c + 1j * s * b[2]) * y,
+            ],
+            axis=-2,
+        )
+    return spectrum
+
+
+def _disperse(spectrum: Any, m: Any, lin: Any, axis: int | None, move: Any = None) -> Any:
+    """Exact linear step of length ``m``.
+
+    ``lin = (exponent,)``; multicore ``(exponent, V, V†)``; with PMD
+    ``(exponent, axes, sections, lengths, ω·Δβ₁/2)`` and the move's index.
+    """
     if axis is None:
-        return spectrum * jnp.exp(lin[0] * m)
+        out = spectrum * jnp.exp(lin[0] * m)
+        return _pmd_move(out, lin, move) if len(lin) == 5 else out
     exponent, vectors, adjoint = lin
     x = jnp.moveaxis(spectrum, axis, -1)  # (..., n, M)
     z = jnp.matmul(adjoint, x[..., None])[..., 0] * jnp.exp(exponent * m)
@@ -90,9 +116,9 @@ def _sequence(
 ) -> Any:
     def step(j: Any, spectrum: Any) -> Any:
         x = _kerr(jnp.fft.ifft(spectrum, axis=-1), phases[j], dual, response if filtered else None)
-        return _disperse(jnp.fft.fft(x, axis=-1), linear[j + 1], lin, axis)
+        return _disperse(jnp.fft.fft(x, axis=-1), linear[j + 1], lin, axis, j + 1)
 
-    spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], lin, axis)
+    spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], lin, axis, 0)
     return jnp.fft.ifft(lax.fori_loop(0, phases.shape[0], step, spectrum), axis=-1)
 
 
@@ -121,15 +147,16 @@ def _rk4ip(
     def step(i: Any, a: Any) -> Any:
         h = sizes[i]
 
-        def half(x: Any) -> Any:
-            return jnp.fft.ifft(_disperse(jnp.fft.fft(x, axis=-1), h / 2.0, lin, axis), axis=-1)
+        def half(x: Any, move: Any) -> Any:  # move 2i: z → z + h/2; 2i + 1: z + h/2 → z + h
+            spectrum = _disperse(jnp.fft.fft(x, axis=-1), h / 2.0, lin, axis, move)
+            return jnp.fft.ifft(spectrum, axis=-1)
 
-        a_ip = half(a)
-        k1 = half(h * kerr(a))
+        a_ip = half(a, 2 * i)
+        k1 = half(h * kerr(a), 2 * i)
         k2 = h * kerr(a_ip + k1 / 2.0)
         k3 = h * kerr(a_ip + k2 / 2.0)
-        k4 = h * kerr(half(a_ip + k3))
-        return half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
+        k4 = h * kerr(half(a_ip + k3, 2 * i + 1))
+        return half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0, 2 * i + 1) + k4 / 6.0
 
     return lax.fori_loop(0, sizes.shape[0], step, a)
 
@@ -224,11 +251,30 @@ class JaxPropagator(Propagator):
                     dual,
                 )
                 return np.asarray(out, dtype=np.complex128)
+            pmd = pmd_realization(fiber)
+            if pmd is not None and direction == "backward":
+                a = apply_jones(a, pmd.output_rotation.conj().T)
             if fiber.n_cores == 1:
                 lin: tuple[Any, ...] = (
                     jnp.asarray(linear_operator_exponent(a.shape[-1], dt_s, fiber)),
                 )
                 axis = None
+                if pmd is not None:
+                    start = 0.0 if direction == "forward" else fiber.length_km * 1e3
+                    moves = (
+                        np.repeat(sizes / 2.0, 2)
+                        if scheme.method == "rk4ip"
+                        else split_step_sequence(fiber, direction)[0]
+                    )
+                    sections, lengths = pmd_pieces(pmd, start, moves)
+                    omega = 2.0 * np.pi * np.fft.fftfreq(a.shape[-1], d=dt_s)
+                    lin = (
+                        *lin,
+                        jnp.asarray(pmd.axes),
+                        jnp.asarray(sections),
+                        jnp.asarray(lengths),
+                        jnp.asarray(omega * (pmd.dgd_per_m / 2.0)),
+                    )
             else:
                 vectors, exponent = multicore_linear_system(a.shape[-1], dt_s, fiber)
                 adjoint = np.conj(np.swapaxes(vectors, -1, -2))
@@ -287,4 +333,6 @@ class JaxPropagator(Propagator):
                     axis,
                 )
             result: ComplexArray = np.asarray(out, dtype=np.complex128)
+        if pmd is not None and direction == "forward":
+            result = apply_jones(result, pmd.output_rotation)
         return result

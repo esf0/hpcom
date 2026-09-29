@@ -21,6 +21,8 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     kerr_filter_response,
+    pmd_pieces,
+    pmd_realization,
     split_step_substeps,
     step_sizes_m,
 )
@@ -63,6 +65,9 @@ class FiberParameters(NamedTuple):
         Values of the loss table (its wavelengths stay fixed).
     ``coupling_per_km``, ``core_beta0_offsets_per_km``, ``core_beta1_offsets_ps_per_km``
         Multicore coupling matrix, propagation-constant mismatch and skew.
+    ``pmd_ps_per_sqrt_km``
+        PMD coefficient (the birefringence axes of the realisation stay
+        fixed by the fiber's ``pmd_seed``).
     """
 
     alpha_db_per_km: Array | None
@@ -77,6 +82,7 @@ class FiberParameters(NamedTuple):
     coupling_per_km: Array | None = None
     core_beta0_offsets_per_km: Array | None = None
     core_beta1_offsets_ps_per_km: Array | None = None
+    pmd_ps_per_sqrt_km: Array | None = None
 
     @classmethod
     def from_fiber(cls, fiber: Fiber) -> FiberParameters:
@@ -111,6 +117,9 @@ class FiberParameters(NamedTuple):
             core_beta0_offsets_per_km=None if beta0 is None else arr(np.asarray(beta0) * _KM),
             core_beta1_offsets_ps_per_km=(
                 None if skew is None else arr(np.asarray(skew) * _KM / _PS)
+            ),
+            pmd_ps_per_sqrt_km=(
+                arr(fiber.pmd_ps_per_sqrt_km) if fiber.pmd_ps_per_sqrt_km > 0 else None
             ),
         )
 
@@ -151,6 +160,8 @@ class FiberParameters(NamedTuple):
             changes["core_beta1_offsets_s_per_m"] = (
                 np.asarray(self.core_beta1_offsets_ps_per_km, np.float64) * _PS / _KM
             )
+        if self.pmd_ps_per_sqrt_km is not None:
+            changes["pmd_ps_per_sqrt_km"] = val(self.pmd_ps_per_sqrt_km)
         out = fiber.replace(**changes)
         if self.loss_spectrum_db_per_km is not None and fiber.loss_spectrum is not None:
             spectrum = fiber.loss_spectrum.replace(
@@ -180,6 +191,8 @@ class _Operators(NamedTuple):
     coupling: _Coupling | None
     gamma_eff: Array  # 1/(W·km), with the Manakov 8/9
     alpha_carrier: Array  # 1/km, for the effective Kerr length
+    pmd_axes: Array | None = None  # (N, 3) birefringence axes of the sections
+    pmd_half_dgd: Array | None = None  # (n,) ω·Δβ₁/2 per km
 
 
 def _omega_ps(n: int, dt_s: float) -> np.ndarray:
@@ -267,7 +280,19 @@ def _operators(
         coupling = _Coupling(c, vectors, values)
     gamma = jnp.asarray(params.gamma_per_w_per_km, rdtype)
     gamma_eff = gamma * 8.0 / 9.0 if fiber.polarization == "dual" else gamma
-    return _Operators(exponent, response, shock, coupling, gamma_eff, alpha_carrier)
+    pmd_axes = pmd_half_dgd = None
+    realization = pmd_realization(fiber)
+    if realization is not None and params.pmd_ps_per_sqrt_km is not None:
+        n_sec = realization.axes.shape[0]
+        tau_s_ps = params.pmd_ps_per_sqrt_km * math.sqrt(
+            fiber.length_km * 3.0 * math.pi / (8.0 * n_sec)
+        )
+        dgd_per_km = tau_s_ps / (fiber.length_km / n_sec)  # ps/km
+        pmd_axes = jnp.asarray(realization.axes, rdtype)
+        pmd_half_dgd = omega * dgd_per_km / 2.0
+    return _Operators(
+        exponent, response, shock, coupling, gamma_eff, alpha_carrier, pmd_axes, pmd_half_dgd
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,9 +360,42 @@ def _coupled_jvp(primals: tuple[Array, ...], tangents: tuple[Array, ...]) -> tup
     return out, d_out
 
 
-def _disperse(spectrum: Array, m: Array, ops: _Operators, axis: int | None) -> Array:
-    """Exact linear step of ``m`` km in the spectral domain (coupling by eigen-decomposition)."""
+def _pmd(spectrum: Array, ops: _Operators, pieces: Any, *, inverse: bool = False) -> Array:
+    """The birefringence pieces of one move, ``pieces = (sections (P,), lengths_km (P,))``.
+
+    Each piece is :math:`e^{-i\\theta(\\hat b\\cdot\\vec\\sigma)}`,
+    :math:`\\theta = \\omega\\Delta\\beta_1\\ell/2`; ``inverse`` undoes the move
+    (pieces reversed, lengths negated).
+    """
+    if ops.pmd_axes is None or ops.pmd_half_dgd is None:
+        return spectrum
+    sections, lengths = pieces
+    order = range(sections.shape[0] - 1, -1, -1) if inverse else range(sections.shape[0])
+    for p in order:
+        b = ops.pmd_axes[sections[p]]
+        theta = ops.pmd_half_dgd * (-lengths[p] if inverse else lengths[p])
+        c, s = jnp.cos(theta), jnp.sin(theta)
+        x, y = spectrum[..., 0, :], spectrum[..., 1, :]
+        spectrum = jnp.stack(
+            [
+                (c - 1j * s * b[2]) * x - 1j * s * (b[0] - 1j * b[1]) * y,
+                -1j * s * (b[0] + 1j * b[1]) * x + (c + 1j * s * b[2]) * y,
+            ],
+            axis=-2,
+        )
+    return spectrum
+
+
+def _disperse(
+    spectrum: Array, m: Array, ops: _Operators, axis: int | None, pieces: Any = None
+) -> Array:
+    """Exact linear step of ``m`` km in the spectral domain (coupling by eigen-decomposition).
+
+    With PMD, ``pieces`` are the move's birefringence pieces (:func:`_pmd`).
+    """
     out = spectrum * jnp.exp(ops.exponent * m)
+    if ops.pmd_axes is not None:
+        return _pmd(out, ops, pieces)
     if ops.coupling is None or axis is None:
         return out
     c = ops.coupling
@@ -354,15 +412,29 @@ def _kerr_step(spectrum: Array, phase: Array, ops: _Operators, dual: bool) -> Ar
 
 
 def _sequence_step(
-    spectrum: Array, phase: Array, m: Array, ops: _Operators, dual: bool, axis: int | None
+    spectrum: Array,
+    phase: Array,
+    m: Array,
+    ops: _Operators,
+    dual: bool,
+    axis: int | None,
+    pieces: Any = None,
 ) -> Array:
-    return _disperse(_kerr_step(spectrum, phase, ops, dual), m, ops, axis)
+    return _disperse(_kerr_step(spectrum, phase, ops, dual), m, ops, axis, pieces)
 
 
 def _sequence_inverse_step(
-    spectrum: Array, phase: Array, m: Array, ops: _Operators, dual: bool, axis: int | None
+    spectrum: Array,
+    phase: Array,
+    m: Array,
+    ops: _Operators,
+    dual: bool,
+    axis: int | None,
+    pieces: Any = None,
 ) -> Array:
-    return _kerr_step(_disperse(spectrum, -m, ops, axis), -phase, ops, dual)
+    undone = _pmd(spectrum, ops, pieces, inverse=True) if ops.pmd_axes is not None else spectrum
+    scalar = ops._replace(pmd_axes=None, pmd_half_dgd=None)
+    return _kerr_step(_disperse(undone, -m, scalar, axis), -phase, ops, dual)
 
 
 def _scan(step: Any, carry: Array, xs: Any, gradient: GradientMode) -> Array:
@@ -389,16 +461,26 @@ def _scan(step: Any, carry: Array, xs: Any, gradient: GradientMode) -> Array:
 
 
 def _reversible_sequence(
-    spectrum: Array, ops: _Operators, phases: Array, linear: Array, dual: bool, axis: int | None
+    spectrum: Array,
+    ops: _Operators,
+    phases: Array,
+    linear: Array,
+    dual: bool,
+    axis: int | None,
+    pieces: tuple[Array, Array],
 ) -> Array:
-    """The split-step loop with an O(1)-memory exact adjoint (see :func:`propagate`)."""
+    """The split-step loop with an O(1)-memory exact adjoint (see :func:`propagate`).
+
+    ``pieces`` (the PMD pieces of each move, fixed) ride along the scan as
+    constants; everything else gets its cotangent.
+    """
 
     @jax.custom_vjp
     def run(s0: Array, ops: _Operators, phases: Array, linear: Array) -> Array:
         return lax.scan(
-            lambda s, x: (_sequence_step(s, x[0], x[1], ops, dual, axis), None),
+            lambda s, x: (_sequence_step(s, x[0], x[1], ops, dual, axis, x[2]), None),
             s0,
-            (phases, linear),
+            (phases, linear, pieces),
         )[0]
 
     def fwd(s0: Array, ops: _Operators, phases: Array, linear: Array) -> tuple[Array, Any]:
@@ -410,10 +492,14 @@ def _reversible_sequence(
 
         def back(carry: Any, x: Any) -> tuple[Any, Any]:
             s_next, g_next, g_ops = carry
-            phase, m = x
-            s = _sequence_inverse_step(s_next, phase, m, ops, dual, axis)
+            phase, m, piece = x
+            s = _sequence_inverse_step(s_next, phase, m, ops, dual, axis, piece)
             _, vjp = jax.vjp(
-                lambda s_, o_, p_, m_: _sequence_step(s_, p_, m_, o_, dual, axis), s, ops, phase, m
+                lambda s_, o_, p_, m_: _sequence_step(s_, p_, m_, o_, dual, axis, piece),
+                s,
+                ops,
+                phase,
+                m,
             )
             g_s, g_o, g_p, g_m = vjp(g_next)
             g_ops = jax.tree_util.tree_map(jnp.add, g_ops, g_o)
@@ -421,12 +507,29 @@ def _reversible_sequence(
 
         zeros = jax.tree_util.tree_map(jnp.zeros_like, ops)
         (_, g_s0, g_ops), (g_phases, g_linear) = lax.scan(
-            back, (out, g, zeros), (phases, linear), reverse=True
+            back, (out, g, zeros), (phases, linear, pieces), reverse=True
         )
         return g_s0, g_ops, g_phases, g_linear
 
     run.defvjp(fwd, bwd)
     return run(spectrum, ops, phases, linear)
+
+
+def _moves(
+    fiber: Fiber, direction: Direction, lengths_m: np.ndarray, rdtype: Any
+) -> tuple[np.ndarray, np.ndarray]:
+    """PMD pieces of consecutive moves: ``(J, P)`` sections and lengths in km (NumPy constants).
+
+    One zero-length dummy piece per move without PMD. Kept in NumPy so that
+    the reversible adjoint can close over them.
+    """
+    realization = pmd_realization(fiber)
+    dtype = np.dtype(rdtype)
+    if realization is None:
+        return np.zeros((lengths_m.size, 1), np.int32), np.zeros((lengths_m.size, 1), dtype)
+    start = 0.0 if direction == "forward" else fiber.length_km * 1e3
+    sections, lengths = pmd_pieces(realization, start, lengths_m)
+    return sections.astype(np.int32), (lengths / _KM).astype(dtype)
 
 
 def _kerr_lengths_km(fiber: Fiber, sub_m: np.ndarray, ops: _Operators, rdtype: Any) -> Array:
@@ -459,29 +562,51 @@ def _propagate(
     ops = _operators(params, fiber, n, dt_s, rdtype)
     dual = fiber.polarization == "dual"
     axis = core_axis(fiber) if fiber.n_cores > 1 else None
+    realization = pmd_realization(fiber)
+    rotation = None if realization is None else jnp.asarray(realization.output_rotation, a.dtype)
+    if rotation is not None and direction == "backward":
+        a = jnp.einsum("pq,...qn->...pn", jnp.conj(rotation).T, a)
     if fiber.scheme.method == "rk4ip":
-        sizes = jnp.asarray(step_sizes_m(fiber, direction) / _KM, rdtype)
-        return _rk4ip(a, ops, sizes, dual, axis, gradient)
-    linear_m, sub_m, _ = split_step_substeps(fiber, direction)
-    linear = jnp.asarray(linear_m / _KM, rdtype)
-    phases = ops.gamma_eff * _kerr_lengths_km(fiber, sub_m, ops, rdtype)
-    spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], ops, axis)
-    if gradient == "reversible":
-        spectrum = _reversible_sequence(spectrum, ops, phases, linear[1:], dual, axis)
+        sizes_m = step_sizes_m(fiber, direction)
+        sec, plen = _moves(fiber, direction, np.repeat(sizes_m / 2.0, 2), rdtype)
+        halves = ((sec[0::2], plen[0::2]), (sec[1::2], plen[1::2]))
+        out = _rk4ip(a, ops, jnp.asarray(sizes_m / _KM, rdtype), halves, dual, axis, gradient)
     else:
-        spectrum = _scan(
-            lambda s, x: _sequence_step(s, x[0], x[1], ops, dual, axis),
-            spectrum,
-            (phases, linear[1:]),
-            gradient,
-        )
-    return jnp.fft.ifft(spectrum, axis=-1)
+        linear_m, sub_m, _ = split_step_substeps(fiber, direction)
+        linear = jnp.asarray(linear_m / _KM, rdtype)
+        phases = ops.gamma_eff * _kerr_lengths_km(fiber, sub_m, ops, rdtype)
+        sec, plen = _moves(fiber, direction, linear_m, rdtype)
+        spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], ops, axis, (sec[0], plen[0]))
+        pieces = (sec[1:], plen[1:])
+        if gradient == "reversible":
+            spectrum = _reversible_sequence(spectrum, ops, phases, linear[1:], dual, axis, pieces)
+        else:
+            spectrum = _scan(
+                lambda s, x: _sequence_step(s, x[0], x[1], ops, dual, axis, x[2]),
+                spectrum,
+                (phases, linear[1:], pieces),
+                gradient,
+            )
+        out = jnp.fft.ifft(spectrum, axis=-1)
+    if rotation is not None and direction == "forward":
+        out = jnp.einsum("pq,...qn->...pn", rotation, out)
+    return out
 
 
 def _rk4ip(
-    a: Array, ops: _Operators, sizes: Array, dual: bool, axis: int | None, gradient: GradientMode
+    a: Array,
+    ops: _Operators,
+    sizes: Array,
+    halves: Any,
+    dual: bool,
+    axis: int | None,
+    gradient: GradientMode,
 ) -> Array:
-    """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), as in the backends."""
+    """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), as in the backends.
+
+    ``halves`` are the PMD pieces of each step's first (z → z + h/2) and
+    second (z + h/2 → z + h) half.
+    """
 
     def nonlinear(x: Array) -> Array:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
         out = 1j * ops.gamma_eff * _power(x, dual, ops.response) * x
@@ -489,18 +614,21 @@ def _rk4ip(
             out = jnp.fft.ifft(jnp.fft.fft(out, axis=-1) * ops.shock, axis=-1)
         return out
 
-    def step(x: Array, h: Array) -> Array:
-        def half(y: Array) -> Array:
-            return jnp.fft.ifft(_disperse(jnp.fft.fft(y, axis=-1), h / 2.0, ops, axis), axis=-1)
+    def step(x: Array, xs: Any) -> Array:
+        h, first, second = xs
 
-        a_ip = half(x)
-        k1 = half(h * nonlinear(x))
+        def half(y: Array, pieces: Any) -> Array:
+            spectrum = _disperse(jnp.fft.fft(y, axis=-1), h / 2.0, ops, axis, pieces)
+            return jnp.fft.ifft(spectrum, axis=-1)
+
+        a_ip = half(x, first)
+        k1 = half(h * nonlinear(x), first)
         k2 = h * nonlinear(a_ip + k1 / 2.0)
         k3 = h * nonlinear(a_ip + k2 / 2.0)
-        k4 = h * nonlinear(half(a_ip + k3))
-        return half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0) + k4 / 6.0
+        k4 = h * nonlinear(half(a_ip + k3, second))
+        return half(a_ip + k1 / 6.0 + k2 / 3.0 + k3 / 3.0, second) + k4 / 6.0
 
-    return _scan(step, a, sizes, gradient)
+    return _scan(step, a, (sizes, halves[0], halves[1]), gradient)
 
 
 def propagate(

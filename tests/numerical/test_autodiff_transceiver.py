@@ -132,6 +132,65 @@ def test_demodulate_equals_the_receiver(name):
         )
 
 
+@pytest.mark.parametrize("name", ["dual-pilots-fir", "wdm-dual"])
+def test_mimo_demodulate_equals_the_receiver_on_a_pmd_link(name):
+    """The butterfly FIR by the normal equations vs NumPy's least squares (≈1e-8: conditioning)."""
+    tx = TRANSMITTERS[name]
+    fiber = Fiber.ssmf(80.0, n_steps=20, polarization="dual").with_pmd(0.2, sections=40)
+    link = Link.from_spans(2, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0))
+    sig = tx.generate(rng=np.random.default_rng(7))
+    y = link.propagate(sig.field, tx.dt_s, rng=np.random.default_rng(8))
+    for rx in (
+        tx.matched_receiver(cd_compensation_s2=link.total_dispersion_s2, equalize="mimo"),
+        tx.matched_receiver(
+            compensation=DigitalBackPropagation(link=link, steps_per_span=2, samples_per_symbol=2),
+            equalize="mimo",
+            mimo_taps=11,
+        ),
+    ):
+        ref = rx.reference(sig)[1]
+        expected = rx.receive(y, tx.dt_s, reference=sig).symbols
+        out = ad.demodulate(jnp.asarray(y), rx, tx.dt_s, reference=jnp.asarray(ref))
+        np.testing.assert_allclose(np.asarray(out), expected, atol=1e-7 * np.max(np.abs(expected)))
+
+
+def test_gradient_through_pmd_and_the_mimo_equaliser():
+    """d GMI / d(PMD coefficient, launch power) through a PMD link and the MIMO receiver."""
+    tx = SingleCarrierTransmitter(
+        modulation_order=16,
+        symbol_rate_hz=32e9,
+        n_symbols=256,
+        samples_per_symbol=4,
+        polarization="dual",
+    )
+    fiber = Fiber.ssmf(80.0, n_steps=10, polarization="dual").with_pmd(0.3, sections=20)
+    link = Link.from_spans(2, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0))
+    rx = tx.matched_receiver(
+        cd_compensation_s2=link.total_dispersion_s2, equalize="mimo", mimo_taps=7
+    )
+    idx = jnp.asarray(np.random.default_rng(9).integers(0, 16, (2, 256)))
+    labels = tx.resolved_constellation.bit_labels
+
+    def gmi(pmd, power):
+        points, pmf = ad.constellation(tx)
+        lp = tuple(
+            q._replace(pmd_ps_per_sqrt_km=pmd) if isinstance(q, ad.FiberParameters) else q
+            for q in ad.link_parameters(link)
+        )
+        x = ad.modulate(points[idx], tx, launch_power_dbm=power)
+        y = ad.propagate_link(x, link, tx.dt_s, key=jax.random.key(3), params=lp)
+        z = ad.demodulate(y, rx, tx.dt_s, reference=points[idx])
+        return ad.information_rates(z, idx, points, labels, pmf)[1]
+
+    f = jax.jit(gmi)
+    g_pmd, g_power = jax.grad(f, argnums=(0, 1))(jnp.asarray(0.3), jnp.asarray(8.0))
+    h = 1e-5
+    fd_pmd = (float(f(0.3 + h, 8.0)) - float(f(0.3 - h, 8.0))) / (2 * h)
+    fd_power = (float(f(0.3, 8.0 + h)) - float(f(0.3, 8.0 - h))) / (2 * h)
+    assert float(g_pmd) == pytest.approx(fd_pmd, rel=1e-4, abs=1e-8)
+    assert float(g_power) == pytest.approx(fd_power, rel=1e-4, abs=1e-8)
+
+
 @pytest.mark.parametrize(
     ("config", "snr"),
     [

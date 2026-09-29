@@ -151,6 +151,12 @@ class DigitalBackPropagation(Compensator):
     backend
         Propagator for the backward fibers (``None``: each fiber's own, or
         the exact ``"numpy-linear"`` one when ``nonlinearity_scale=0``).
+    include_pmd
+        Back-propagate the fibers' PMD realisation too — an ideal receiver
+        that knows the random birefringence. ``False`` (default, realistic):
+        the backward model has no PMD, which a ``equalize="mimo"`` equaliser
+        then removes. Full-field only (a PMD fiber cannot be recentred on a
+        channel).
     """
 
     link: Link
@@ -160,6 +166,7 @@ class DigitalBackPropagation(Compensator):
     scheme: Scheme | None = None
     nonlinearity_scale: float = Field(default=1.0, ge=0.0)
     backend: str | None = None
+    include_pmd: bool = False
 
     @model_validator(mode="after")
     def _validate_invertible(self) -> DigitalBackPropagation:
@@ -191,6 +198,8 @@ class DigitalBackPropagation(Compensator):
         return out
 
     def _backward_fiber(self, fiber: Fiber, omega_k: float) -> Fiber:
+        if not self.include_pmd and fiber.pmd_ps_per_sqrt_km > 0:
+            fiber = fiber.replace(pmd_ps_per_sqrt_km=0.0)
         fiber = fiber.recentred(omega_k / (2.0 * np.pi)).with_steps(
             self.steps_per_span, self.step_distribution, self.step_log_factor
         )

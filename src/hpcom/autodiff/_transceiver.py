@@ -225,19 +225,55 @@ def _resample(x: Array, n_samples: int) -> Array:
     return jnp.fft.ifft(out, axis=-1) * (n_samples / n_in)
 
 
-def _matched_filter(receiver: PulseShapedReceiver, x: Array, sps: int) -> Array:
+def _matched_filter_samples(receiver: PulseShapedReceiver, x: Array, sps: int) -> Array:
     n = x.shape[-1]
     if n % sps:
         raise ValueError(f"field length {n} is not a multiple of samples_per_symbol={sps}")
     if receiver.convolution == "circular":
         _, h_rx = _circular_responses(n, sps, receiver.roll_off, receiver.pulse_span_symbols)
-        y = jnp.fft.ifft(jnp.fft.fft(x, axis=-1) * jnp.asarray(h_rx), axis=-1)
+        return jnp.fft.ifft(jnp.fft.fft(x, axis=-1) * jnp.asarray(h_rx), axis=-1)
+    assert receiver.pulse_span_symbols is not None
+    taps = fir_taps(sps, receiver.roll_off, receiver.pulse_span_symbols) / np.sqrt(sps)
+    return _linear_same(x, taps)
+
+
+def _matched_filter(receiver: PulseShapedReceiver, x: Array, sps: int) -> Array:
+    return _matched_filter_samples(receiver, x, sps)[..., ::sps]
+
+
+def _mimo(
+    receiver: PulseShapedReceiver, streams: Array, sps: int, reference: Array | None
+) -> Array:
+    """:func:`hpcom.receiver.mimo_equalize` after the matched filter, in JAX (normal equations)."""
+    if reference is None:
+        raise ValueError('equalize="mimo" is trained on the transmitted data: pass reference=')
+    filtered = _matched_filter_samples(receiver, streams, sps)
+    n_slots = filtered.shape[-1] // sps
+    if sps == 1:
+        per = 1
+    elif sps % 2 == 0:
+        per, filtered = 2, filtered[..., :: sps // 2]
     else:
-        assert receiver.pulse_span_symbols is not None
-        y = _linear_same(
-            x, fir_taps(sps, receiver.roll_off, receiver.pulse_span_symbols) / np.sqrt(sps)
-        )
-    return y[..., ::sps]
+        per, filtered = 2, _resample(filtered, 2 * n_slots)
+    dual = receiver.polarization == "dual"
+    x = jnp.moveaxis(filtered, 0, -2) if dual else filtered[..., None, :]
+    ref = jnp.asarray(reference)
+    t = jnp.moveaxis(ref, 0, -2) if dual else ref[..., None, :]
+    lead, n_pol, n_samples = x.shape[:-2], x.shape[-2], x.shape[-1]
+    half = (receiver.mimo_taps - 1) // 2
+    index = (per * np.arange(n_slots)[:, None] + np.arange(-half, half + 1)) % n_samples
+    train = np.arange(n_slots) if receiver.pilots is None else receiver.pilots.data_indices(n_slots)
+    flat_x = x.reshape(-1, n_pol, n_samples)
+    flat_t = t.reshape(-1, n_pol, t.shape[-1])
+
+    def one(xc: Array, tc: Array) -> Array:
+        r = xc[:, index].transpose(1, 0, 2).reshape(n_slots, n_pol * receiver.mimo_taps)
+        rt = r[train]
+        taps = jnp.linalg.solve(jnp.conj(rt.T) @ rt, jnp.conj(rt.T) @ tc.T)
+        return (r @ taps).T
+
+    y = jax.vmap(one)(flat_x, flat_t).reshape(*lead, n_pol, n_slots)
+    return jnp.moveaxis(y, -2, 0) if dual else y[..., 0, :]
 
 
 def _cd_compensate(receiver: PulseShapedReceiver, x: Array, dt_s: float) -> Array:
@@ -310,7 +346,9 @@ def demodulate(
     ``(*streams, n_data)``.
 
     ``reference`` — the transmitted data symbols ``(*streams, n_data)`` —
-    feeds the data-aided equaliser (``equalize="auto"`` without pilots).
+    feeds the data-aided equaliser (``equalize="auto"`` without pilots)
+    and trains the ``equalize="mimo"`` butterfly FIR (by the normal
+    equations, differentiable).
     With ``receiver.compensation`` set, the stage is ``compensation`` (any
     JAX function ``(samples, dt_s, frequency_offset_hz) → samples``, e.g. a
     neural network) or, by default, the receiver's
@@ -348,6 +386,11 @@ def demodulate(
                 [run(streams[..., c, :], dt_c, float(f)) for c, f in enumerate(offsets)], axis=-2
             )
         sps = sps_out
+    if receiver.equalize == "mimo":
+        slots = _mimo(receiver, streams, sps, reference)
+        if receiver.pilots is None:
+            return slots
+        return slots[..., receiver.pilots.data_indices(slots.shape[-1])]
     slots = _matched_filter(receiver, streams, sps)
     return _equalize(receiver, slots, reference)
 

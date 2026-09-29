@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -242,6 +244,7 @@ def uses_fast_path(fiber: FiberLike) -> bool:
         fiber.n_cores == 1
         and fiber.raman is None
         and fiber.effective_shock_time_s == 0.0
+        and float(getattr(fiber, "pmd_ps_per_sqrt_km", 0.0)) == 0.0
         and fiber.step_distribution == "uniform"
         and s.method == "ssfm"
         and s.nonlinear_position == 0.5
@@ -401,6 +404,135 @@ def shock_factor(n_samples: int, dt_s: float, fiber: FiberLike) -> npt.NDArray[n
         return None
     omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
     return np.asarray(1.0 - tau * omega, dtype=np.float64)
+
+
+# ---------------------------------------------------------------------------
+# Polarisation-mode dispersion (coarse-step Manakov-PMD model)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PMDRealization:
+    r"""One random birefringence realisation of a span (see :func:`pmd_realization`).
+
+    ``axes[k]`` is the unit Stokes vector :math:`\hat b_k` of section ``k``'s
+    birefringence, ``output_rotation`` the frequency-independent Jones matrix
+    :math:`Q_N` applied at the span output, ``dgd_per_m`` the differential
+    group delay per metre :math:`\Delta\beta_1 = \tau_s/L_s`.
+    """
+
+    axes: npt.NDArray[np.float64]
+    output_rotation: npt.NDArray[np.complex128]
+    dgd_per_m: float
+    section_length_m: float
+
+
+@lru_cache(maxsize=64)
+def _pmd_frames(
+    seed: int, n_sections: int
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.complex128]]:
+    """Section axes and output rotation of a Haar-random cascade (cached per seed)."""
+    rng = np.random.default_rng(seed)
+    sigma3 = np.diag([1.0, -1.0]).astype(np.complex128)
+    q = np.eye(2, dtype=np.complex128)
+    axes = np.empty((n_sections, 3))
+    for k in range(n_sections):
+        v = rng.standard_normal(4)
+        v /= np.linalg.norm(v)
+        a, b = complex(v[0], v[3]), complex(v[2], v[1])
+        q = np.array([[a, -np.conj(b)], [b, np.conj(a)]]) @ q
+        m = q.conj().T @ sigma3 @ q  # = b·σ
+        axes[k] = (m[1, 0].real, m[1, 0].imag, m[0, 0].real)
+    axes.flags.writeable = False
+    q.flags.writeable = False
+    return axes, q
+
+
+def pmd_realization(fiber: FiberLike) -> PMDRealization | None:
+    r"""The span's birefringence realisation, or ``None`` without PMD.
+
+    Coarse-step model (Marcuse, Menyuk & Wai 1997): ``fiber.pmd_sections``
+    sections of length :math:`L_s = L/N`, each a Haar-random rotation
+    :math:`R_k` followed by linear birefringence with DGD
+    :math:`\tau_s = \langle\tau\rangle\sqrt{3\pi/8N}`, so that the span's DGD is
+    Maxwellian with mean :math:`\langle\tau\rangle = D_\mathrm{PMD}\sqrt L`
+    (:math:`\langle\tau^2\rangle = N\tau_s^2`). Writing
+    :math:`Q_k = R_k\cdots R_1`, the span's Jones matrix is
+    :math:`Q_N\prod_k e^{-i\omega\tau_s(\hat b_k\cdot\vec\sigma)/2}` with
+    :math:`\hat b_k\cdot\vec\sigma = Q_k^\dagger\sigma_3Q_k`, and the Manakov
+    Kerr term commutes with every :math:`Q_k`. The realisation is a function
+    of ``fiber.pmd_seed`` and ``pmd_sections`` only.
+    """
+    coefficient = float(getattr(fiber, "pmd_ps_per_sqrt_km", 0.0))
+    if coefficient == 0.0:
+        return None
+    n = int(fiber.pmd_sections)  # type: ignore[attr-defined]
+    axes, rotation = _pmd_frames(int(fiber.pmd_seed), n)  # type: ignore[attr-defined]
+    mean_dgd = coefficient * 1e-12 * math.sqrt(fiber.length_km)
+    length_m = fiber.length_km * 1e3
+    tau_s = mean_dgd * math.sqrt(3.0 * math.pi / (8.0 * n))
+    return PMDRealization(axes, rotation, tau_s / (length_m / n), length_m / n)
+
+
+def pmd_pieces(
+    realization: PMDRealization, start_m: float, lengths_m: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.float64]]:
+    """Split consecutive signed linear moves into per-section pieces.
+
+    Starting at ``start_m`` (0 forward, ``L`` backward), move ``lengths_m[j]``
+    after ``lengths_m[j-1]``. Returns ``(sections, lengths)`` of shape
+    ``(J, P)``: the sections crossed by move ``j`` in the order crossed and
+    the signed length in each, padded with zero-length pieces.
+    """
+    ls = realization.section_length_m
+    n = realization.axes.shape[0]
+    tol = 1e-9 * ls
+    rows: list[list[tuple[int, float]]] = []
+    z = float(start_m)
+    for m in np.asarray(lengths_m, dtype=np.float64):
+        row: list[tuple[int, float]] = []
+        remaining = float(m)
+        while abs(remaining) > tol:
+            if remaining > 0:
+                k = min(max(math.floor((z + tol) / ls), 0), n - 1)
+                step = remaining if k == n - 1 else min(remaining, (k + 1) * ls - z)
+            else:
+                k = min(max(math.ceil((z - tol) / ls) - 1, 0), n - 1)
+                step = remaining if k == 0 else max(remaining, k * ls - z)
+            row.append((k, step))
+            z += step
+            remaining -= step
+        rows.append(row)
+    width = max(1, max(len(r) for r in rows))
+    sections = np.zeros((len(rows), width), dtype=np.intp)
+    pieces = np.zeros((len(rows), width))
+    for j, row in enumerate(rows):
+        for p, (k, step) in enumerate(row):
+            sections[j, p], pieces[j, p] = k, step
+    return sections, pieces
+
+
+def pmd_rotate(
+    spectrum: npt.NDArray[np.complex128],
+    axis: npt.NDArray[np.float64],
+    theta: npt.NDArray[np.float64],
+) -> npt.NDArray[np.complex128]:
+    r""":math:`e^{-i\theta(\hat b\cdot\vec\sigma)}` on a ``(..., 2, n)`` spectrum, per frequency."""
+    c, s = np.cos(theta), np.sin(theta)
+    b1, b2, b3 = float(axis[0]), float(axis[1]), float(axis[2])
+    x, y = spectrum[..., 0, :], spectrum[..., 1, :]
+    out = np.empty_like(spectrum)
+    out[..., 0, :] = (c - 1j * s * b3) * x - 1j * s * (b1 - 1j * b2) * y
+    out[..., 1, :] = -1j * s * (b1 + 1j * b2) * x + (c + 1j * s * b3) * y
+    return out
+
+
+def apply_jones(
+    field: ComplexArray, matrix: npt.NDArray[np.complex128]
+) -> npt.NDArray[np.complex128]:
+    """A frequency-independent 2×2 Jones matrix on the polarisation axis (−2) of a field."""
+    out = np.asarray(np.einsum("pq,...qn->...pn", matrix, field), dtype=np.complex128)
+    return out
 
 
 def effective_gamma_per_m(fiber: FiberLike) -> float:

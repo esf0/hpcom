@@ -45,6 +45,17 @@ Processing chain of every receiver:
        (a genie; needs ``reference=`` in :meth:`Receiver.receive`). This is
        the classic removal of the mean nonlinear phase rotation used in
        fiber-nonlinearity studies (pre-v1 hpcom's ``nonlinear_shift``).
+   ``"mimo"`` (pulse-shaped receivers)
+       A fractionally spaced (2 samples/symbol) butterfly FIR of
+       ``mimo_taps`` taps — 2×2 for dual polarisation, per channel —
+       fitted by least squares to the transmitted data symbols (the genie
+       of ``"data_aided"``; needs ``reference=``). Pilots are equalised
+       too but do not train it: one constant pilot symbol cannot identify
+       a multi-tap filter, nor tell X from Y.
+       :math:`y_p[k] = \sum_{q}\sum_{j} w_{pq,j}\,x_q[2k+j]`. Undoes
+       polarisation rotation, PMD and residual linear ISI; it is the
+       least-squares limit of the adaptive (CMA/LMS) equalisers of real
+       receivers.
 4. **Hard decision** to the nearest constellation point, then bit labels —
    or distribution-matcher decoding when ``dm`` is set.
 """
@@ -66,7 +77,7 @@ from hpcom._model import (
     Polymorphic,
     UInt8ArrayView,
 )
-from hpcom._pulse import Convolution, matched_filter
+from hpcom._pulse import Convolution, matched_filter, matched_filter_samples
 from hpcom._typing import ComplexArray, Polarization
 from hpcom.dsp.compensation import Compensator
 from hpcom.dsp.frontend import lowpass, resample
@@ -80,9 +91,9 @@ from hpcom.transmitter import (
 )
 
 #: An equaliser that is actually applied (``"auto"`` resolves to one of these).
-ResolvedEqualizer = Literal["none", "unit_power", "pilot", "data_aided"]
-#: Per-stream complex-gain equaliser selection (see the module docstring).
-EqualizerMode = Literal["auto", "none", "unit_power", "pilot", "data_aided"]
+ResolvedEqualizer = Literal["none", "unit_power", "pilot", "data_aided", "mimo"]
+#: Equaliser selection (see the module docstring).
+EqualizerMode = Literal["auto", "none", "unit_power", "pilot", "data_aided", "mimo"]
 
 
 class Detection(TypedDict):
@@ -421,6 +432,9 @@ class PulseShapedReceiver(Receiver, ABC):
     samples returned by :meth:`front_end`, in place of
     ``cd_compensation_s2``/``_s3`` (which must then be 0). The matched filter
     then runs at the stage's ``samples_per_symbol``.
+
+    ``mimo_taps`` (odd) is the length of the ``equalize="mimo"`` FIR, in
+    samples at 2 samples/symbol (1 when the matched filter runs at 1).
     """
 
     samples_per_symbol: int = Field(default=8, ge=2)
@@ -429,10 +443,13 @@ class PulseShapedReceiver(Receiver, ABC):
     convolution: Convolution = "circular"
     pilots: PilotConfig | None = None
     compensation: Polymorphic[Compensator] | None = None
+    mimo_taps: int = Field(default=15, ge=1)
 
     @model_validator(mode="after")
     def _validate_pulse_rx(self) -> PulseShapedReceiver:
         _check_compensation_exclusive(self, self.compensation)
+        if self.mimo_taps % 2 == 0:
+            raise ValueError(f"mimo_taps must be odd, got {self.mimo_taps}")
         if self.convolution == "linear" and self.pulse_span_symbols is None:
             raise ValueError('convolution="linear" needs a finite `pulse_span_symbols`')
         if self.equalize == "pilot" and self.pilots is None:
@@ -556,6 +573,8 @@ class PulseShapedReceiver(Receiver, ABC):
         samples_per_symbol: int,
     ) -> Detection:
         """Matched filter at ``samples_per_symbol`` → split data/pilot slots → :meth:`_detect`."""
+        if self.equalize == "mimo":
+            return self._demodulate_mimo(streams, reference_data, samples_per_symbol)
         slots = matched_filter(
             streams,
             samples_per_symbol,
@@ -575,6 +594,87 @@ class PulseShapedReceiver(Receiver, ABC):
             pilot_values=pilot_values,
             reference_data=reference_data,
         )
+
+    def _demodulate_mimo(
+        self,
+        streams: npt.NDArray[np.complex128],
+        reference_data: npt.NDArray[np.complex128] | None,
+        samples_per_symbol: int,
+    ) -> Detection:
+        """Matched filter → 2 samples/symbol → least-squares butterfly FIR → :meth:`_detect`."""
+        filtered = matched_filter_samples(
+            streams, samples_per_symbol, self.roll_off, self.pulse_span_symbols, self.convolution
+        )
+        n_slots = filtered.shape[-1] // samples_per_symbol
+        if samples_per_symbol == 1:
+            per = 1
+        elif samples_per_symbol % 2 == 0:
+            per, filtered = 2, filtered[..., :: samples_per_symbol // 2]
+        else:
+            per, filtered = 2, resample(filtered, 2 * n_slots)
+        if reference_data is None:
+            raise ValueError(
+                'equalize="mimo" is trained on the transmitted data: '
+                "receive(field, dt_s, reference=sent)"
+            )
+        train = np.arange(n_slots) if self.pilots is None else self.pilots.data_indices(n_slots)
+        targets = np.asarray(reference_data, dtype=np.complex128)
+        slots = mimo_equalize(
+            filtered, per, self.mimo_taps, self.polarization == "dual", train, targets
+        )
+        gain = np.ones(slots.shape[:-1], dtype=np.complex128)
+        if self.pilots is None:
+            return self._detect(slots, gain=gain, equalizer="mimo", reference_data=reference_data)
+        d_idx = self.pilots.data_indices(n_slots)
+        p_idx = self.pilots.pilot_indices(n_slots)
+        return self._detect(
+            slots[..., d_idx],
+            raw_pilots=slots[..., p_idx],
+            pilot_values=np.full(p_idx.size, self.pilots.symbol, dtype=np.complex128),
+            gain=gain,
+            equalizer="mimo",
+        )
+
+
+def mimo_equalize(
+    samples: npt.NDArray[np.complex128],
+    samples_per_symbol: int,
+    n_taps: int,
+    dual: bool,
+    train_slots: npt.NDArray[np.intp],
+    targets: npt.NDArray[np.complex128],
+) -> npt.NDArray[np.complex128]:
+    r"""Least-squares butterfly FIR equaliser (see ``equalize="mimo"``).
+
+    ``samples``: ``(*pol, *channels, S·n)`` at ``S`` = ``samples_per_symbol``
+    (1 or 2); ``targets``: ``(*pol, *channels, len(train_slots))``. For each
+    channel, the taps :math:`w` minimise :math:`\sum_{k\in\text{train}}
+    |t_p[k] - \sum_{q,j} w_{pq,j}\,x_q[Sk + j]|^2` (circular indices,
+    :math:`j = -(T-1)/2 … (T-1)/2`); returns the equalised symbols
+    ``(*pol, *channels, n)``.
+    """
+    x = np.asarray(samples, dtype=np.complex128)
+    t = np.asarray(targets, dtype=np.complex128)
+    if dual:  # (2, *ch, N) → (*ch, 2, N)
+        x, t = np.moveaxis(x, 0, -2), np.moveaxis(t, 0, -2)
+    else:
+        x, t = x[..., None, :], t[..., None, :]
+    lead = x.shape[:-2]
+    n_pol, n_samples = x.shape[-2], x.shape[-1]
+    n_slots = n_samples // samples_per_symbol
+    half = (n_taps - 1) // 2
+    index = (
+        samples_per_symbol * np.arange(n_slots)[:, None] + np.arange(-half, half + 1)
+    ) % n_samples
+    flat_x = x.reshape(-1, n_pol, n_samples)
+    flat_t = t.reshape(-1, n_pol, t.shape[-1])
+    out = np.empty((flat_x.shape[0], n_pol, n_slots), dtype=np.complex128)
+    for c in range(flat_x.shape[0]):
+        regressors = flat_x[c][:, index].transpose(1, 0, 2).reshape(n_slots, n_pol * n_taps)
+        taps, *_ = np.linalg.lstsq(regressors[train_slots], flat_t[c].T, rcond=None)
+        out[c] = (regressors @ taps).T
+    y = out.reshape(*lead, n_pol, n_slots)
+    return np.moveaxis(y, -2, 0) if dual else y[..., 0, :]
 
 
 class SingleCarrierReceiver(PulseShapedReceiver):

@@ -85,6 +85,16 @@ CASES: dict[str, tuple[Fiber, tuple[int, ...], float]] = {
         (512,),
         2e-13,
     ),
+    "manakov-pmd": (
+        _SSMF.replace(polarization="dual").with_pmd(0.5, sections=40, seed=7),
+        (2, 512),
+        2e-12,
+    ),
+    "rk4ip-pmd": (
+        _SSMF.replace(polarization="dual", scheme="rk4ip").with_pmd(0.5, sections=40, seed=8),
+        (2, 512),
+        2e-12,
+    ),
     "multicore-ring": (
         MulticoreFiber.from_fiber(
             _SSMF, ring_coupling(3, 2e-3), core_beta0_offsets_per_m=[0, 1e-3, -2e-3]

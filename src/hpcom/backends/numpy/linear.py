@@ -15,10 +15,14 @@ from hpcom._typing import ComplexArray, Direction, FiberLike
 from hpcom.backends.base import (
     ALL_METHODS,
     Propagator,
+    apply_jones,
     check_field_shape,
     core_axis,
     linear_operator_exponent,
     multicore_linear_system,
+    pmd_pieces,
+    pmd_realization,
+    pmd_rotate,
     signed_length_m,
 )
 
@@ -41,8 +45,23 @@ class LinearNumpyPropagator(Propagator):
         length_m = signed_length_m(fiber, direction)
         if fiber.n_cores == 1:
             transfer = np.exp(linear_operator_exponent(a.shape[-1], dt_s, fiber) * length_m)
-            out: ComplexArray = np.fft.ifft(np.fft.fft(a, axis=-1) * transfer, axis=-1)
-            return out
+            pmd = pmd_realization(fiber)
+            if pmd is None:
+                out: ComplexArray = np.fft.ifft(np.fft.fft(a, axis=-1) * transfer, axis=-1)
+                return out
+            # T = Q_N Π_k e^{−iωτ_s b_k·σ/2}; backward is its inverse (Q_N† first).
+            if direction == "backward":
+                a = apply_jones(a, pmd.output_rotation.conj().T)
+            spectrum = np.fft.fft(a, axis=-1) * transfer
+            start = 0.0 if direction == "forward" else fiber.length_km * 1e3
+            sections, lengths = pmd_pieces(pmd, start, np.array([length_m]))
+            half_dgd = np.pi * np.fft.fftfreq(a.shape[-1], d=dt_s) * pmd.dgd_per_m
+            for k, ell in zip(sections[0], lengths[0], strict=True):
+                spectrum = pmd_rotate(spectrum, pmd.axes[k], half_dgd * ell)
+            field = np.fft.ifft(spectrum, axis=-1)
+            if direction == "forward":
+                field = apply_jones(field, pmd.output_rotation)
+            return field
         vectors, exponent = multicore_linear_system(a.shape[-1], dt_s, fiber)
         axis = core_axis(fiber)
         x = np.moveaxis(np.fft.fft(a, axis=-1), axis, -1)  # (..., n, M)

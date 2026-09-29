@@ -264,6 +264,10 @@ class OFDMReceiver(Receiver):
         _check_compensation_exclusive(self, self.compensation)
         if self.equalize == "pilot" and self.ofdm.n_pilots == 0:
             raise ValueError('equalize="pilot" requires ofdm.pilot_subcarrier_indices')
+        if self.equalize == "mimo":
+            raise ValueError(
+                'equalize="mimo" is for pulse-shaped receivers (OFDM equalises per subcarrier)'
+            )
         return self
 
     def compatibility_issues(self, transmitter: Transmitter) -> list[str]:

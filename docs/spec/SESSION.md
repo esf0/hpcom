@@ -80,7 +80,18 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   equal to the NumPy chain to 1e-12; example 11 (end-to-end GS + launch
   power through 20×80 km, +0.05 b/sym). Open: JaxPropagator could delegate
   to the autodiff core; OFDM not in autodiff yet.
-- Laser phase noise, PMD, frequency offset — not modelled (would need
+- PMD done (2026-09-29): `Fiber.pmd_ps_per_sqrt_km/pmd_sections/pmd_seed`,
+  coarse-step Manakov-PMD (Haar rotations, exact pieces per section,
+  output rotation Q_N), all fixed-step schemes, numpy/numpy-linear/jax/tf;
+  `Link.from_spans` seeds spans independently; receiver `equalize="mimo"`
+  (least-squares butterfly FIR at 2 sps, trained on the sent data — the
+  constant pilots cannot train it); DBP drops PMD unless `include_pmd`;
+  autodiff: PMD coefficient differentiable, MIMO by normal equations.
+  Validated: Maxwellian DGD (KS), PSP delays ±τ/2, rotation invariance,
+  orders, inverse. Open: vector Raman in Manakov (needs a full CNLSE
+  reference to validate the averaging), per-pol pilot sequences for
+  pilot-trained MIMO, CMA/LMS adaptive equalisers.
+- Laser phase noise, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.
 - JAX propagator — seam and conformance tests exist.
