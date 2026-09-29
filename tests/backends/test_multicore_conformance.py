@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pytest
@@ -56,6 +57,11 @@ class StubMulticoreFiber:
     step_log_factor: float = 1.0
     scheme: StubScheme = StubScheme()
     polarization: str = "single"
+    higher_order_betas: tuple[float, ...] = ()
+    wavelength_m: float = 1550e-9
+    loss_spectrum: Any = None
+    raman: Any = None
+    effective_shock_time_s: float = 0.0
 
     @property
     def n_cores(self) -> int:
@@ -78,6 +84,11 @@ class StubFiber:
     scheme: StubScheme = StubScheme()
     polarization: str = "single"
     n_cores: int = 1
+    higher_order_betas: tuple[float, ...] = ()
+    wavelength_m: float = 1550e-9
+    loss_spectrum: Any = None
+    raman: Any = None
+    effective_shock_time_s: float = 0.0
 
 
 def _single(f: StubMulticoreFiber, beta1_extra: float = 0.0) -> StubFiber:

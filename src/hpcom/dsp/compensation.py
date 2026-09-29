@@ -103,17 +103,18 @@ class DigitalBackPropagation(Compensator):
     **Channel frequency.** A channel centred at baseband frequency
     :math:`f_k` (:math:`\omega_k = 2\pi f_k`) and shifted to 0 Hz sees the
     fiber's linear operator at its own frequency,
-    :math:`\hat L(\omega' + \omega_k)`. Expanded around :math:`\omega_k`
-    this is the operator of a fiber with
+    :math:`\hat L(\omega' + \omega_k)`: the operator of the recentred fiber
+    (:meth:`hpcom.fiber.Fiber.recentred`), whose Taylor coefficients are
+    re-expanded about :math:`\omega_k`,
 
     .. math::
 
-        \beta_1' = \beta_1 - \beta_2\omega_k + \beta_3\omega_k^2/2,\qquad
-        \beta_2' = \beta_2 - \beta_3\omega_k,\qquad
-        \beta_3' = \beta_3,
+        \beta_m' = \sum_{n\ge m}\beta_n\,\frac{(-\omega_k)^{n-m}}{(n-m)!}
+        \qquad (\beta_1' = \beta_1 - \beta_2\omega_k + \beta_3\omega_k^2/2 - …,\
+        \beta_2' = \beta_2 - \beta_3\omega_k + …),
 
     plus the constant phase
-    :math:`\phi_0 = -\beta_1\omega_k + \beta_2\omega_k^2/2 - \beta_3\omega_k^3/6`
+    :math:`\phi_0 = \sum_n \beta_n(-\omega_k)^n/n!`
     per metre, which commutes with every step and is undone once at the end.
     The channel's walk-off :math:`\beta_1'` stays inside the split-step
     scheme (lab frame), so at the simulation rate the result equals the
@@ -121,7 +122,9 @@ class DigitalBackPropagation(Compensator):
     that wrap around the edge of the sampled band (differently on the two
     grids; negligible for an oversampled field). A receiver whose front end
     changes nothing avoids even that by back-propagating the whole field
-    once.
+    once. The link model's other terms (loss spectrum, Raman response,
+    self-steepening) are back-propagated as they are; pass a link without
+    them for the conventional Kerr-only DBP.
 
     Attributes
     ----------
@@ -179,10 +182,7 @@ class DigitalBackPropagation(Compensator):
         for el in reversed(self.link.elements):
             if isinstance(el, Fiber):
                 x = self._backward_fiber(el, omega_k).apply_inverse(x, dt_s)
-                b1, b2, b3 = el.beta1_s_per_m, el.beta2_s2_per_m, el.beta3_s3_per_m
-                phase += (
-                    -b1 * omega_k + b2 * omega_k**2 / 2.0 - b3 * omega_k**3 / 6.0
-                ) * el.length_m
+                phase += el.dispersion_phase_per_m(frequency_offset_hz) * el.length_m
             else:
                 x = el.apply_inverse(x, dt_s)  # type: ignore[attr-defined]
         if phase == 0.0:
@@ -191,23 +191,16 @@ class DigitalBackPropagation(Compensator):
         return out
 
     def _backward_fiber(self, fiber: Fiber, omega_k: float) -> Fiber:
-        b1, b2, b3 = fiber.beta1_s_per_m, fiber.beta2_s2_per_m, fiber.beta3_s3_per_m
+        fiber = fiber.recentred(omega_k / (2.0 * np.pi)).with_steps(
+            self.steps_per_span, self.step_distribution, self.step_log_factor
+        )
         changes: dict[str, object] = {
             "gamma_per_w_per_km": fiber.gamma_per_w_per_km * self.nonlinearity_scale,
-            "beta1_s_per_m": b1 - b2 * omega_k + b3 * omega_k**2 / 2.0,
-            "beta2_s2_per_m": b2 - b3 * omega_k,
         }
-        fiber = fiber.with_steps(self.steps_per_span, self.step_distribution, self.step_log_factor)
         if self.scheme is not None:
             changes["scheme"] = self.scheme
         if self.backend is not None:
             changes["backend"] = self.backend
         elif self.nonlinearity_scale == 0.0:
             changes["backend"] = "numpy-linear"
-        skew = getattr(fiber, "core_beta1_offsets_s_per_m", None)
-        if skew is not None and omega_k != 0.0:
-            # Each core's skew δβ₁,m adds the constant −δβ₁,m·ω_k at the channel frequency.
-            offsets = getattr(fiber, "core_beta0_offsets_per_m", None)
-            base = np.zeros(len(skew)) if offsets is None else np.asarray(offsets)
-            changes["core_beta0_offsets_per_m"] = base - np.asarray(skew) * omega_k
         return fiber.replace(**changes)

@@ -185,6 +185,187 @@ and ``tests/numerical/``:
        ``full_line_model(dbp=…)``: 3e-6. [``test_legacy_chain.py``]
 
 
+Generalised NLSE
+----------------
+
+For short pulses, wide bands (C+L, supercontinuum) and lasers, a
+:class:`~hpcom.Fiber` can carry the terms of the generalised NLSE
+([Agrawal2013]_, ch. 2.3; [Dudley2006]_):
+
+.. math::
+
+   \frac{\partial A}{\partial z} = -\frac{\alpha(\omega)}{2}A
+     + \sum_{n\ge1}\frac{i^{n+1}\beta_n}{n!}\frac{\partial^n A}{\partial t^n}
+     + i\gamma\left(1 + i\tau_\mathrm{shock}\frac{\partial}{\partial t}\right)
+       \left[A\int_0^\infty R(t')\,|A(t-t')|^2\,dt'\right],
+   \qquad R(t) = (1-f_R)\,\delta(t) + f_R\,h_R(t).
+
+.. list-table::
+   :widths: 30 70
+
+   * - ``higher_order_betas``
+     - :math:`(\beta_4, \beta_5, …)` in sⁿ/m, continuing β₁…β₃. In NumPy's
+       convention the linear operator is
+       :math:`\hat L(\omega) = iD(\omega) - \alpha(\omega)/2`,
+       :math:`D(\omega) = \sum_n \beta_n(-\omega)^n/n! = \beta(\omega_0-\omega) - \beta_0`,
+       applied exactly in every scheme.
+   * - ``wavelength_m``
+     - Carrier λ₀ (default 1550 nm): grid frequency :math:`\omega` is the
+       optical frequency :math:`\omega_0 - \omega`, wavelength
+       :math:`2\pi c/(\omega_0 - \omega)`.
+   * - ``loss_spectrum``
+     - :class:`~hpcom.LossSpectrum`, a table :math:`\alpha_\mathrm{dB}(\lambda)`
+       interpolated linearly (constant beyond its ends), applied per frequency
+       in the linear step. ``alpha_db_per_km`` must equal its value at λ₀
+       (:meth:`~hpcom.Fiber.with_loss_spectrum` sets it); step placement, the
+       effective Kerr length and ``loss_db`` use that carrier value.
+   * - ``raman``
+     - :class:`~hpcom.RamanResponse`: :math:`f_R` and :math:`h_R` of
+       Blow & Wood [BlowWood1989]_ (:math:`f_R = 0.18`, one damped oscillator,
+       :math:`\tau_1 = 12.2`, :math:`\tau_2 = 32` fs) or Lin & Agrawal
+       [LinAgrawal2006]_ (:math:`f_R = 0.245`, adds the anisotropic part
+       :math:`h_b`, :math:`\tau_b = 96` fs). Formulas: :mod:`hpcom.raman`.
+   * - ``self_steepening``, ``shock_time_s``
+     - The shock term with :math:`\tau_\mathrm{shock} = 1/\omega_0` (default)
+       or the given value (e.g. including the dispersion of the mode area,
+       [Dudley2006]_ eq. 3). Needs ``scheme="rk4ip"``.
+
+**Raman response in the frequency domain.** The convolution is applied as
+:math:`\operatorname{Re}\mathcal F^{-1}[\tilde R\,\mathcal F|A|^2]` with the
+exact transfer function :math:`H_R(\omega) = \int h_R(t)e^{-i\omega t}dt` of
+the model (e.g. Blow–Wood: :math:`(a^2+b^2)/((a+i\omega)^2+b^2)`,
+:math:`a = 1/\tau_2`, :math:`b = 1/\tau_1`), not with a sampled
+:math:`h_R(t)`: at telecom sample periods (tens of fs) sampling a 12 fs
+oscillation would be badly wrong, and at any rate the result does not depend
+on the time step. Since grid frequency :math:`+\omega` is the *lower* optical
+frequency, the Stokes side of a pump lies at higher :math:`\omega`, where
+:math:`\operatorname{Im}H_R < 0`. For co-polarised CW waves
+:math:`dP_s/dz = gP_pP_s` with
+:math:`g(\Delta\nu) = -2\gamma f_R\operatorname{Im}H_R(2\pi\Delta\nu)`
+(:meth:`~hpcom.RamanResponse.gain_per_w_per_m`): for SSMF
+(:math:`\gamma = 1.27` /W/km) 0.66 /W/km at 13.1 THz (Blow–Wood), 0.74 /W/km
+at 13.0 THz (Lin–Agrawal) — the measured :math:`g_R/A_\mathrm{eff}`
+[Stolen1989]_. [``test_raman_transfer_function_is_the_transform_of_the_impulse_response``,
+``test_raman_gain_peaks_near_13_thz_at_the_measured_level``]
+
+**Self-steepening.** In NumPy's convention :math:`1 + i\tau\partial_t \to
+S(\omega) = 1 - \tau\omega`; with :math:`\tau = 1/\omega_0`,
+:math:`S = (\omega_0-\omega)/\omega_0`: the Kerr term scales with the optical
+frequency, and the GNLSE conserves the photon number
+:math:`\int|\tilde A|^2/(\omega_0-\omega)\,d\omega` instead of the energy
+(which Raman scattering then transfers to lower frequencies) [BlowWood1989]_.
+
+**Polarisation and cores.** Self-steepening applies to the Manakov equation
+too (with :math:`\tfrac89\gamma`). Raman scattering is implemented for single
+polarisation only: averaging the vector Raman response over random
+birefringence leaves terms in the Stokes vector of the field, not only in
+its total power [LinAgrawal2003]_, so the scalar form would be wrong for
+dual polarisation; it will come with the vector (PMD) model. For multicore
+fibers every term acts per core.
+
+**Numerics.** Raman scattering keeps the Kerr sub-step a pure phase, so
+every split-step scheme keeps its order and exact invertibility; with
+self-steepening the Kerr sub-step has no closed form and only RK4IP applies
+(:doc:`numerics`, *Generalised NLSE terms*).
+
+**Recentring.** A field shifted by :math:`f_k` (a WDM channel moved to 0 Hz)
+propagates in a fiber exactly as it does in
+:meth:`Fiber.recentred(f_k) <hpcom.Fiber.recentred>`, up to the constant
+phase :meth:`~hpcom.Fiber.dispersion_phase_per_m`: the Taylor series is
+re-expanded, :math:`\beta_m' = \sum_{n\ge m}\beta_n(-\omega_k)^{n-m}/(n-m)!`,
+the carrier moves to :math:`\nu_0 - f_k` and, with self-steepening,
+:math:`\gamma' = \gamma(1-\tau\omega_k)`, :math:`\tau' = \tau/(1-\tau\omega_k)`.
+Per-channel digital back-propagation uses it (`Digital back-propagation`_).
+
+**Checks** [``tests/backends/test_gnlse_conformance.py`` on every backend,
+``tests/numerical/test_gnlse.py``, ``tests/unit/test_dbp.py``]:
+
+.. list-table::
+   :widths: 35 65
+
+   * - Dispersion of every order
+     - Moment theorem, :math:`\langle t\rangle(z) = \langle t\rangle_0 -
+       z\langle D'\rangle`, :math:`\sigma_t^2(z) = \sigma_t^2(0) +
+       z^2\operatorname{var}D'`, for β₁…β₆ of both signs (1e-9).
+   * - Loss spectrum
+     - Each tone of a comb attenuated by :math:`\alpha(\lambda)` at its own
+       wavelength, +f the longer one (1e-11).
+   * - Linearised GNLSE
+     - CW pump with Stokes and anti-Stokes seeds at ±13 THz, β₂…β₅, both
+       Raman models, with and without self-steepening: the exact solution of
+       the 2×2 linearised system
+       :math:`\frac{d}{dz}(x, y) = M(x, y)`, :math:`M_{11} = iD_+ + i\gamma P(S_+(1+\tilde R)-1)`,
+       :math:`M_{12} = i\gamma PS_+\tilde R`, :math:`M_{21} = -i\gamma PS_-\tilde R`,
+       :math:`M_{22} = -iD_- - i\gamma P(S_-(1+\tilde R)-1)` — Raman gain,
+       modulation instability, odd and even dispersion and the shock factor
+       together; convergence at order 2 (Strang) and 4 (Suzuki, RK4IP) to
+       1e-6. With :math:`\Delta\beta \gg \gamma P` the Stokes seed grows by
+       :math:`e^{gPL}` and the anti-Stokes one is absorbed.
+   * - Self-steepening
+     - Without dispersion :math:`\partial_zP + \alpha P + 3\gamma\tau P\partial_tP = 0`:
+       the exact solution by characteristics,
+       :math:`P(z, \xi + 3\gamma\tau P_0(\xi)L_\mathrm{eff}) = e^{-\alpha z}P_0(\xi)`,
+       at 0.3 and 0.6 of the shock distance, with and without loss, to 1e-8
+       (RK4IP, fourth order); the peak moves to the trailing edge.
+   * - Photon number
+     - Third-order soliton with β₃, Raman and self-steepening: photon number
+       conserved to its fourth-order error (1e-7), energy falling by 6–7 % as
+       the fission products shift to the red.
+   * - Soliton self-frequency shift
+     - :math:`d\langle\omega\rangle/dz = \gamma f_R\int P\,\partial_t(h_R*P)\,dt/\int P\,dt`
+       (exact without shock or loss) at 1e-5; a fundamental 50 fs soliton
+       red-shifts linearly at that rate (within 1.5 % over 8 dispersion
+       lengths), which tends to Gordon's :math:`8T_R|\beta_2|/(15T_0^4)`
+       [Gordon1986]_, [Mitschke1986]_ for long pulses (2 % at 0.5 ps, 0.2 % at
+       2 ps).
+   * - Invertibility, recentring
+     - Split-step schemes with Raman invert exactly (1e-12); a shifted field
+       in the fiber equals the unshifted one in the recentred fiber with every
+       term (6e-13); per-channel DBP equals full-field DBP shifted, for β₁…β₆,
+       loss spectrum, Raman and self-steepening.
+   * - gnlse-python 2.0
+     - The supercontinuum benchmark of [Dudley2006]_ (Fig. 3: 835 nm, 50 fs,
+       10 kW, soliton order ≈ 8.7, 15 cm of PCF with β₂…β₁₀, Blow–Wood Raman,
+       self-steepening) against gnlse-python [Redman2021]_, an independent
+       port of Dudley's code (frequency-domain interaction picture, adaptive
+       DOP853 at rtol 1e-11, run with hpcom's exact Raman kernel): RK4IP with
+       16 000 steps agrees to 7e-5, 2e-4 and 5e-4 in relative L2 of the
+       complex field at L/3, 2L/3 and L — the floor of the reference; the
+       error is 1e-3 at 8 000 steps. gnlse-python's own sampled
+       :math:`h_R(t)` (1.5 fs) changes the field by O(1), which is why hpcom
+       uses the analytic :math:`H_R`. [``test_matches_gnlse_python_on_the_dudley_supercontinuum``;
+       golden data from ``tests/numerical/_data/make_gnlse_golden.py``]
+
+.. [BlowWood1989] K. J. Blow, D. Wood, "Theoretical description of transient
+   stimulated Raman scattering in optical fibers," *IEEE J. Quantum
+   Electron.* 25(12), 2665–2673, 1989.
+
+.. [Dudley2006] J. M. Dudley, G. Genty, S. Coen, "Supercontinuum generation in
+   photonic crystal fiber," *Rev. Mod. Phys.* 78(4), 1135–1184, 2006.
+
+.. [Gordon1986] J. P. Gordon, "Theory of the soliton self-frequency shift,"
+   *Opt. Lett.* 11(10), 662–664, 1986.
+
+.. [LinAgrawal2003] Q. Lin, G. P. Agrawal, "Vector theory of stimulated Raman
+   scattering and its application to fiber-based Raman amplifiers,"
+   *J. Opt. Soc. Am. B* 20(8), 1616–1631, 2003.
+
+.. [LinAgrawal2006] Q. Lin, G. P. Agrawal, "Raman response function for silica
+   fibers," *Opt. Lett.* 31(21), 3086–3088, 2006.
+
+.. [Mitschke1986] F. M. Mitschke, L. F. Mollenauer, "Discovery of the soliton
+   self-frequency shift," *Opt. Lett.* 11(10), 659–661, 1986.
+
+.. [Redman2021] P. Redman, M. Zatorska, A. Pawlowski, D. Szulc,
+   S. Majchrowska, K. Tarnowski, "gnlse-python: open source software to
+   simulate nonlinear light propagation in optical fibers,"
+   arXiv:2110.00298, 2021.
+
+.. [Stolen1989] R. H. Stolen, J. P. Gordon, W. J. Tomlinson, H. A. Haus,
+   "Raman response function of silica-core fibers," *J. Opt. Soc. Am. B*
+   6(6), 1159–1166, 1989.
+
+
 Multicore fibers
 ----------------
 
@@ -524,22 +705,26 @@ the same symmetric split-step scheme with :math:`h \to -h`,
 (ASE cannot be undone).
 
 **Channel frequency.** A channel shifted down from :math:`\omega_k = 2\pi f_k`
-still sees the dispersion at its own frequency,
-:math:`\hat L(\omega' + \omega_k)`, which is the operator of a fiber with
+still sees the fiber at its own frequency, :math:`\hat L(\omega' + \omega_k)`:
+that of the recentred fiber (`Generalised NLSE`_, *Recentring*), with
 
 .. math::
 
-   \beta_1' = \beta_1 - \beta_2\omega_k + \tfrac12\beta_3\omega_k^2,\qquad
-   \beta_2' = \beta_2 - \beta_3\omega_k,\qquad
-   \beta_3' = \beta_3,
+   \beta_m' = \sum_{n\ge m}\beta_n\frac{(-\omega_k)^{n-m}}{(n-m)!}
+   \qquad\big(\beta_1' = \beta_1 - \beta_2\omega_k + \tfrac12\beta_3\omega_k^2 - …,\quad
+   \beta_2' = \beta_2 - \beta_3\omega_k + …\big),
 
 times the constant phase
-:math:`e^{i\phi_0 z}`, :math:`\phi_0 = -\beta_1\omega_k + \tfrac12\beta_2\omega_k^2 - \tfrac16\beta_3\omega_k^3`
-(undone once; it commutes with every step). The walk-off :math:`\beta_1'`
+:math:`e^{i\phi_0 z}`, :math:`\phi_0 = D(\omega_k) = \sum_n\beta_n(-\omega_k)^n/n!`
+(undone once; it commutes with every step); a loss spectrum and
+self-steepening move with it. The walk-off :math:`\beta_1'`
 stays in the split-step scheme, so a channel back-propagated at the
 simulation rate equals the full-field result shifted down, up to the
 wrap-around of nonlinear products at the grid edge
-[``test_frequency_offset_equals_backpropagating_the_full_field_then_shifting``].
+[``test_frequency_offset_equals_backpropagating_the_full_field_then_shifting``,
+for Kerr + β₃ and for the generalised-NLSE terms]. DBP back-propagates the
+link model as given — pass a link without Raman or self-steepening for the
+conventional Kerr-only DBP.
 
 **Checks** [``tests/numerical/test_dbp.py``]:
 

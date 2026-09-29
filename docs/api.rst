@@ -46,6 +46,9 @@ Link components
    :members:
    :show-inheritance:
 
+.. automodule:: hpcom.raman
+   :members:
+
 .. automodule:: hpcom.amplifier
    :members:
    :show-inheritance:

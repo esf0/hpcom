@@ -4,7 +4,9 @@ Implements exactly the sub-step sequences of the NumPy reference backend
 (:mod:`hpcom.backends.numpy.ssfm`) — ``D(m_J) N(c_J) … N(c_1) D(m_0)`` from
 :func:`hpcom.backends.base.split_step_sequence`, for every step placement,
 Kerr position, Kerr length and intensity filter — with the step loop
-compiled with :func:`tf.function`, for single- and multicore fibers. Uniform
+compiled with :func:`tf.function`, for single- and multicore fibers, and
+RK4IP and the local-error method, with every generalised-NLSE term (Raman
+response, self-steepening). Uniform
 plain single-core steps reuse one
 precomputed ``D(h)``; other sequences evaluate each linear sub-step on the
 device. Results agree with the NumPy backend to FFT rounding
@@ -30,9 +32,10 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     effective_gamma_per_m,
-    kerr_filter_response,
+    kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    shock_factor,
     signed_length_m,
     split_step_sequence,
     step_sizes_m,
@@ -100,14 +103,31 @@ def _ssfm_sequence(
 
 
 @tf.function(reduce_retracing=True)
-def _rk4ip(a: Any, lin: Any, sizes: Any, gamma_eff: Any, dual: bool, axis: int | None) -> Any:
+def _rk4ip(
+    a: Any,
+    lin: Any,
+    sizes: Any,
+    gamma_eff: Any,
+    response: Any,
+    shock: Any,
+    dual: bool,
+    axis: int | None,
+    filtered: bool,
+    shocked: bool,
+) -> Any:
     """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), per-step lengths."""
 
-    def kerr(x: Any) -> Any:
+    def kerr(x: Any) -> Any:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
         power = tf.math.real(x) ** 2 + tf.math.imag(x) ** 2
         if dual:
             power = tf.reduce_sum(power, axis=-2, keepdims=True)
-        return tf.complex(tf.zeros_like(power), gamma_eff * power) * x
+        if filtered:
+            spectrum = tf.signal.fft(tf.complex(power, tf.zeros_like(power))) * response
+            power = tf.math.real(tf.signal.ifft(spectrum))
+        out = tf.complex(tf.zeros_like(power), gamma_eff * power) * x
+        if shocked:
+            out = tf.signal.ifft(tf.signal.fft(out) * shock)
+        return out
 
     for i in tf.range(tf.shape(sizes)[0]):
         h = sizes[i]
@@ -226,7 +246,7 @@ class TensorFlowPropagator(Propagator):
             adjoint = np.conj(np.swapaxes(vectors, -1, -2))
             lin = (tf.constant(exponent), tf.constant(vectors), tf.constant(adjoint))
             axis = core_axis(fiber)
-        response = kerr_filter_response(a.shape[-1], dt_s, fiber)
+        response = kerr_power_response(a.shape[-1], dt_s, fiber)
         response_t = tf.constant(
             np.ones(a.shape[-1]) if response is None else response, dtype=tf.complex128
         )
@@ -253,13 +273,18 @@ class TensorFlowPropagator(Propagator):
                     f"local-error method cannot reach local_error={fiber.scheme.local_error}"
                 )
         elif fiber.scheme.method == "rk4ip":
+            shock = shock_factor(a.shape[-1], dt_s, fiber)
             out = _rk4ip(
                 tf.constant(a),
                 lin,
                 tf.constant(sizes, dtype=tf.float64),
                 tf.constant(gamma_eff, dtype=tf.float64),
+                response_t,
+                tf.constant(np.ones(a.shape[-1]) if shock is None else shock, tf.complex128),
                 dual,
                 axis,
+                response is not None,
+                shock is not None,
             )
         else:
             linear, kerr = split_step_sequence(fiber, direction)

@@ -13,6 +13,8 @@ from hpcom import (
     DigitalBackPropagation,
     Fiber,
     Link,
+    LossSpectrum,
+    RamanResponse,
     SingleCarrierReceiver,
     SingleCarrierTransmitter,
     WDMConfig,
@@ -22,11 +24,35 @@ from hpcom import (
 DT = 1 / (32e9 * 8)
 
 
-def _link(polarization: str = "dual", n_spans: int = 2, beta3: float = 1.2e-40) -> Link:
+def _link(
+    polarization: str = "dual", n_spans: int = 2, beta3: float = 1.2e-40, **terms: object
+) -> Link:
     fiber = Fiber.ssmf(length_km=60, n_steps=30, polarization=polarization).replace(
-        beta3_s3_per_m=beta3
+        beta3_s3_per_m=beta3, **terms
     )
+    if isinstance(terms.get("loss_spectrum"), LossSpectrum):
+        fiber = fiber.with_loss_spectrum(fiber.loss_spectrum)
     return Link.from_spans(n_spans, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=None))
+
+
+#: Fiber models for the channel-offset identity: Kerr + β₂, β₃ and generalised-NLSE terms.
+OFFSET_MODELS = {
+    "manakov-b3": ("dual", {}),
+    "manakov-b6-loss-spectrum": (
+        "dual",
+        {
+            "higher_order_betas": (-2e-55, 4e-70, 1e-84),
+            "loss_spectrum": LossSpectrum(
+                wavelengths_m=[1.54e-6, 1.56e-6], alpha_db_per_km=[0.3, 0.1]
+            ),
+        },
+    ),
+    "raman": ("single", {"raman": RamanResponse(), "higher_order_betas": (-2e-55,)}),
+    "raman-shock-rk4ip": (
+        "single",
+        {"raman": RamanResponse(), "self_steepening": True, "scheme": "rk4ip"},
+    ),
+}
 
 
 def _field(
@@ -68,22 +94,26 @@ def test_dbp_with_the_forward_steps_inverts_a_noiseless_link(polarization):
     np.testing.assert_allclose(y, x, atol=1e-10 * np.max(np.abs(x)))
 
 
+@pytest.mark.parametrize("model", list(OFFSET_MODELS), ids=list(OFFSET_MODELS))
 @pytest.mark.parametrize(("scale", "band", "rtol"), [(0.0, 0.2, 1e-12), (1.0, 0.04, 1e-6)])
 @pytest.mark.parametrize("offset_bins", [-150, 37, 200])
 def test_frequency_offset_equals_backpropagating_the_full_field_then_shifting(
-    scale, band, rtol, offset_bins
+    scale, band, rtol, offset_bins, model
 ):
     """A channel shifted to 0 Hz and back-propagated with its offset ≡ full-field DBP, then shift.
 
-    Exact while the field stays inside the sampled band. With nonlinearity
-    the Kerr products spread the spectrum and the two grids wrap it around
-    different edges; an oversampled field keeps that below ``rtol``.
+    Exact while the field stays inside the sampled band — for every term of
+    the fiber model, through :meth:`~hpcom.fiber.Fiber.recentred`. With
+    nonlinearity the Kerr products spread the spectrum and the two grids
+    wrap it around different edges; an oversampled field keeps that below
+    ``rtol``.
     """
     n = 2048
     f_k = offset_bins / (n * DT)
     t = np.arange(n) * DT
-    link = _link("dual")
-    channel = _field("dual", n, band=band)
+    polarization, terms = OFFSET_MODELS[model]
+    link = _link(polarization, **terms)
+    channel = _field(polarization, n, band=band)
     full = channel * np.exp(2j * np.pi * f_k * t)
     dbp = DigitalBackPropagation(link=link, steps_per_span=4, nonlinearity_scale=scale)
     expected = dbp.compensate(full, DT) * np.exp(-2j * np.pi * f_k * t)

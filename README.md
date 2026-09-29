@@ -16,8 +16,10 @@ datasets.
 - **Channel**: scalar NLSE and Manakov solvers with loss, β₂, β₃ and Kerr
   nonlinearity — symmetric split-step (uniform or logarithmic steps, Kerr
   position, effective Kerr length), fourth-order Yoshida/Suzuki compositions,
-  RK4IP and adaptive local-error control; EDFAs with ASE; noise loading by
-  SNR/OSNR; digital back-propagation at realistic sampling rates.
+  RK4IP and adaptive local-error control; the generalised NLSE (dispersion of
+  any order, loss spectrum, Raman response, self-steepening); weakly coupled
+  multicore fibers; EDFAs with ASE; noise loading by SNR/OSNR; digital
+  back-propagation at realistic sampling rates.
 - **Backends**: NumPy (reference, always available), JAX (recommended for
   GPU) and TensorFlow (GPU, kept for systems where it suits better); a
   registry and conformance test suites for adding more.
@@ -75,7 +77,7 @@ probabilistic shaping and digital back-propagation.
 |---|---|
 | Launch power | per WDM channel, summed over polarisations (`launch_power_per_channel_dbm`, or `launch_power_total_dbm`) |
 | EDFA ASE | per-polarisation PSD n_sp·hν·(G−1), n_sp = (G·F−1)/(2(G−1)) |
-| Equation | Agrawal's NLSE / Manakov (8/9 γ); NumPy FFT convention |
+| Equation | Agrawal's NLSE / Manakov (8/9 γ), optionally generalised (β₄…, α(λ), Raman, shock); NumPy FFT convention, +f = longer wavelength |
 | Pulse | exact RRC by default; truncated FIR (circular or linear) on request |
 | SNR | Es/N0 = P_pol/(N0·R_s) at the matched-filter output |
 

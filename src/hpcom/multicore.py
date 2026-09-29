@@ -107,6 +107,22 @@ class MulticoreFiber(Fiber):
             }
         )
 
+    def recentred(self, frequency_offset_hz: float) -> MulticoreFiber:
+        r"""As :meth:`Fiber.recentred`; each core's skew adds :math:`-\delta\beta_{1,m}\omega_k`.
+
+        That per-core constant cannot be taken out as a common phase, so it
+        goes into ``core_beta0_offsets_per_m``.
+        """
+        fiber = super().recentred(frequency_offset_hz)
+        skew = self.core_beta1_offsets_s_per_m
+        if skew is None or frequency_offset_hz == 0.0:
+            return fiber  # type: ignore[return-value]
+        base = self.core_beta0_offsets_per_m
+        offsets = (np.zeros(self.n_cores) if base is None else base) - skew * (
+            2.0 * np.pi * frequency_offset_hz
+        )
+        return fiber.replace(core_beta0_offsets_per_m=offsets)  # type: ignore[return-value]
+
     def core(self, index: int) -> Fiber:
         """The single-core :class:`~hpcom.fiber.Fiber` of core ``index`` with no coupling."""
         if not 0 <= index < self.n_cores:

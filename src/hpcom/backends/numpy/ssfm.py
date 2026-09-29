@@ -23,6 +23,12 @@ runs the general sub-step sequence of
 D(m_0)``, optionally with low-pass filtered power in ``N``. ``"rk4ip"`` is
 the fourth-order Runge–Kutta in the interaction picture (Hult 2007).
 
+Generalised-NLSE terms: any dispersion and loss spectrum are in ``L̂``; a
+Raman response makes the power in ``N`` the convolution ``R * |A|²``
+(:func:`hpcom.backends.base.kerr_power_response`), still a pure phase;
+self-steepening (RK4IP only) multiplies the nonlinear term by
+``1 − τω`` in the frequency domain (:func:`~hpcom.backends.base.shock_factor`).
+
 ``N`` does not change ``|A|``, so running the same sub-steps in reverse order
 with negated lengths is the exact inverse: backward propagation undoes
 forward propagation to rounding error. Derivation and order of accuracy:
@@ -42,9 +48,10 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     effective_gamma_per_m,
-    kerr_filter_response,
+    kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    shock_factor,
     signed_length_m,
     split_step_sequence,
     step_sizes_m,
@@ -56,7 +63,7 @@ _MAX_CACHED_OPERATORS = 16
 
 
 def _kerr_power(a: np.ndarray, dual: bool, response: np.ndarray | None) -> np.ndarray:
-    """|A|² (Manakov: |A_x|²+|A_y|²), low-pass filtered when a Kerr filter is set."""
+    """|A|² (Manakov: |A_x|²+|A_y|²), through the Raman response and Kerr filter if set."""
     power: np.ndarray = a.real**2 + a.imag**2
     if dual:
         power = power.sum(axis=-2, keepdims=True)
@@ -122,8 +129,10 @@ class NumpySSFMPropagator(Propagator):
             exponent = linear_operator_exponent(a.shape[-1], dt_s, fiber)
             return self._uniform(a, exponent, sizes, gamma_eff, dual)
         disperse = _Disperser(fiber, a.shape[-1], dt_s)
+        response = kerr_power_response(a.shape[-1], dt_s, fiber)
         if fiber.scheme.method == "rk4ip":
-            return self._rk4ip(a, disperse, sizes, gamma_eff, dual)
+            shock = shock_factor(a.shape[-1], dt_s, fiber)
+            return self._rk4ip(a, disperse, sizes, gamma_eff, dual, response, shock)
         if fiber.scheme.method == "ssfm-local-error":
             return self._local_error(
                 a,
@@ -133,11 +142,10 @@ class NumpySSFMPropagator(Propagator):
                 float(fiber.scheme.local_error or 0.0),
                 gamma_eff,
                 dual,
-                kerr_filter_response(a.shape[-1], dt_s, fiber),
+                response,
                 attenuation_per_m(fiber) if fiber.scheme.kerr_length == "effective" else 0.0,
             )
         linear, kerr = split_step_sequence(fiber, direction)
-        response = kerr_filter_response(a.shape[-1], dt_s, fiber)
         return self._sequence(a, disperse, linear, kerr, gamma_eff, dual, response)
 
     @staticmethod
@@ -160,12 +168,24 @@ class NumpySSFMPropagator(Propagator):
 
     @staticmethod
     def _rk4ip(
-        a: np.ndarray, disperse: _Disperser, sizes: np.ndarray, gamma_eff: float, dual: bool
+        a: np.ndarray,
+        disperse: _Disperser,
+        sizes: np.ndarray,
+        gamma_eff: float,
+        dual: bool,
+        response: np.ndarray | None,
+        shock: np.ndarray | None,
     ) -> ComplexArray:
-        """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), 8 FFTs per step."""
+        """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), 8 FFTs per step.
 
-        def kerr(x: np.ndarray) -> np.ndarray:  # N̂(x)·x = iγ_eff P(x) x
-            out: np.ndarray = 1j * gamma_eff * _kerr_power(x, dual, None) * x
+        Each of the 4 nonlinear evaluations costs 2 more FFTs with a Raman
+        response and 2 more with self-steepening.
+        """
+
+        def kerr(x: np.ndarray) -> np.ndarray:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
+            out: np.ndarray = 1j * gamma_eff * _kerr_power(x, dual, response) * x
+            if shock is not None:
+                out = np.fft.ifft(np.fft.fft(out, axis=-1) * shock, axis=-1)
             return out
 
         for h in sizes:

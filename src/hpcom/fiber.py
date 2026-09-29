@@ -14,14 +14,58 @@ import warnings
 from typing import Literal
 
 import numpy as np
+import numpy.typing as npt
 from pydantic import Field, model_validator
 
-from hpcom._model import HpcomModel
+from hpcom._model import FloatArrayField, HpcomModel
 from hpcom._typing import ComplexArray, Direction, Polarization, StepDistribution
 from hpcom.backends import get_propagator
 from hpcom.backends.base import CPUFallbackWarning, step_boundaries_m
 from hpcom.numerics import FWM_PHASE_RAD, Scheme, fwm_aware_first_step_m
-from hpcom.units import dispersion_slope_to_beta3, dispersion_to_beta2
+from hpcom.raman import RamanResponse
+from hpcom.units import SPEED_OF_LIGHT_M_PER_S, dispersion_slope_to_beta3, dispersion_to_beta2
+
+__all__ = ["Fiber", "LossSpectrum"]
+
+
+class LossSpectrum(HpcomModel):
+    r"""Tabulated fiber loss :math:`\alpha_\mathrm{dB}(\lambda)`, for frequency-dependent loss.
+
+    Linearly interpolated in wavelength, and constant beyond the first and
+    last points. Attach it with :meth:`Fiber.with_loss_spectrum`, which also
+    sets ``alpha_db_per_km`` to the loss at the fiber's carrier.
+
+    Attributes
+    ----------
+    wavelengths_m
+        Vacuum wavelengths, strictly increasing (at least two).
+    alpha_db_per_km
+        Power loss at each wavelength, dB/km (≥ 0).
+    """
+
+    wavelengths_m: FloatArrayField
+    alpha_db_per_km: FloatArrayField
+
+    @model_validator(mode="after")
+    def _validate_table(self) -> LossSpectrum:
+        lam, alpha = self.wavelengths_m, self.alpha_db_per_km
+        if lam.ndim != 1 or lam.shape != alpha.shape or lam.size < 2:
+            raise ValueError(
+                "wavelengths_m and alpha_db_per_km must be 1-D of the same length (at least 2), "
+                f"got {lam.shape} and {alpha.shape}"
+            )
+        if not (np.all(np.isfinite(lam)) and np.all(np.isfinite(alpha))):
+            raise ValueError("the loss spectrum must be finite")
+        if lam[0] <= 0 or np.any(np.diff(lam) <= 0):
+            raise ValueError("wavelengths_m must be positive and strictly increasing")
+        if np.any(alpha < 0):
+            raise ValueError("alpha_db_per_km must be >= 0")
+        return self
+
+    def at(self, wavelength_m: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """Loss in dB/km at ``wavelength_m`` (``inf`` gives the last value)."""
+        lam = np.asarray(wavelength_m, dtype=np.float64)
+        return np.asarray(np.interp(lam, self.wavelengths_m, self.alpha_db_per_km), np.float64)
 
 
 class Fiber(HpcomModel):
@@ -71,6 +115,30 @@ class Fiber(HpcomModel):
     polarization
         ``"single"`` → scalar NLSE on fields of shape ``(..., n)``;
         ``"dual"`` → Manakov equation on fields of shape ``(..., 2, n)``.
+    higher_order_betas
+        Dispersion beyond β₃: ``(β₄, β₅, …)`` in sⁿ/m, continuing the
+        Taylor expansion of the propagation constant about the carrier
+        (generalised NLSE; ``docs/physics.rst``).
+    wavelength_m
+        Carrier (reference) wavelength λ₀: the zero of the simulation's
+        baseband frequency grid, at which the β's and γ are given. Used by
+        ``loss_spectrum`` and self-steepening.
+    loss_spectrum
+        Frequency-dependent loss (:class:`LossSpectrum`); ``alpha_db_per_km``
+        must equal its value at λ₀ (:meth:`with_loss_spectrum` sets both).
+        ``None``: the loss ``alpha_db_per_km`` at every frequency.
+    raman
+        Delayed Raman response (:class:`~hpcom.raman.RamanResponse`): the
+        Kerr term becomes :math:`i\gamma A\,[(1-f_R)|A|^2 + f_R h_R*|A|^2]`.
+        Every scheme supports it; single polarisation only (the
+        polarisation-averaged vector Raman term is not implemented).
+    self_steepening
+        Include the shock term :math:`(1 + i\tau_\mathrm{shock}\partial_t)`
+        on the Kerr term. The Kerr step is then no longer solvable exactly,
+        so it needs ``scheme="rk4ip"``.
+    shock_time_s
+        :math:`\tau_\mathrm{shock}`; ``None``: :math:`1/\omega_0 = \lambda_0/2\pi c`.
+        Only with ``self_steepening``.
     backend
         Registered propagator name (``"numpy"``, ``"tensorflow"``,
         ``"numpy-linear"``, …); see :mod:`hpcom.backends`.
@@ -87,6 +155,12 @@ class Fiber(HpcomModel):
     step_log_factor: float = Field(default=1.0, gt=0)
     scheme: Scheme = Scheme()
     polarization: Polarization = "single"
+    higher_order_betas: tuple[float, ...] = ()
+    wavelength_m: float = Field(default=1550e-9, gt=0)
+    loss_spectrum: LossSpectrum | None = None
+    raman: RamanResponse | None = None
+    self_steepening: bool = False
+    shock_time_s: float | None = Field(default=None, ge=0)
     backend: str = "numpy"
 
     @classmethod
@@ -122,6 +196,7 @@ class Fiber(HpcomModel):
             gamma_per_w_per_km=1.27,
             n_steps=n_steps,
             polarization=polarization,
+            wavelength_m=wavelength_m,
             backend=backend,
         )
 
@@ -132,6 +207,56 @@ class Fiber(HpcomModel):
         if self.step_distribution == "uniform" and self.step_log_factor != 1.0:
             raise ValueError('step_log_factor applies only to step_distribution="logarithmic"')
         return self
+
+    @model_validator(mode="after")
+    def _validate_gnlse(self) -> Fiber:
+        if not all(math.isfinite(b) for b in self.higher_order_betas):
+            raise ValueError("higher_order_betas must be finite")
+        if self.raman is not None and self.polarization == "dual":
+            raise ValueError(
+                "Raman scattering is implemented for single polarisation (the scalar "
+                "generalised NLSE); the polarisation-averaged vector Raman term of the "
+                "Manakov equation is not"
+            )
+        if self.shock_time_s is not None and not self.self_steepening:
+            raise ValueError("shock_time_s needs self_steepening=True")
+        if self.self_steepening and self.scheme.method != "rk4ip":
+            raise ValueError(
+                "self_steepening makes the Kerr step non-integrable: use scheme='rk4ip' "
+                f"(got {self.scheme.method!r})"
+            )
+        if self.loss_spectrum is not None:
+            carrier = float(self.loss_spectrum.at(self.wavelength_m))
+            if not math.isclose(carrier, self.alpha_db_per_km, rel_tol=1e-9, abs_tol=1e-12):
+                raise ValueError(
+                    f"alpha_db_per_km ({self.alpha_db_per_km}) must equal the loss spectrum at "
+                    f"wavelength_m ({carrier} dB/km); use Fiber.with_loss_spectrum"
+                )
+        return self
+
+    @property
+    def carrier_frequency_hz(self) -> float:
+        """Optical frequency ν₀ = c/λ₀ of the grid's 0 Hz."""
+        return SPEED_OF_LIGHT_M_PER_S / self.wavelength_m
+
+    @property
+    def dispersion_betas(self) -> tuple[float, ...]:
+        """``(β₁, β₂, β₃, β₄, …)`` in sⁿ/m."""
+        return (
+            self.beta1_s_per_m,
+            self.beta2_s2_per_m,
+            self.beta3_s3_per_m,
+            *self.higher_order_betas,
+        )
+
+    @property
+    def effective_shock_time_s(self) -> float:
+        r""":math:`\tau_\mathrm{shock}` in use (0 without self-steepening)."""
+        if not self.self_steepening:
+            return 0.0
+        if self.shock_time_s is not None:
+            return float(self.shock_time_s)
+        return 1.0 / (2.0 * math.pi * self.carrier_frequency_hz)
 
     @property
     def n_cores(self) -> int:
@@ -246,6 +371,70 @@ class Fiber(HpcomModel):
             log_factor=1.0 / 3.0 if rule == "cle" else 1.0,
         )
 
+    def with_loss_spectrum(self, spectrum: LossSpectrum | None) -> Fiber:
+        """Copy with frequency-dependent loss; ``alpha_db_per_km`` becomes its value at λ₀.
+
+        ``None`` removes the spectrum and keeps ``alpha_db_per_km``.
+        """
+        if spectrum is None:
+            return self.replace(loss_spectrum=None)
+        return self.replace(
+            loss_spectrum=spectrum, alpha_db_per_km=float(spectrum.at(self.wavelength_m))
+        )
+
+    def dispersion_phase_per_m(self, frequency_offset_hz: float) -> float:
+        r"""Phase :math:`D(\omega_k) = \sum_n \beta_n(-\omega_k)^n/n!` per metre of a tone at ``f_k``.
+
+        The propagation constant, relative to the moving frame, of a CW
+        tone at baseband frequency :math:`f_k` (:math:`\omega_k = 2\pi f_k`);
+        see :meth:`recentred`.
+        """
+        w = 2.0 * math.pi * frequency_offset_hz
+        return math.fsum(b * (-w) ** n / math.factorial(n) for n, b in _enumerate_betas(self))
+
+    def recentred(self, frequency_offset_hz: float) -> Fiber:
+        r"""This fiber as seen by a grid centred on baseband frequency ``f_k``.
+
+        A field shifted down by :math:`f_k` (a WDM channel moved to 0 Hz)
+        propagates in this fiber exactly as it does in the returned one,
+        apart from the constant phase :meth:`dispersion_phase_per_m`, which
+        commutes with every step. The Taylor series is re-expanded about
+        :math:`\omega_k`,
+
+        .. math:: \beta_m' = \sum_{n \ge m} \beta_n\,\frac{(-\omega_k)^{n-m}}{(n-m)!},
+
+        the carrier moves to :math:`\nu_0 - f_k` (with the loss there, for a
+        loss spectrum) and, with self-steepening, :math:`\gamma' = \gamma(1 -
+        \tau\omega_k)`, :math:`\tau' = \tau/(1 - \tau\omega_k)`.
+        """
+        w = 2.0 * math.pi * frequency_offset_hz
+        if w == 0.0:
+            return self
+        betas = self.dispersion_betas
+        shifted = [
+            math.fsum(
+                betas[n - 1] * (-w) ** (n - m) / math.factorial(n - m)
+                for n in range(m, len(betas) + 1)
+            )
+            for m in range(1, len(betas) + 1)
+        ]
+        wavelength = SPEED_OF_LIGHT_M_PER_S / (self.carrier_frequency_hz - frequency_offset_hz)
+        changes: dict[str, object] = {
+            "beta1_s_per_m": shifted[0],
+            "beta2_s2_per_m": shifted[1],
+            "beta3_s3_per_m": shifted[2],
+            "higher_order_betas": tuple(shifted[3:]),
+            "wavelength_m": wavelength,
+        }
+        if self.loss_spectrum is not None:
+            changes["alpha_db_per_km"] = float(self.loss_spectrum.at(wavelength))
+        if self.self_steepening:
+            factor = 1.0 - self.effective_shock_time_s * w
+            changes["gamma_per_w_per_km"] = self.gamma_per_w_per_km * factor
+            if self.shock_time_s is not None:
+                changes["shock_time_s"] = self.shock_time_s / factor
+        return self.replace(**changes)
+
     def with_backend(self, backend: str) -> Fiber:
         """Return a copy of this fiber that propagates on ``backend``."""
         return self.replace(backend=backend)
@@ -261,6 +450,13 @@ class Fiber(HpcomModel):
         If :attr:`backend` does not implement :attr:`scheme`, the span runs on
         the NumPy (CPU) backend and a :class:`~hpcom.backends.CPUFallbackWarning`
         is emitted.
+
+        Raises
+        ------
+        FloatingPointError
+            A finite field came out non-finite: the explicit scheme went
+            unstable (steps too long for the field — typically RK4IP with
+            strong self-steepening).
         """
         propagator = get_propagator(self.backend)
         if self.scheme.method not in propagator.supported_methods:
@@ -271,7 +467,14 @@ class Fiber(HpcomModel):
                 stacklevel=2,
             )
             propagator = get_propagator("numpy")
-        return propagator.propagate(field, self, dt_s=dt_s, direction=direction)
+        out = propagator.propagate(field, self, dt_s=dt_s, direction=direction)
+        if not np.all(np.isfinite(out)) and np.all(np.isfinite(field)):
+            raise FloatingPointError(
+                f"propagation through a {self.length_km:g} km span produced non-finite values: "
+                f"scheme {self.scheme.method!r} is unstable with n_steps={self.n_steps} for "
+                "this field; increase n_steps"
+            )
+        return out
 
     def apply(
         self,
@@ -287,3 +490,8 @@ class Fiber(HpcomModel):
     def apply_inverse(self, field: ComplexArray, dt_s: float) -> ComplexArray:
         """Exact inverse of :meth:`apply` (backward propagation), for back-propagation."""
         return self.propagate(field, dt_s, direction="backward")
+
+
+def _enumerate_betas(fiber: Fiber) -> list[tuple[int, float]]:
+    """``[(n, β_n)]`` for n = 1, 2, …"""
+    return list(enumerate(fiber.dispersion_betas, start=1))

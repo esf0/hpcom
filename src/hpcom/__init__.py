@@ -28,7 +28,7 @@ from hpcom import _legacy_alias
 from hpcom._version import __version__
 from hpcom.amplifier import EDFA, Amplifier
 from hpcom.dsp import Compensator, DigitalBackPropagation
-from hpcom.fiber import Fiber
+from hpcom.fiber import Fiber, LossSpectrum
 from hpcom.link import Link
 from hpcom.metrics import Metrics, StreamMetrics
 from hpcom.modulation import ConstantCompositionDM, ConstellationConfig
@@ -43,6 +43,7 @@ from hpcom.ofdm import (
     OFDMTransmitter,
 )
 from hpcom.pilots import PilotConfig
+from hpcom.raman import RamanResponse
 from hpcom.receiver import (
     PulseShapedReceiver,
     ReceivedSymbols,
@@ -73,6 +74,7 @@ __all__ = [
     "DigitalBackPropagation",
     "Fiber",
     "Link",
+    "LossSpectrum",
     "Metrics",
     "MulticoreFiber",
     "OFDMConfig",
@@ -83,6 +85,7 @@ __all__ = [
     "PilotConfig",
     "PulseShapedReceiver",
     "PulseShapedTransmitter",
+    "RamanResponse",
     "ReceivedSymbols",
     "Receiver",
     "Result",

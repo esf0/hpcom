@@ -14,6 +14,7 @@ import functools
 import itertools
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -51,6 +52,11 @@ class StubFiber:
     scheme: StubScheme = StubScheme()
     n_cores: int = 1
     polarization: str = "single"
+    higher_order_betas: tuple[float, ...] = ()
+    wavelength_m: float = 1550e-9
+    loss_spectrum: Any = None
+    raman: Any = None
+    effective_shock_time_s: float = 0.0
 
 
 #: Step placements every nonlinear backend must support (docs/numerics.rst).

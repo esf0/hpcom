@@ -4,7 +4,8 @@ Runs exactly the schemes of the NumPy reference backend
 (:mod:`hpcom.backends.numpy.ssfm`) — the uniform fast path, the general
 sub-step sequence ``D(m_J) N(c_J) … N(c_1) D(m_0)`` (every step placement,
 Kerr position, Kerr length, intensity filter and fourth-order composition),
-RK4IP and the adaptive local-error method, for single- and multicore fibers —
+RK4IP and the adaptive local-error method, for single- and multicore fibers
+and every generalised-NLSE term (Raman response, self-steepening) —
 as XLA-compiled loops
 (``lax.fori_loop`` / ``lax.while_loop``). The linear operators are built in
 NumPy, so results agree with the NumPy backend to FFT rounding.
@@ -33,9 +34,10 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     effective_gamma_per_m,
-    kerr_filter_response,
+    kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    shock_factor,
     signed_length_m,
     split_step_sequence,
     step_sizes_m,
@@ -94,10 +96,27 @@ def _sequence(
     return jnp.fft.ifft(lax.fori_loop(0, phases.shape[0], step, spectrum), axis=-1)
 
 
-@partial(jax.jit, static_argnames=("dual", "axis"))
-def _rk4ip(a: Any, lin: Any, sizes: Any, gamma_eff: Any, dual: bool, axis: int | None) -> Any:
-    def kerr(x: Any) -> Any:
-        return 1j * gamma_eff * _power(x, dual) * x
+@partial(jax.jit, static_argnames=("dual", "axis", "filtered", "shocked"))
+def _rk4ip(
+    a: Any,
+    lin: Any,
+    sizes: Any,
+    gamma_eff: Any,
+    response: Any,
+    shock: Any,
+    dual: bool,
+    axis: int | None,
+    filtered: bool,
+    shocked: bool,
+) -> Any:
+    def kerr(x: Any) -> Any:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
+        p = _power(x, dual)
+        if filtered:
+            p = jnp.real(jnp.fft.ifft(jnp.fft.fft(p, axis=-1) * response, axis=-1))
+        out = 1j * gamma_eff * p * x
+        if shocked:
+            out = jnp.fft.ifft(jnp.fft.fft(out, axis=-1) * shock, axis=-1)
+        return out
 
     def step(i: Any, a: Any) -> Any:
         h = sizes[i]
@@ -215,10 +234,24 @@ class JaxPropagator(Propagator):
                 adjoint = np.conj(np.swapaxes(vectors, -1, -2))
                 lin = (jnp.asarray(exponent), jnp.asarray(vectors), jnp.asarray(adjoint))
                 axis = core_axis(fiber)
-            response = kerr_filter_response(a.shape[-1], dt_s, fiber)
-            response_arr = jnp.asarray(np.ones(a.shape[-1]) if response is None else response)
+            response = kerr_power_response(a.shape[-1], dt_s, fiber)
+            response_arr = jnp.asarray(
+                np.ones(a.shape[-1], np.complex128) if response is None else response
+            )
             if scheme.method == "rk4ip":
-                out = _rk4ip(jnp.asarray(a), lin, jnp.asarray(sizes), gamma_eff, dual, axis)
+                shock = shock_factor(a.shape[-1], dt_s, fiber)
+                out = _rk4ip(
+                    jnp.asarray(a),
+                    lin,
+                    jnp.asarray(sizes),
+                    gamma_eff,
+                    response_arr,
+                    jnp.asarray(np.ones(a.shape[-1]) if shock is None else shock),
+                    dual,
+                    axis,
+                    response is not None,
+                    shock is not None,
+                )
             elif scheme.method == "ssfm-local-error":
                 length_m = signed_length_m(fiber, direction)
                 alpha = attenuation_per_m(fiber)

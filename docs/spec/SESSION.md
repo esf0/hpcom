@@ -51,8 +51,21 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
 - Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data
   (regenerate with `tests/numerical/_data/make_opticommpy_golden.py` in a
   separate env — OptiCommPy needs numba), N = 2 soliton, Manakov vector
-  soliton, degenerate FWM, modulation instability. Candidates: Raman,
-  higher-order dispersion solitons, GN-model NLI power vs simulation.
+  soliton, degenerate FWM, modulation instability. Candidate: GN-model NLI
+  power vs simulation.
+- Generalised NLSE done (2026-09-29; physics.rst "Generalised NLSE",
+  numerics.rst "Generalised NLSE terms"): `Fiber.higher_order_betas`,
+  `wavelength_m`, `loss_spectrum` (`LossSpectrum`), `raman`
+  (`RamanResponse`, Blow–Wood / Lin–Agrawal, analytic H_R), `self_steepening`
+  (+`shock_time_s`, RK4IP only), `Fiber.recentred` (DBP per channel uses
+  it). Raman keeps every split-step scheme exact/invertible; single
+  polarisation only (vector Raman planned with PMD). Validated on every
+  backend vs exact solutions (moment theorem, tone losses, linearised GNLSE
+  2×2, shock characteristics, photon number, Gordon SSFS) and vs gnlse-python
+  on Dudley's supercontinuum benchmark (golden data built on a node with
+  `tests/numerical/_data/make_gnlse_golden.sh`). Next (maintainer's order):
+  differentiable JAX mode → PMD → SDM transceivers → lasers (CGLE, saturable
+  gain) → GN/EGN. Planned numerics: adaptive RK4IP.
 - Laser phase noise, PMD, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.

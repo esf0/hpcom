@@ -593,6 +593,55 @@ steps/span, Kerr length                  r=0    r=0.1  r=0.2  r=0.3  r=0.5  r=1
   up to 15 dB (23.2 at 5 GHz vs 38.1).
 
 
+Generalised NLSE terms
+----------------------
+
+The generalised NLSE (:doc:`physics`, *Generalised NLSE*) changes the two
+operators:
+
+.. math::
+
+   \hat D = iD(\omega) - \tfrac{\alpha(\omega)}{2},\qquad
+   \hat N A = i\gamma_\mathrm{eff}\,\mathcal F^{-1}\Big[S(\omega)\,
+      \mathcal F\big(A\,Q\big)\Big],\qquad
+   Q = \operatorname{Re}\mathcal F^{-1}\big[\tilde R(\omega)\,\mathcal F|A|^2\big],
+
+with :math:`D(\omega) = \sum_n\beta_n(-\omega)^n/n!`, the Kerr response
+:math:`\tilde R = (1-f_R) + f_RH_R(\omega)` (times the intensity filter of a
+filtered scheme) and the shock factor :math:`S = 1 - \tau_\mathrm{shock}\omega`.
+
+* **Any** :math:`D(\omega)` **and** :math:`\alpha(\omega)`: the linear step
+  :math:`e^{h\hat D}` is still a diagonal multiplication, exact for any step
+  (and, for multicore fibers, part of the Hermitian eigen-decomposition,
+  with :math:`\alpha(\omega)` common to all cores). Nothing else changes.
+* **Raman scattering without shock**: :math:`Q` is real and depends only on
+  :math:`|A|`, so :math:`\partial_z A = i\gamma_\mathrm{eff}AQ` keeps
+  :math:`|A|` — and :math:`Q` — constant, and its exact solution is again a
+  phase,
+
+  .. math:: N(c)A = A\,e^{i\gamma_\mathrm{eff}\,c\,Q}.
+
+  Every split-step scheme (Kerr position, effective Kerr length,
+  compositions, local-error method) keeps its order, and backward
+  propagation stays exact. Cost: two more FFTs per Kerr step.
+* **Self-steepening**: :math:`\hat N` is no longer a pointwise phase, and
+  the Kerr sub-step has no closed form. ``"rk4ip"`` evaluates :math:`\hat N`
+  directly (as in [Hult2007]_, whose method was designed for this equation)
+  and keeps fourth order; the split-step methods are rejected for such
+  fibers rather than solving the Kerr sub-step approximately. Cost per RK4IP
+  step: 8 FFTs, plus 8 with Raman and 8 with self-steepening.
+  RK4IP is explicit: at too long a step for the field it goes unstable, and
+  :meth:`hpcom.Fiber.propagate` raises ``FloatingPointError`` instead of
+  returning non-finite values. RK4IP conserves the photon number to its
+  fourth-order error [Heidt2009]_.
+
+Measured (``tests/backends/test_gnlse_conformance.py``): on the linearised
+equation around a CW pump — Raman gain, modulation instability, β₂…β₅ and
+the shock factor at once — the error falls by 4.0 (Strang) and 15–16
+(Suzuki, RK4IP) per step halving; on the dispersionless self-steepening
+equation RK4IP converges at order 4 to the exact characteristics solution.
+
+
 Backends and GPU policy
 -----------------------
 
@@ -625,6 +674,12 @@ Backends and GPU policy
      - ✓ (GPU, ``lax.while_loop``)
      - ✓ (GPU, ``tf.while_loop``)
      - exact, no steps
+   * - Generalised NLSE: β₄…, loss spectrum, Raman (every scheme),
+       self-steepening (RK4IP)
+     - ✓
+     - ✓ (GPU)
+     - ✓ (GPU)
+     - linear terms exact
 
 ``benchmarks/backends.py`` times every backend on the same spans and prints
 its deviation from NumPy (≈ 1e-14 for every scheme);
@@ -644,6 +699,11 @@ Planned schemes
 
 Not implemented yet; listed with the literature they follow.
 
+* **Adaptive RK4IP** for the generalised NLSE: step doubling with
+  Richardson extrapolation (fifth-order local error, [Hult2007]_) or the
+  photon-number conservation error [Heidt2009]_ as the step controller.
+* **Vector Raman** response for the Manakov equation (polarisation-averaged,
+  [LinAgrawal2003]_), with the PMD model.
 * **Sixth and higher order** compositions (e.g. a triple jump of the
   fourth-order step) and embedded RK schemes with error control
   [Muslu2005]_. A comparison of split-step variants for optical links is
@@ -695,6 +755,10 @@ References
 
 .. [Hairer2006] E. Hairer, C. Lubich, G. Wanner, *Geometric Numerical
    Integration*, 2nd ed. Springer, 2006.
+
+.. [Heidt2009] A. M. Heidt, "Efficient adaptive step size method for the
+   simulation of supercontinuum generation in optical fibers," *J. Lightw.
+   Technol.* 27(18), 3984–3991, 2009.
 
 .. [Hult2007] J. Hult, "A fourth-order Runge–Kutta in the interaction
    picture method for simulating supercontinuum generation in optical

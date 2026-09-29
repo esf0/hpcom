@@ -43,6 +43,20 @@ class SchemeLike(Protocol):
     def local_error(self) -> float | None: ...
 
 
+class LossSpectrumLike(Protocol):
+    """Frequency-dependent loss (see :class:`hpcom.fiber.LossSpectrum`)."""
+
+    def at(self, wavelength_m: npt.ArrayLike) -> npt.NDArray[np.float64]: ...
+
+
+class RamanLike(Protocol):
+    """Delayed Raman response (see :class:`hpcom.raman.RamanResponse`)."""
+
+    @property
+    def f_r(self) -> float: ...
+    def transfer(self, omega_rad_per_s: npt.ArrayLike) -> npt.NDArray[np.complex128]: ...
+
+
 @runtime_checkable
 class FiberLike(Protocol):
     """Minimal fiber interface a :class:`Propagator` depends on.
@@ -54,7 +68,9 @@ class FiberLike(Protocol):
 
     ``polarization`` selects the model — scalar NLSE (``"single"``) or
     Manakov (``"dual"``) — from the fiber config rather than from the input
-    shape, which keeps batched pipelines unambiguous.
+    shape, which keeps batched pipelines unambiguous. The generalised-NLSE
+    members (``higher_order_betas`` … ``effective_shock_time_s``) are ``()``,
+    ``None``, ``None`` and ``0.0`` for the plain NLSE.
     """
 
     @property
@@ -81,6 +97,16 @@ class FiberLike(Protocol):
     def n_cores(self) -> int: ...
     @property
     def polarization(self) -> Polarization: ...
+    @property
+    def higher_order_betas(self) -> tuple[float, ...]: ...
+    @property
+    def wavelength_m(self) -> float: ...
+    @property
+    def loss_spectrum(self) -> LossSpectrumLike | None: ...
+    @property
+    def raman(self) -> RamanLike | None: ...
+    @property
+    def effective_shock_time_s(self) -> float: ...
 
 
 @runtime_checkable

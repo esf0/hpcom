@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 
 from hpcom._typing import ComplexArray, Direction, FiberLike
+from hpcom.units import SPEED_OF_LIGHT_M_PER_S
 
 
 class BackendUnavailableError(RuntimeError):
@@ -33,8 +35,12 @@ class Propagator(ABC):
       not modified.
     * Equation and sign conventions are those of
       :doc:`/physics` — in NumPy's FFT convention the linear operator is
-      ``exp[(−i β₁ω + i β₂ω²/2 − i β₃ω³/6 − α/2) z]`` and the Kerr term is
-      ``+i γ |A|² A`` (``+i (8/9) γ (|A_x|²+|A_y|²) A`` for Manakov).
+      ``exp[(−i β₁ω + i β₂ω²/2 − i β₃ω³/6 + … − α(ω)/2) z]``
+      (:func:`linear_operator_exponent`) and the Kerr term is
+      ``+i γ |A|² A`` (``+i (8/9) γ (|A_x|²+|A_y|²) A`` for Manakov), with
+      ``|A|²`` replaced by its convolution with the Raman response
+      (:func:`kerr_power_response`) and the shock factor
+      (:func:`shock_factor`) applied when the fiber has them.
     * ``direction="backward"`` applies the exact inverse step sequence (same
       steps, negated length), as used by digital back-propagation.
     """
@@ -182,9 +188,9 @@ def multicore_linear_system(
     is then frequency independent) and ``exponent`` :math:`i\lambda - \alpha/2`
     of shape ``(n, M)``.
     """
-    common = linear_operator_exponent(n_samples, dt_s, fiber)  # i k(ω) − α/2
-    alpha_half = attenuation_per_m(fiber) / 2.0
-    k = ((common + alpha_half) / 1j).real  # k(ω), real
+    common = linear_operator_exponent(n_samples, dt_s, fiber)  # i k(ω) − α(ω)/2
+    alpha_half = -common.real  # α(ω)/2, common to every core
+    k = common.imag  # k(ω)
     kappa = np.asarray(fiber.coupling_per_m, dtype=np.float64)
     m = kappa.shape[0]
     beta0 = fiber.core_beta0_offsets_per_m
@@ -201,7 +207,7 @@ def multicore_linear_system(
         matrices[:, np.arange(m), np.arange(m)] = diag
         lam, vectors = np.linalg.eigh(matrices)
         v = vectors.astype(np.complex128)
-    exponent: npt.NDArray[np.complex128] = (1j * lam - alpha_half).astype(np.complex128)
+    exponent: npt.NDArray[np.complex128] = (1j * lam - alpha_half[:, None]).astype(np.complex128)
     return v, exponent
 
 
@@ -234,6 +240,8 @@ def uses_fast_path(fiber: FiberLike) -> bool:
     s = fiber.scheme
     return (
         fiber.n_cores == 1
+        and fiber.raman is None
+        and fiber.effective_shock_time_s == 0.0
         and fiber.step_distribution == "uniform"
         and s.method == "ssfm"
         and s.nonlinear_position == 0.5
@@ -300,23 +308,85 @@ def kerr_filter_response(
 def linear_operator_exponent(
     n_samples: int, dt_s: float, fiber: FiberLike
 ) -> npt.NDArray[np.complex128]:
-    """Per-metre exponent of the linear step, ``−i β₁ω + i β₂ω²/2 − i β₃ω³/6 − α/2``.
+    r"""Per-metre exponent of the linear step, :math:`\hat L(\omega) = iD(\omega) - \alpha(\omega)/2`.
 
-    ``ω`` is the angular-frequency grid in NumPy FFT order. The signs of the
-    β₁ and β₃ terms follow from Agrawal's NLSE written in NumPy's FFT
-    convention (see :doc:`/physics`): β₁ > 0 delays the field by β₁z. The β₂
-    term is sign-convention independent.
+    .. math::
+
+        D(\omega) = \sum_{n\ge1} \frac{\beta_n}{n!}(-\omega)^n
+                   = -\beta_1\omega + \frac{\beta_2}{2}\omega^2 - \frac{\beta_3}{6}\omega^3 + …
+
+    ``ω`` is the angular-frequency grid in NumPy FFT order. The signs follow
+    from Agrawal's NLSE written in NumPy's FFT convention (see
+    :doc:`/physics`): grid frequency :math:`+\omega` is the optical
+    frequency :math:`\omega_0 - \omega`, so :math:`D(\omega) = \beta(\omega_0 -
+    \omega) - \beta_0` and β₁ > 0 delays the field by β₁z. The loss is
+    ``alpha_db_per_km``, or ``fiber.loss_spectrum`` at the wavelength
+    :math:`2\pi c/(\omega_0 - \omega)` of each frequency.
     """
     omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
-    alpha_per_m = attenuation_per_m(fiber)
     beta3 = fiber.beta3_s3_per_m
     exponent: npt.NDArray[np.complex128] = (
         -1j * fiber.beta1_s_per_m * omega
         + 1j * (fiber.beta2_s2_per_m / 2.0) * omega**2
         - 1j * (beta3 / 6.0) * omega**3
-        - alpha_per_m / 2.0
     ).astype(np.complex128)
-    return exponent
+    for n, beta in enumerate(fiber.higher_order_betas, start=4):
+        if beta:
+            exponent += 1j * (beta / math.factorial(n)) * (-omega) ** n
+    return exponent - attenuation_spectrum_per_m(n_samples, dt_s, fiber) / 2.0
+
+
+def attenuation_spectrum_per_m(
+    n_samples: int, dt_s: float, fiber: FiberLike
+) -> npt.NDArray[np.float64] | float:
+    """Power attenuation α(ω) in 1/m on the FFT grid (a scalar without a loss spectrum)."""
+    spectrum = fiber.loss_spectrum
+    if spectrum is None:
+        return attenuation_per_m(fiber)
+    c = SPEED_OF_LIGHT_M_PER_S
+    nu = c / fiber.wavelength_m - np.fft.fftfreq(n_samples, d=dt_s)  # optical frequency
+    wavelength = np.full(n_samples, np.inf)
+    wavelength[nu > 0] = c / nu[nu > 0]
+    return np.asarray(spectrum.at(wavelength) * np.log(10.0) / 10.0 / 1e3, dtype=np.float64)
+
+
+def kerr_power_response(
+    n_samples: int, dt_s: float, fiber: FiberLike
+) -> npt.NDArray[np.complex128] | None:
+    r"""Frequency response applied to the power in the Kerr term (``None``: none).
+
+    .. math:: \tilde R(\omega) = \big[(1-f_R) + f_R H_R(\omega)\big]\,H_\mathrm{filter}(\omega)
+
+    — the Raman response (``fiber.raman``) and the Kerr-step intensity
+    filter of the scheme (:func:`kerr_filter_response`). The Kerr term uses
+    :math:`\operatorname{Re}\mathcal F^{-1}[\tilde R\,\mathcal F|A|^2]`; the real
+    part drops the unpaired Nyquist bin of an even-length grid, where a
+    real response would have to be real.
+    """
+    raman = fiber.raman
+    response = kerr_filter_response(n_samples, dt_s, fiber)
+    if raman is None:
+        return None if response is None else response.astype(np.complex128)
+    omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
+    f_r = raman.f_r
+    total: npt.NDArray[np.complex128] = ((1.0 - f_r) + f_r * raman.transfer(omega)).astype(
+        np.complex128
+    )
+    return total if response is None else total * response
+
+
+def shock_factor(n_samples: int, dt_s: float, fiber: FiberLike) -> npt.NDArray[np.float64] | None:
+    r"""Self-steepening factor :math:`1 - \tau_\mathrm{shock}\,\omega` (``None``: none).
+
+    The operator :math:`1 + i\tau\,\partial_t` in NumPy's convention
+    (:math:`\partial_t \to i\omega`); with :math:`\tau = 1/\omega_0` it is
+    the optical frequency over the carrier's, :math:`(\omega_0-\omega)/\omega_0`.
+    """
+    tau = fiber.effective_shock_time_s
+    if tau == 0.0:
+        return None
+    omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
+    return np.asarray(1.0 - tau * omega, dtype=np.float64)
 
 
 def effective_gamma_per_m(fiber: FiberLike) -> float:
