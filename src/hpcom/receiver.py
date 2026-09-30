@@ -62,6 +62,7 @@ Processing chain of every receiver:
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import Literal, TypedDict
 
@@ -181,8 +182,9 @@ class Receiver(ModulationSpec, ABC):
 
     Attributes
     ----------
-    polarization
-        Must match the transmitter.
+    polarization, n_cores
+        Must match the transmitter (``n_cores > 1``: one stream per core,
+        fields ``(n_cores, …, n)``).
     equalize
         Per-stream complex-gain equaliser: ``"auto"`` (default), ``"none"``,
         ``"unit_power"``, ``"pilot"`` or ``"data_aided"`` (module docstring).
@@ -193,6 +195,7 @@ class Receiver(ModulationSpec, ABC):
     """
 
     polarization: Polarization = "single"
+    n_cores: int = Field(default=1, ge=1)
     equalize: EqualizerMode = "auto"
     cd_compensation_s2: float = 0.0
     cd_compensation_s3: float = 0.0
@@ -235,6 +238,8 @@ class Receiver(ModulationSpec, ABC):
                 f"polarization: transmitter {transmitter.polarization!r}, "
                 f"receiver {self.polarization!r}"
             )
+        if transmitter.n_cores != self.n_cores:
+            issues.append(f"n_cores: transmitter {transmitter.n_cores}, receiver {self.n_cores}")
         mismatch = self.modulation_mismatch(transmitter)
         if mismatch:
             issues.append(mismatch)
@@ -242,10 +247,19 @@ class Receiver(ModulationSpec, ABC):
 
     def _check_field(self, field: ComplexArray) -> npt.NDArray[np.complex128]:
         x = np.asarray(field, dtype=np.complex128)
-        if self.polarization == "single" and x.ndim != 1:
-            raise ValueError(f"single-polarisation receiver expects a 1-D field, got {x.shape}")
-        if self.polarization == "dual" and (x.ndim != 2 or x.shape[0] != 2):
-            raise ValueError(f"dual-polarisation receiver expects shape (2, n), got {x.shape}")
+        if self.n_cores == 1:
+            if self.polarization == "single" and x.ndim != 1:
+                raise ValueError(f"single-polarisation receiver expects a 1-D field, got {x.shape}")
+            if self.polarization == "dual" and (x.ndim != 2 or x.shape[0] != 2):
+                raise ValueError(f"dual-polarisation receiver expects shape (2, n), got {x.shape}")
+            return x
+        lead = (self.n_cores, *((2,) if self.polarization == "dual" else ()))
+        if x.shape[:-1] != lead or x.ndim != len(lead) + 1:
+            layout = ", ".join([*(str(n) for n in lead), "n"])
+            raise ValueError(
+                f"{self.n_cores}-core {self.polarization}-polarisation receiver expects shape "
+                f"({layout}), got {x.shape}"
+            )
         return x
 
     def _compensate_dispersion(
@@ -435,6 +449,9 @@ class PulseShapedReceiver(Receiver, ABC):
 
     ``mimo_taps`` (odd) is the length of the ``equalize="mimo"`` FIR, in
     samples at 2 samples/symbol (1 when the matched filter runs at 1).
+    ``mimo_across_cores`` makes it one joint :math:`2M\times2M` (dual
+    polarisation) filter over all cores — for coupled-core fibers — instead
+    of an independent 2×2 per core.
     """
 
     samples_per_symbol: int = Field(default=8, ge=2)
@@ -444,6 +461,7 @@ class PulseShapedReceiver(Receiver, ABC):
     pilots: PilotConfig | None = None
     compensation: Polymorphic[Compensator] | None = None
     mimo_taps: int = Field(default=15, ge=1)
+    mimo_across_cores: bool = False
 
     @model_validator(mode="after")
     def _validate_pulse_rx(self) -> PulseShapedReceiver:
@@ -595,6 +613,13 @@ class PulseShapedReceiver(Receiver, ABC):
             reference_data=reference_data,
         )
 
+    @property
+    def _mimo_modes(self) -> tuple[int, ...]:
+        """Leading axes equalised jointly: polarisation, and the cores if ``mimo_across_cores``."""
+        cores = self.n_cores > 1
+        pol = ((1 if cores else 0),) if self.polarization == "dual" else ()
+        return ((0,) if cores and self.mimo_across_cores else ()) + pol
+
     def _demodulate_mimo(
         self,
         streams: npt.NDArray[np.complex128],
@@ -619,9 +644,7 @@ class PulseShapedReceiver(Receiver, ABC):
             )
         train = np.arange(n_slots) if self.pilots is None else self.pilots.data_indices(n_slots)
         targets = np.asarray(reference_data, dtype=np.complex128)
-        slots = mimo_equalize(
-            filtered, per, self.mimo_taps, self.polarization == "dual", train, targets
-        )
+        slots = mimo_equalize(filtered, per, self.mimo_taps, self._mimo_modes, train, targets)
         gain = np.ones(slots.shape[:-1], dtype=np.complex128)
         if self.pilots is None:
             return self._detect(slots, gain=gain, equalizer="mimo", reference_data=reference_data)
@@ -640,41 +663,47 @@ def mimo_equalize(
     samples: npt.NDArray[np.complex128],
     samples_per_symbol: int,
     n_taps: int,
-    dual: bool,
+    mode_axes: tuple[int, ...],
     train_slots: npt.NDArray[np.intp],
     targets: npt.NDArray[np.complex128],
 ) -> npt.NDArray[np.complex128]:
     r"""Least-squares butterfly FIR equaliser (see ``equalize="mimo"``).
 
-    ``samples``: ``(*pol, *channels, S·n)`` at ``S`` = ``samples_per_symbol``
-    (1 or 2); ``targets``: ``(*pol, *channels, len(train_slots))``. For each
-    channel, the taps :math:`w` minimise :math:`\sum_{k\in\text{train}}
-    |t_p[k] - \sum_{q,j} w_{pq,j}\,x_q[Sk + j]|^2` (circular indices,
-    :math:`j = -(T-1)/2 … (T-1)/2`); returns the equalised symbols
-    ``(*pol, *channels, n)``.
+    ``samples``: ``(*lead, S·n)`` at ``S`` = ``samples_per_symbol`` (1 or 2);
+    ``targets``: ``(*lead, len(train_slots))``. The leading axes in
+    ``mode_axes`` (polarisation; or core and polarisation) are equalised
+    jointly by one :math:`D\times D` filter over their :math:`D` modes; every
+    other leading axis (separately equalised cores, WDM channels) is an
+    independent group. For each group the taps :math:`w` minimise
+    :math:`\sum_{k\in\text{train}} |t_p[k] - \sum_{q,j} w_{pq,j}\,x_q[Sk + j]|^2`
+    (circular indices, :math:`j = -(T-1)/2 … (T-1)/2`). Returns the equalised
+    symbols ``(*lead, n)``.
     """
     x = np.asarray(samples, dtype=np.complex128)
     t = np.asarray(targets, dtype=np.complex128)
-    if dual:  # (2, *ch, N) → (*ch, 2, N)
-        x, t = np.moveaxis(x, 0, -2), np.moveaxis(t, 0, -2)
-    else:
-        x, t = x[..., None, :], t[..., None, :]
-    lead = x.shape[:-2]
-    n_pol, n_samples = x.shape[-2], x.shape[-1]
+    lead = x.shape[:-1]
+    n_lead = len(lead)
+    others = [a for a in range(n_lead) if a not in mode_axes]
+    order = (*others, *mode_axes, n_lead)
+    x, t = np.transpose(x, order), np.transpose(t, order)
+    group_shape = tuple(lead[a] for a in others)
+    mode_shape = tuple(lead[a] for a in mode_axes)
+    n_modes = math.prod(mode_shape)
+    n_samples = x.shape[-1]
     n_slots = n_samples // samples_per_symbol
     half = (n_taps - 1) // 2
     index = (
         samples_per_symbol * np.arange(n_slots)[:, None] + np.arange(-half, half + 1)
     ) % n_samples
-    flat_x = x.reshape(-1, n_pol, n_samples)
-    flat_t = t.reshape(-1, n_pol, t.shape[-1])
-    out = np.empty((flat_x.shape[0], n_pol, n_slots), dtype=np.complex128)
+    flat_x = x.reshape(-1, n_modes, n_samples)
+    flat_t = t.reshape(-1, n_modes, t.shape[-1])
+    out = np.empty((flat_x.shape[0], n_modes, n_slots), dtype=np.complex128)
     for c in range(flat_x.shape[0]):
-        regressors = flat_x[c][:, index].transpose(1, 0, 2).reshape(n_slots, n_pol * n_taps)
+        regressors = flat_x[c][:, index].transpose(1, 0, 2).reshape(n_slots, n_modes * n_taps)
         taps, *_ = np.linalg.lstsq(regressors[train_slots], flat_t[c].T, rcond=None)
         out[c] = (regressors @ taps).T
-    y = out.reshape(*lead, n_pol, n_slots)
-    return np.moveaxis(y, -2, 0) if dual else y[..., 0, :]
+    y = out.reshape(*group_shape, *mode_shape, n_slots)
+    return np.transpose(y, np.argsort(order))
 
 
 class SingleCarrierReceiver(PulseShapedReceiver):

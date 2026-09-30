@@ -47,7 +47,10 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   step, all schemes/backends, validated vs coupler/Jensen/supermode/hexagonal
   exact solutions). Next for SDM: single-core → multicore transceivers
   (per-core Tx/Rx, Simulation scoring per core); random coupling;
-  strongly coupled (generalised Manakov).
+  strongly coupled (generalised Manakov). SDM transceivers done (2026-09-30):
+  `n_cores` on transmitters/receivers (streams (core, pol, ch)), Simulation
+  scores per core (`StreamMetrics.core`), `equalize="mimo"` with
+  `mimo_across_cores=True` (joint 2M×2M), autodiff chain too.
 - Cross-checks done (physics.rst "Validation"): OptiCommPy 0.10 golden data
   (regenerate with `tests/numerical/_data/make_opticommpy_golden.py` in a
   separate env — OptiCommPy needs numba), N = 2 soliton, Manakov vector

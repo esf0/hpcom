@@ -70,11 +70,11 @@ class Simulation(HpcomModel):
                 f"link fibers are {sorted(pols)}-polarisation but the transmitter is "
                 f"{self.transmitter.polarization!r}"
             )
-        multicore = sorted({f.n_cores for f in self.link.fibers if f.n_cores > 1})
-        if multicore:
+        cores = {f.n_cores for f in self.link.fibers}
+        if cores and cores != {self.transmitter.n_cores}:
             issues.append(
-                f"the link has {multicore}-core fibers, but transmitters and receivers are "
-                "single-core; propagate multicore fields with Link.propagate directly"
+                f"link fibers have {sorted(cores)} cores but the transmitter has "
+                f"n_cores={self.transmitter.n_cores} (one signal per core)"
             )
         if issues:
             raise ValueError("incompatible simulation:\n  - " + "\n  - ".join(issues))
@@ -203,7 +203,7 @@ class Simulation(HpcomModel):
             ber, n_err, n_bits = bit_error_rate(ref_bits[pos][bit_sl], rx.bits[pos][bit_sl])
             n_sym_err = int(np.count_nonzero(np.asarray(rx.decisions[pos])[sym_sl] != tx_idx))
             mi, gmi = information_rates(y, tx_idx, cfg.points, cfg.bit_labels, pmf)
-            pol, ch = self._stream_labels(pos)
+            core, pol, ch = self._stream_labels(pos)
             streams.append(
                 StreamMetrics(
                     n_bits=n_bits,
@@ -219,6 +219,7 @@ class Simulation(HpcomModel):
                     gmi_bits=gmi,
                     polarization=pol,
                     channel=ch,
+                    core=core,
                 )
             )
             totals["bits"] += n_bits
@@ -248,14 +249,18 @@ class Simulation(HpcomModel):
         )
         return overall, tuple(streams)
 
-    def _stream_labels(self, pos: tuple[int, ...]) -> tuple[int | None, int | None]:
-        """Map a stream position to (polarisation index, channel index)."""
+    def _stream_labels(self, pos: tuple[int, ...]) -> tuple[int | None, int | None, int | None]:
+        """Map a stream position to (core, polarisation, channel) indices."""
         i = 0
+        core: int | None = None
         pol: int | None = None
         ch: int | None = None
-        if self.transmitter.polarization == "dual":
-            pol = pos[0]
+        if self.transmitter.n_cores > 1:
+            core = pos[0]
             i = 1
+        if self.transmitter.polarization == "dual":
+            pol = pos[i]
+            i += 1
         if isinstance(self.receiver, WDMReceiver):
             ch = self.receiver.selected_channels[pos[i]]
-        return pol, ch
+        return core, pol, ch

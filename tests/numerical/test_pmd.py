@@ -102,7 +102,7 @@ def test_least_squares_butterfly_inverts_a_known_2x2_fir():
     )
     mixed = rot @ up
     mixed[1] = np.roll(mixed[1], 1)
-    out = mimo_equalize(mixed, 2, 9, True, np.arange(n), s)
+    out = mimo_equalize(mixed, 2, 9, (0,), np.arange(n), s)
     np.testing.assert_allclose(out, s, atol=1e-9)
 
 

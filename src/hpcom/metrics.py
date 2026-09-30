@@ -76,10 +76,11 @@ class Metrics(HpcomModel):
 
 
 class StreamMetrics(Metrics):
-    """Metrics of one stream; ``polarization`` / ``channel`` are indices (``None`` if absent)."""
+    """Metrics of one stream; ``core`` / ``polarization`` / ``channel`` are indices (``None`` if absent)."""
 
     polarization: int | None = None
     channel: int | None = None
+    core: int | None = None
 
 
 def bit_error_rate(

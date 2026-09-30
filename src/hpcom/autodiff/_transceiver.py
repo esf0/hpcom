@@ -255,25 +255,31 @@ def _mimo(
         per, filtered = 2, filtered[..., :: sps // 2]
     else:
         per, filtered = 2, _resample(filtered, 2 * n_slots)
-    dual = receiver.polarization == "dual"
-    x = jnp.moveaxis(filtered, 0, -2) if dual else filtered[..., None, :]
     ref = jnp.asarray(reference)
-    t = jnp.moveaxis(ref, 0, -2) if dual else ref[..., None, :]
-    lead, n_pol, n_samples = x.shape[:-2], x.shape[-2], x.shape[-1]
+    lead = filtered.shape[:-1]
+    n_lead = len(lead)
+    modes = receiver._mimo_modes
+    others = [a for a in range(n_lead) if a not in modes]
+    order = (*others, *modes, n_lead)
+    x, t = jnp.transpose(filtered, order), jnp.transpose(ref, order)
+    group_shape = tuple(lead[a] for a in others)
+    mode_shape = tuple(lead[a] for a in modes)
+    n_modes = math.prod(mode_shape)
+    n_samples = x.shape[-1]
     half = (receiver.mimo_taps - 1) // 2
     index = (per * np.arange(n_slots)[:, None] + np.arange(-half, half + 1)) % n_samples
     train = np.arange(n_slots) if receiver.pilots is None else receiver.pilots.data_indices(n_slots)
-    flat_x = x.reshape(-1, n_pol, n_samples)
-    flat_t = t.reshape(-1, n_pol, t.shape[-1])
+    flat_x = x.reshape(-1, n_modes, n_samples)
+    flat_t = t.reshape(-1, n_modes, t.shape[-1])
 
     def one(xc: Array, tc: Array) -> Array:
-        r = xc[:, index].transpose(1, 0, 2).reshape(n_slots, n_pol * receiver.mimo_taps)
+        r = xc[:, index].transpose(1, 0, 2).reshape(n_slots, n_modes * receiver.mimo_taps)
         rt = r[train]
         taps = jnp.linalg.solve(jnp.conj(rt.T) @ rt, jnp.conj(rt.T) @ tc.T)
         return (r @ taps).T
 
-    y = jax.vmap(one)(flat_x, flat_t).reshape(*lead, n_pol, n_slots)
-    return jnp.moveaxis(y, -2, 0) if dual else y[..., 0, :]
+    y = jax.vmap(one)(flat_x, flat_t).reshape(*group_shape, *mode_shape, n_slots)
+    return jnp.transpose(y, np.argsort(order))
 
 
 def _cd_compensate(receiver: PulseShapedReceiver, x: Array, dt_s: float) -> Array:

@@ -10,22 +10,25 @@ Class hierarchy (the receiver side mirrors it)::
 
 Conventions shared by every transmitter:
 
-* **Launch power** is per WDM channel, summed over both polarisations
-  (:attr:`Transmitter.launch_power_per_channel_dbm`, default 0 dBm). A
-  dual-polarisation channel puts half of it in each polarisation. The
-  alternative input :attr:`Transmitter.launch_power_total_dbm` is the sum
-  over all channels. The field is returned in physical units (√W), scaled so
+* **Launch power** is per WDM channel (and per core), summed over both
+  polarisations (:attr:`Transmitter.launch_power_per_channel_dbm`, default
+  0 dBm). A dual-polarisation channel puts half of it in each polarisation.
+  The alternative input :attr:`Transmitter.launch_power_total_dbm` is the sum
+  over all channels and cores. The field is returned in physical units (√W), scaled so
   its *expected* average power equals the launch power; one finite
   realisation fluctuates around it by :math:`O(1/\sqrt{n})`.
 * **Array layout**: time (or symbol index) on the last axis; leading axes
-  are ``(polarisation, channel)``, each present only when applicable. A
-  single-polarisation single-carrier field is 1-D ``(n_samples,)``; a
-  dual-polarisation field is ``(2, n_samples)``.
+  are ``(core, polarisation, channel)``, each present only when applicable.
+  A single-polarisation single-carrier field is 1-D ``(n_samples,)``; a
+  dual-polarisation field is ``(2, n_samples)``; space-division multiplexing
+  over ``n_cores`` cores (for a :class:`~hpcom.MulticoreFiber`) adds a
+  leading core axis, ``(n_cores, 2, n_samples)`` — the multicore field
+  layout.
 * **bits** are information bits — the input of the bit→symbol mapping (or of
   the distribution matcher). Pilots carry no bits.
 * **symbols** are on the unit-power constellation scale (not scaled by the
   launch power) and include pilot slots.
-* **Randomness**: stream ``i`` (in ``(polarisation, channel)`` C order)
+* **Randomness**: stream ``i`` (in ``(core, polarisation, channel)`` C order)
   draws from child ``i`` of ``SeedSequence(seed)`` (or of a seed drawn from
   the ``rng`` argument), so streams are independent and reproducible.
 """
@@ -76,12 +79,17 @@ class Transmitter(ModulationSpec, ABC):
         ``"single"`` or ``"dual"`` (polarisation-division multiplexing; the two
         tributaries carry independent data).
     launch_power_per_channel_dbm
-        Average launch power **per WDM channel, summed over polarisations**,
-        in dBm. Default 0 dBm when neither power field is given.
+        Average launch power **per WDM channel (per core), summed over
+        polarisations**, in dBm. Default 0 dBm when neither power field is
+        given.
     launch_power_total_dbm
-        Alternative to the above: total launch power of all channels and
-        polarisations. Set at most one of the two; the other is derived
-        (``P_total = n_channels · P_channel``).
+        Alternative to the above: total launch power of all channels, cores
+        and polarisations. Set at most one of the two; the other is derived
+        (``P_total = n_cores · n_channels · P_channel``).
+    n_cores
+        Space-division multiplexing: independent data on each of
+        ``n_cores`` cores (fields ``(n_cores, …, n_samples)``), for links of
+        :class:`~hpcom.MulticoreFiber`.
     seed
         Seed for the random data. ``None`` draws fresh entropy (unless an
         ``rng`` is passed to :meth:`generate`).
@@ -90,6 +98,7 @@ class Transmitter(ModulationSpec, ABC):
     polarization: Polarization = "single"
     launch_power_per_channel_dbm: float | None = None
     launch_power_total_dbm: float | None = None
+    n_cores: int = Field(default=1, ge=1)
     seed: int | None = None
 
     _exclusive_fields: ClassVar[tuple[tuple[str, ...], ...]] = (
@@ -151,8 +160,10 @@ class Transmitter(ModulationSpec, ABC):
 
     @property
     def stream_shape(self) -> tuple[int, ...]:
-        """Leading shape of ``bits`` / ``symbols``: ``(2?, n_channels?)``."""
-        shape: tuple[int, ...] = (2,) if self.polarization == "dual" else ()
+        """Leading shape of ``bits`` / ``symbols``: ``(n_cores?, 2?, n_channels?)``."""
+        shape: tuple[int, ...] = (self.n_cores,) if self.n_cores > 1 else ()
+        if self.polarization == "dual":
+            shape += (2,)
         if self.n_channels > 1:
             shape += (self.n_channels,)
         return shape
@@ -161,15 +172,15 @@ class Transmitter(ModulationSpec, ABC):
 
     @property
     def launch_power_per_channel_w(self) -> float:
-        """Average power per channel (both polarisations), in W."""
+        """Average power per channel and core (both polarisations), in W."""
         if self.launch_power_total_dbm is not None:
-            return dbm_to_w(self.launch_power_total_dbm) / self.n_channels
+            return dbm_to_w(self.launch_power_total_dbm) / (self.n_channels * self.n_cores)
         return dbm_to_w(self.launch_power_per_channel_dbm or 0.0)
 
     @property
     def launch_power_total_w(self) -> float:
-        """Average power of all channels and polarisations, in W."""
-        return self.launch_power_per_channel_w * self.n_channels
+        """Average power of all channels, cores and polarisations, in W."""
+        return self.launch_power_per_channel_w * self.n_channels * self.n_cores
 
     @property
     def launch_power_per_polarization_w(self) -> float:
@@ -204,6 +215,7 @@ class Transmitter(ModulationSpec, ABC):
             "constellation": self.constellation,
             "dm": self.dm,
             "polarization": self.polarization,
+            "n_cores": self.n_cores,
         }
 
     # ---- generation --------------------------------------------------------

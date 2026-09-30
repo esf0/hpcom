@@ -503,9 +503,23 @@ exact.)
   backends agree with NumPy for every scheme; Strang and Suzuki keep orders
   2 and 4.
 
-Links of multicore fibers with EDFAs (independent ASE per core) and digital
-back-propagation work on multicore fields; transmitters and receivers are
-single-core, so :class:`~hpcom.Simulation` rejects multicore links for now.
+**Space-division multiplexing.** Transmitters and receivers with
+``n_cores = M`` carry independent data on every core: streams are laid out
+``(core, polarisation, channel)`` and fields ``(M, [2,] n)`` — the multicore
+layout — with ``launch_power_per_channel_dbm`` per channel *per core*.
+:class:`~hpcom.Simulation` accepts a link whose fibers have the transmitter's
+core count, scores every stream (``StreamMetrics.core``), and EDFAs add
+independent ASE per core; DBP back-propagates the multicore field. With
+coupled cores a per-core receiver sees crosstalk; ``equalize="mimo"`` with
+``mimo_across_cores=True`` fits one :math:`2M\times2M` butterfly FIR over all
+cores and polarisations (the coupled-core SDM receiver).
+[``tests/numerical/test_sdm.py``: uncoupled cores reproduce the single-core
+chain core by core to 1e-10 (nonlinear, noiseless); over a 7-core hexagon
+with :math:`\kappa L \approx 0.4` rad, per-core gains and per-core 2×2 MIMO
+stay below 10 dB SNR while the joint 14×14 MIMO exceeds 20 dB; full-field
+DBP of a 2-core, 3-channel WDM field inverts the noiseless link; OFDM over
+cores; the differentiable chain equals the NumPy one.]
+
 Not modelled: random (bend/twist-induced) coupling, strongly coupled cores
 (the generalised Manakov equations of [Mumtaz2013]_), inter-core
 nonlinearity.

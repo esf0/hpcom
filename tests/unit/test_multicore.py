@@ -133,12 +133,15 @@ def test_dbp_of_a_skewed_multicore_link_at_a_channel_offset():
 
 
 def test_simulation_rejects_multicore_links_with_a_clear_message():
+    """A multicore link needs a transmitter with as many cores (SDM); a single-core one is refused."""
     tx = SingleCarrierTransmitter(
         modulation_order=4, symbol_rate_hz=32e9, n_symbols=64, polarization="dual"
     )
-    with pytest.raises(ValidationError, match="4]-core fibers"):
+    with pytest.raises(ValidationError, match=r"\[4\] cores but the transmitter has n_cores=1"):
         Simulation(
             transmitter=tx,
             link=Link(elements=(_mcf(),)),
             receiver=tx.matched_receiver(),
         )
+    sdm = tx.replace(n_cores=4)
+    Simulation(transmitter=sdm, link=Link(elements=(_mcf(),)), receiver=sdm.matched_receiver())

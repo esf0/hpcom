@@ -19,7 +19,8 @@ datasets.
   RK4IP and adaptive local-error control; the generalised NLSE (dispersion of
   any order, loss spectrum, Raman response, self-steepening); polarisation-mode
   dispersion (coarse-step Manakov-PMD) with a 2×2 MIMO receiver equaliser;
-  weakly coupled multicore fibers; EDFAs with ASE; noise loading by SNR/OSNR;
+  weakly coupled multicore fibers with space-division-multiplexed transceivers
+  (per-core streams, MIMO across cores); EDFAs with ASE; noise loading by SNR/OSNR;
   digital back-propagation at realistic sampling rates.
 - **Backends**: NumPy (reference, always available), JAX (recommended for
   GPU) and TensorFlow (GPU, kept for systems where it suits better); a
