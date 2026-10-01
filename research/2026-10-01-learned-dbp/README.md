@@ -88,7 +88,7 @@ The chain is that of the WDM study; blocks 5 and 8 change.
 
 | # | Block | Fixed or learned |
 |---|---|---|
-| 1–3 | symbols, encoder, RRC shaping, 3 channels on a 50 GHz grid | QAM, or **learned points** (`gs`) |
+| 1–3 | symbols, encoder, RRC shaping, 3 channels on a 50 GHz grid, single polarisation | QAM, or **learned points** (`gs`) |
 | 4 | 10 × 80 km SSMF + EDFA (NF 5 dB), split-step NLSE of the whole field | fixed physics |
 | 5 | DBP | **fixed** (`dbp`, `wdbp`, `ffdbp`) or **learned** (`ldbp`, `wldbp`) |
 | 6–7 | channel selection, matched filter, data-aided complex gain | fixed |

@@ -28,7 +28,7 @@ including the split-step simulation of the fiber (`hpcom.autodiff`).
 |---|---|---|---|
 | 1 | symbol source | fixed | uniform indices 0…255, independent for each of the 3 channels |
 | 2 | **encoder** | **learned** (`gs`, `ae`) | index → complex point. `qam`: 256-QAM. `gs`: 256 free points (512 real numbers). `ae`: 256-QAM plus an MLP correction (one-hot → 64 → 2). Normalised to unit mean power. All three channels use the same encoder. |
-| 3 | pulse shaping, WDM | fixed | RRC (β = 0.1), 32 GBd, channels at −50, 0, +50 GHz, 5 samples/symbol of the composite field, launch power per channel |
+| 3 | pulse shaping, WDM | fixed | RRC (β = 0.1), 32 GBd, channels at −50, 0, +50 GHz, single polarisation, 5 samples/symbol of the composite field, launch power per channel |
 | 4 | fiber link | fixed physics | 10 × 80 km SSMF, split-step NLSE of the whole 3-channel field (30 steps/span, logarithmic), EDFA with NF 5 dB adding ASE after each span |
 | 5a | CD compensation | fixed | exact inverse of the link's β₂L on the whole field (frequency domain) — `qam+gauss`, `qam+nn`, `gs+gauss`, `ae+mem` |
 | 5b | single-channel DBP | fixed (not learned) | low-pass to 1.1·Rs around the centre channel, 2 samples/symbol, back-propagate with 4 steps/span — what a real receiver can do: the neighbours are filtered out, so their XPM/FWM stays — `*+dbp` |
@@ -110,6 +110,7 @@ gain over QAM + CDC ± standard error). Both tables: `results-256/summary.md`.
 - **A realistic phase recovery** (blind CPR) instead of the genie
   block-constant gain. CPR removes part of the slowly varying XPM phase that
   the NN decoder now competes for.
+- **Dual polarisation** (Manakov; supported by `hpcom.autodiff`, not used here).
 - **Bit-wise training** (BCE → GMI); several seeds per point (training
   variance is not assessed); more channels (here only two neighbours).
 
