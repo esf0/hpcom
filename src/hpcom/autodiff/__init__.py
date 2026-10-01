@@ -9,7 +9,9 @@ propagators, differentiable with :func:`jax.grad`, compilable with
 * :func:`amplify`, :func:`propagate_link` — EDFAs with reparameterised ASE
   from a JAX PRNG key, whole links;
 * :func:`backpropagate`, :func:`compensate` — digital back-propagation with
-  a trainable link model and nonlinearity scale (learned DBP);
+  a trainable link model and nonlinearity scale;
+* :func:`learned_dbp_init`, :func:`learned_dbp` — DBP with every step
+  trainable (filters, Kerr coefficients, power filters);
 * :func:`constellation`, :func:`sample_symbols`, :func:`modulate` — the
   transmitter with trainable constellation points, PMF and launch power;
 * :func:`demodulate` — the receiver chain, with DBP or any JAX function as
@@ -52,6 +54,12 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
     ) from exc
 
 from hpcom.autodiff._fiber import FiberParameters, GradientMode, propagate
+from hpcom.autodiff._learned_dbp import (
+    LearnedDBP,
+    LearnedDBPParameters,
+    learned_dbp,
+    learned_dbp_init,
+)
 from hpcom.autodiff._link import (
     AmplifierParameters,
     LinkParameters,
@@ -78,6 +86,8 @@ __all__ = [
     "CompensateFn",
     "FiberParameters",
     "GradientMode",
+    "LearnedDBP",
+    "LearnedDBPParameters",
     "LinkParameters",
     "TransmitterParameters",
     "amplify",
@@ -87,6 +97,8 @@ __all__ = [
     "constellation",
     "demodulate",
     "information_rates",
+    "learned_dbp",
+    "learned_dbp_init",
     "link_parameters",
     "modulate",
     "propagate",

@@ -296,6 +296,45 @@ the span accumulates :math:`L_\mathrm{eff}P_\mathrm{in}`, a ratio of 0.7 for
 80 km (see also the effective Kerr length in :doc:`numerics`).
 
 
+Learned DBP: every step trainable
+---------------------------------
+
+DBP is the split-step solution of the link run backwards,
+:math:`L_JN_J\cdots L_1N_1L_0`: linear steps
+:math:`L_j = e^{E_j(\omega)}` (dispersion, loss, amplifier gains of the
+receiver's link model) and Kerr steps :math:`A \mapsto Ae^{i\kappa_jP}`,
+:math:`\kappa_j = \gamma_\mathrm{eff}c_j`. There are two ways to learn it:
+
+* **physical parameters** — :func:`~hpcom.autodiff.backpropagate` with
+  trainable :class:`~hpcom.autodiff.FiberParameters`: per-span
+  :math:`\beta_2`, :math:`\gamma`, … (two numbers per span; the example
+  above). Every step stays an exact NLSE step of *some* fiber.
+* **every step free** — :func:`~hpcom.autodiff.learned_dbp`, after Häger
+  and Pfister [HagerPfister2018]_, [HagerPfister2021]_: each linear step
+  gets a smooth phase and gain correction,
+  :math:`L_j' = L_je^{i\delta\phi_j(\omega) + \delta g_j(\omega)}`
+  (piecewise linear on ``knots`` points across the band), each Kerr step
+  its own :math:`\kappa_j'` and a real FIR filter on the power,
+  :math:`A \mapsto Ae^{i\kappa_j'(h_j * P)}` — the filtered DBP of
+  [DuLowery2010]_ and the enhanced split step of [Secondini2016]_. These are
+  the degrees of freedom a few long steps need: where to put the
+  nonlinearity, how much of it, and that it acts on a low-passed power
+  (walk-off within the step).
+
+:func:`~hpcom.autodiff.learned_dbp_init` builds the structure and the
+parameters of standard DBP (equal to :func:`~hpcom.autodiff.backpropagate`
+to 1e-15: scalar and Manakov, any step placement, a channel at an offset);
+training only moves away from it. The function plugs into
+:func:`~hpcom.autodiff.demodulate` as its ``compensation`` stage, behind
+the receiver's low-pass and resampling, so it trains jointly with a
+learned transmitter and decoder.
+
+At one step per span (5 × 80 km, 6 dBm, noiseless), 300 Adam steps on the
+mean-square error take the residual from −5.7 dB (standard DBP, 1 step/span)
+to −18.3 dB, close to standard DBP with 4 steps/span (−19.5 dB)
+[``tests/numerical/test_learned_dbp.py``].
+
+
 Example: end-to-end learning
 ----------------------------
 
