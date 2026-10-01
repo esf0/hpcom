@@ -14,6 +14,7 @@ from hpcom import (  # noqa: E402
     EDFA,
     AdditiveNoise,
     Fiber,
+    GainFiber,
     Link,
     LossSpectrum,
     MulticoreFiber,
@@ -44,6 +45,16 @@ GNLSE = Fiber(
     scheme="rk4ip",
     n_steps=20,
 ).with_loss_spectrum(LossSpectrum(wavelengths_m=[1.5e-6, 1.6e-6], alpha_db_per_km=[0.3, 0.2]))
+LASER = GainFiber(
+    length_km=4e-3,
+    beta2_s2_per_m=-2e-26,
+    gain_db_per_m=1.5,
+    gain_bandwidth_hz=3e12,
+    gain_shape="parabolic",
+    saturation_energy_j=5e-13,
+    nonlinear_gain_per_w_per_km=-50.0,
+    n_steps=12,
+)
 MULTICORE = MulticoreFiber.from_fiber(
     Fiber.ssmf(5.0, n_steps=10),
     linear_array_coupling(3, 1e-3),
@@ -53,11 +64,12 @@ MULTICORE = MulticoreFiber.from_fiber(
 
 
 @pytest.mark.parametrize(
-    "fiber", [Fiber.ssmf(80.0), GNLSE, MULTICORE], ids=["ssmf", "gnlse", "mcf"]
+    "fiber", [Fiber.ssmf(80.0), GNLSE, MULTICORE, LASER], ids=["ssmf", "gnlse", "mcf", "laser"]
 )
 def test_parameters_round_trip_through_the_fiber(fiber):
     params = ad.FiberParameters.from_fiber(fiber)
     back = params.to_fiber(fiber)
+    assert type(back) is type(fiber)
     np.testing.assert_allclose(back.dispersion_betas, fiber.dispersion_betas, rtol=1e-14)
     assert back.gamma_per_w_per_km == pytest.approx(fiber.gamma_per_w_per_km, rel=1e-15)
     assert back.alpha_db_per_km == pytest.approx(fiber.alpha_db_per_km, rel=1e-15)
@@ -68,6 +80,14 @@ def test_parameters_round_trip_through_the_fiber(fiber):
         np.testing.assert_allclose(
             back.core_beta1_offsets_s_per_m, fiber.core_beta1_offsets_s_per_m, rtol=1e-14
         )
+    if isinstance(fiber, GainFiber):
+        for name in (
+            "gain_db_per_m",
+            "gain_bandwidth_hz",
+            "saturation_energy_j",
+            "nonlinear_gain_per_w_per_km",
+        ):
+            assert getattr(back, name) == pytest.approx(getattr(fiber, name), rel=1e-14)
 
 
 def test_units_keep_every_parameter_o1():
@@ -93,6 +113,7 @@ def test_params_must_match_the_fibers_terms():
             "not differentiable",
         ),
         (GNLSE, {"gradient": "reversible"}, ValueError, "invertible"),
+        (LASER, {"gradient": "reversible"}, ValueError, "saturated-gain"),
         (Fiber.ssmf(1.0), {"gradient": "adjoint"}, ValueError, "gradient must be"),
         (Fiber.ssmf(1.0), {"direction": "sideways"}, ValueError, "direction"),
     ],
@@ -123,15 +144,18 @@ def test_jit_with_a_static_fiber_and_vmap_over_parameters():
 
 
 @pytest.mark.parametrize(
-    ("fiber", "tol"),
-    [(Fiber.ssmf(80.0, n_steps=40), 2e-4), (GNLSE, 1e-2)],
-    ids=["ssmf-100ghz", "gnlse-25thz"],
+    ("fiber", "dt", "scale", "tol"),
+    [
+        (Fiber.ssmf(80.0, n_steps=40), 1e-11, 0.3, 2e-4),
+        (GNLSE, 2e-14, 1.0, 1e-2),
+        (LASER, 2e-14, 1.0, 1e-4),
+    ],
+    ids=["ssmf-100ghz", "gnlse-25thz", "laser-25thz"],
 )
-def test_complex64_runs_in_single_precision(fiber, tol):
+def test_complex64_runs_in_single_precision(fiber, dt, scale, tol):
     """float32 resolves a phase φ to ~1e-7·φ: the band-edge dispersion phase per step
     (≈ 1 rad at 100 GHz over 2 km; ≈ 6e3 rad at 25 THz over 25 m) sets the accuracy."""
-    dt = 1e-11 if fiber is not GNLSE else 2e-14
-    x64 = _x((1024,), 0.3 if fiber is not GNLSE else 1.0)
+    x64 = _x((1024,), scale)
     ref = fiber.propagate(x64, dt)
     out = ad.propagate(jnp.asarray(x64, jnp.complex64), fiber, dt)
     assert out.dtype == jnp.complex64

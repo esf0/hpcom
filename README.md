@@ -22,6 +22,9 @@ datasets.
   weakly coupled multicore fibers with space-division-multiplexed transceivers
   (per-core streams, MIMO across cores); EDFAs with ASE; noise loading by SNR/OSNR;
   digital back-propagation at realistic sampling rates.
+- **Fiber lasers**: gain fibers with saturable gain of finite bandwidth,
+  nonlinear gain and two-photon absorption (the complex Ginzburg–Landau
+  equation), saturable absorbers, filters, couplers and ring cavities.
 - **Backends**: NumPy (reference, always available), JAX (recommended for
   GPU) and TensorFlow (GPU, kept for systems where it suits better); a
   registry and conformance test suites for adding more.

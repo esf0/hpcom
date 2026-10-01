@@ -131,6 +131,21 @@ def test_batch_axes_are_independent(nonlinear_backend):
         )
 
 
+def test_local_error_accepts_fields_of_any_rank_in_turn(nonlinear_backend):
+    """One kernel serves every rank in turn (TensorFlow relaxes shapes after a retrace).
+
+    The step control uses the norm of the whole field, so batch members are
+    not independent here.
+    """
+    fiber = StubFiber(
+        length_km=20.0, scheme=StubScheme(method="ssfm-local-error", local_error=1e-5)
+    )
+    prop = get_propagator(nonlinear_backend)
+    for shape in [(256,), (3, 256), (2, 3, 256)]:
+        out = prop.propagate(_random_field(shape, 3e-2), fiber, dt_s=1e-12)
+        assert out.shape == shape and np.all(np.isfinite(out))
+
+
 # ---------------------------------------------------------------------------
 # Linear propagation
 # ---------------------------------------------------------------------------

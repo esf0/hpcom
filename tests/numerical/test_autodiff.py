@@ -26,6 +26,7 @@ from hpcom import (  # noqa: E402
     EDFA,
     DigitalBackPropagation,
     Fiber,
+    GainFiber,
     Link,
     LossSpectrum,
     MulticoreFiber,
@@ -52,6 +53,17 @@ def _field(shape: tuple[int, ...], scale: float, seed: int = 0, band: float = 0.
 
 _SSMF = Fiber.ssmf(30.0, n_steps=12).replace(beta3_s3_per_m=1.2e-40)
 _SPECTRUM = LossSpectrum(wavelengths_m=[1.50e-6, 1.60e-6], alpha_db_per_km=[0.26, 0.17])
+#: 4 m of gain fiber at fiber-laser scales (γ and ε large enough to matter at these powers).
+_LASER = GainFiber(
+    length_km=4e-3,
+    alpha_db_per_km=0.0,
+    beta2_s2_per_m=-2e-26,
+    gamma_per_w_per_km=500.0,
+    gain_db_per_m=1.5,
+    gain_bandwidth_hz=3e12,
+    nonlinear_gain_per_w_per_km=200.0,
+    n_steps=12,
+)
 
 #: name → (fiber, field shape, dt): every scheme, term and layout autodiff supports.
 CASES: dict[str, tuple[Fiber, tuple[int, ...], float]] = {
@@ -111,6 +123,31 @@ CASES: dict[str, tuple[Fiber, tuple[int, ...], float]] = {
         (7, 2, 256),
         2e-12,
     ),
+    "gain-nonlinear-gain": (_LASER, (512,), 2e-14),
+    "cgle-rk4ip": (
+        _LASER.replace(gain_shape="parabolic", gain_bandwidth_hz=20e12, scheme="rk4ip"),
+        (512,),
+        2e-14,
+    ),
+    "two-photon-absorption-suzuki": (
+        Fiber(
+            length_km=4e-3,
+            alpha_db_per_km=0.1,
+            gamma_per_w_per_km=500.0,
+            nonlinear_gain_per_w_per_km=-300.0,
+            scheme="ssfm4-suzuki",
+            n_steps=4,
+        ),
+        (512,),
+        2e-14,
+    ),
+    "saturated-gain-dual-log": (
+        _LASER.replace(
+            polarization="dual", saturation_energy_j=5e-13, step_distribution="logarithmic"
+        ),
+        (2, 512),
+        2e-14,
+    ),
 }
 
 
@@ -120,7 +157,10 @@ def _case(name: str) -> tuple[Fiber, np.ndarray, float]:
 
 
 def _modes(fiber: Fiber) -> tuple[str, ...]:
-    return ("store", "checkpoint") + (() if fiber.scheme.method == "rk4ip" else ("reversible",))
+    invertible = (
+        fiber.scheme.method != "rk4ip" and getattr(fiber, "saturation_energy_j", None) is None
+    )
+    return ("store", "checkpoint") + (("reversible",) if invertible else ())
 
 
 # ---------------------------------------------------------------------------

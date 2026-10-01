@@ -4,8 +4,9 @@ Runs exactly the schemes of the NumPy reference backend
 (:mod:`hpcom.backends.numpy.ssfm`) — the uniform fast path, the general
 sub-step sequence ``D(m_J) N(c_J) … N(c_1) D(m_0)`` (every step placement,
 Kerr position, Kerr length, intensity filter and fourth-order composition),
-RK4IP and the adaptive local-error method, for single- and multicore fibers
-and every generalised-NLSE term (Raman response, self-steepening) —
+RK4IP and the adaptive local-error method, for single- and multicore fibers,
+every generalised-NLSE term (Raman response, self-steepening) and the gain
+terms of :mod:`hpcom.laser` (nonlinear gain, saturated gain) —
 as XLA-compiled loops
 (``lax.fori_loop`` / ``lax.while_loop``). The linear operators are built in
 NumPy, so results agree with the NumPy backend to FFT rounding.
@@ -35,13 +36,17 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     effective_gamma_per_m,
+    gain_spectrum,
     kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    nonlinear_gain_per_m,
     pmd_pieces,
     pmd_realization,
+    saturation_energy_j,
     shock_factor,
     signed_length_m,
+    small_signal_gain_per_m,
     split_step_sequence,
     step_sizes_m,
     uses_fast_path,
@@ -53,11 +58,42 @@ def _power(a: Any, dual: bool) -> Any:
     return jnp.sum(p, axis=-2, keepdims=True) if dual else p
 
 
-def _kerr(a: Any, phase_per_watt: Any, dual: bool, response: Any = None) -> Any:
+def _kerr(
+    a: Any, phase_per_watt: Any, dual: bool, response: Any = None, gain_per_watt: Any = None
+) -> Any:
     p = _power(a, dual)
     if response is not None:
         p = jnp.real(jnp.fft.ifft(jnp.fft.fft(p, axis=-1) * response, axis=-1))
-    return a * jnp.exp(1j * phase_per_watt * p)
+    if gain_per_watt is None:
+        return a * jnp.exp(1j * phase_per_watt * p)
+    return a * _kerr_gain_factor(p, phase_per_watt, gain_per_watt)
+
+
+def _kerr_gain_factor(p: Any, phase_per_watt: Any, gain_per_watt: Any) -> Any:
+    """:func:`hpcom.backends.base.kerr_gain_factor` (NaN where 2εcP ≥ 1: the step diverges)."""
+    u = 2.0 * gain_per_watt * p
+    small = jnp.abs(u) < 1e-8
+    safe = jnp.where(small, 0.5, u)
+    log_ratio = jnp.where(small, 1.0 + u / 2.0, -jnp.log1p(-safe) / safe)
+    return jnp.exp(1j * phase_per_watt * p * log_ratio) / jnp.sqrt(1.0 - u)
+
+
+def _saturated(spectrum: Any, m: Any, lin: Any, sat: Any, dual: bool, move: Any) -> Any:
+    """Linear step with saturated gain at the mid-step energy (``_Disperser._saturated``).
+
+    ``sat = (g₀G(ω)/2, 1/E_sat, Δt/n)``.
+    """
+    half_gain, inv_sat, scale = sat
+
+    def energy(x: Any) -> Any:
+        e = jnp.sum(jnp.real(x) ** 2 + jnp.imag(x) ** 2, axis=-1, keepdims=True) * scale
+        return jnp.sum(e, axis=-2, keepdims=True) if dual else e
+
+    base = spectrum * jnp.exp(lin[0] * m)
+    e0 = energy(spectrum)
+    e_mid = (e0 + energy(base * jnp.exp(m * half_gain / (1.0 + e0 * inv_sat)))) / 2.0
+    out = base * jnp.exp(m * half_gain / (1.0 + e_mid * inv_sat))
+    return _pmd_move(out, lin, move) if len(lin) == 5 else out
 
 
 def _pmd_move(spectrum: Any, lin: Any, move: Any) -> Any:
@@ -103,7 +139,7 @@ def _uniform(a: Any, d_full: Any, d_half: Any, phase: Any, n_steps: Any, dual: b
     return jnp.fft.ifft(jnp.fft.fft(last, axis=-1) * d_half, axis=-1)
 
 
-@partial(jax.jit, static_argnames=("dual", "filtered", "axis"))
+@partial(jax.jit, static_argnames=("dual", "filtered", "axis", "gained", "saturated"))
 def _sequence(
     a: Any,
     lin: Any,
@@ -113,12 +149,27 @@ def _sequence(
     dual: bool,
     filtered: bool,
     axis: int | None,
+    gains: Any = None,
+    sat: Any = None,
+    gained: bool = False,
+    saturated: bool = False,
 ) -> Any:
-    def step(j: Any, spectrum: Any) -> Any:
-        x = _kerr(jnp.fft.ifft(spectrum, axis=-1), phases[j], dual, response if filtered else None)
-        return _disperse(jnp.fft.fft(x, axis=-1), linear[j + 1], lin, axis, j + 1)
+    def disperse(spectrum: Any, j: Any) -> Any:
+        if saturated:
+            return _saturated(spectrum, linear[j], lin, sat, dual, j)
+        return _disperse(spectrum, linear[j], lin, axis, j)
 
-    spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], lin, axis, 0)
+    def step(j: Any, spectrum: Any) -> Any:
+        x = _kerr(
+            jnp.fft.ifft(spectrum, axis=-1),
+            phases[j],
+            dual,
+            response if filtered else None,
+            gains[j] if gained else None,
+        )
+        return disperse(jnp.fft.fft(x, axis=-1), j + 1)
+
+    spectrum = disperse(jnp.fft.fft(a, axis=-1), 0)
     return jnp.fft.ifft(lax.fori_loop(0, phases.shape[0], step, spectrum), axis=-1)
 
 
@@ -134,12 +185,13 @@ def _rk4ip(
     axis: int | None,
     filtered: bool,
     shocked: bool,
+    eps: Any = 0.0,
 ) -> Any:
-    def kerr(x: Any) -> Any:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
+    def kerr(x: Any) -> Any:  # (iγ_eff + ε)(1 + iτ∂t)[x · R*P(x)]
         p = _power(x, dual)
         if filtered:
             p = jnp.real(jnp.fft.ifft(jnp.fft.fft(p, axis=-1) * response, axis=-1))
-        out = 1j * gamma_eff * p * x
+        out = (1j * gamma_eff + eps) * p * x
         if shocked:
             out = jnp.fft.ifft(jnp.fft.fft(out, axis=-1) * shock, axis=-1)
         return out
@@ -161,7 +213,7 @@ def _rk4ip(
     return lax.fori_loop(0, sizes.shape[0], step, a)
 
 
-@partial(jax.jit, static_argnames=("dual", "filtered", "effective", "axis"))
+@partial(jax.jit, static_argnames=("dual", "filtered", "effective", "axis", "gained"))
 def _local_error(
     a: Any,
     lin: Any,
@@ -176,11 +228,14 @@ def _local_error(
     filtered: bool,
     effective: bool,
     axis: int | None,
+    eps: Any = 0.0,
+    gained: bool = False,
 ) -> Any:
     def kerr(spectrum: Any, h: Any) -> Any:
         length = 2.0 * jnp.sinh(alpha * h / 2.0) / alpha if effective else h
         x = jnp.fft.ifft(spectrum, axis=-1)
-        x = _kerr(x, gamma_eff * length, dual, response if filtered else None)
+        gain = eps * length if gained else None
+        x = _kerr(x, gamma_eff * length, dual, response if filtered else None, gain)
         return jnp.fft.fft(x, axis=-1)
 
     def disperse(spectrum: Any, m: Any) -> Any:
@@ -281,6 +336,7 @@ class JaxPropagator(Propagator):
                 lin = (jnp.asarray(exponent), jnp.asarray(vectors), jnp.asarray(adjoint))
                 axis = core_axis(fiber)
             response = kerr_power_response(a.shape[-1], dt_s, fiber)
+            eps = nonlinear_gain_per_m(fiber)
             response_arr = jnp.asarray(
                 np.ones(a.shape[-1], np.complex128) if response is None else response
             )
@@ -297,6 +353,7 @@ class JaxPropagator(Propagator):
                     axis,
                     response is not None,
                     shock is not None,
+                    eps,
                 )
             elif scheme.method == "ssfm-local-error":
                 length_m = signed_length_m(fiber, direction)
@@ -315,6 +372,8 @@ class JaxPropagator(Propagator):
                     response is not None,
                     scheme.kerr_length == "effective" and alpha > 0,
                     axis,
+                    eps,
+                    eps != 0.0,
                 )
                 if float(reached) < abs(length_m) * (1.0 - 1e-12):
                     raise RuntimeError(
@@ -322,6 +381,13 @@ class JaxPropagator(Propagator):
                     )
             else:
                 linear, kerr = split_step_sequence(fiber, direction)
+                e_sat = saturation_energy_j(fiber)
+                sat = None
+                if e_sat is not None:
+                    g = gain_spectrum(a.shape[-1], dt_s, fiber)
+                    assert g is not None
+                    half_gain = small_signal_gain_per_m(fiber) * g / 2.0
+                    sat = (jnp.asarray(half_gain), 1.0 / e_sat, dt_s / a.shape[-1])
                 out = _sequence(
                     jnp.asarray(a),
                     lin,
@@ -331,6 +397,10 @@ class JaxPropagator(Propagator):
                     dual,
                     response is not None,
                     axis,
+                    jnp.asarray(eps * kerr),
+                    sat,
+                    eps != 0.0,
+                    sat is not None,
                 )
             result: ComplexArray = np.asarray(out, dtype=np.complex128)
         if pmd is not None and direction == "forward":

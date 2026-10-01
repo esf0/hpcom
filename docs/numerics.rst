@@ -644,6 +644,18 @@ so every split-step scheme keeps its order and exact invertibility; RK4IP
 uses the pieces of each step's first and second half for its two
 interaction-picture maps.
 
+**Gain** (:doc:`physics`, *Fiber lasers and gain fibers*): unsaturated gain
+:math:`g_0G(\omega)/2` joins :math:`\hat D` and changes nothing else.
+Saturated gain makes the linear step depend on the field's energy: each
+linear sub-step takes the gain of its mid-step energy by one predictor
+step, second order, so saturated runs are second order in every split-step
+scheme and are not exactly invertible. Nonlinear gain
+:math:`\varepsilon` keeps the Kerr sub-step exact
+(:math:`P \to P/(1 - 2\varepsilon cP)` with its logarithmic phase) and
+invertible. A parabolic gain profile is unbounded in :math:`\omega`, and
+the negative sub-steps of the fourth-order compositions would run a
+backward heat equation — rejected; RK4IP and Strang splitting are stable.
+
 Measured (``tests/backends/test_gnlse_conformance.py``): on the linearised
 equation around a CW pump — Raman gain, modulation instability, β₂…β₅ and
 the shock factor at once — the error falls by 4.0 (Strang) and 15–16

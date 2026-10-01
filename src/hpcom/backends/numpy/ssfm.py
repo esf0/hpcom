@@ -49,14 +49,19 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     effective_gamma_per_m,
+    gain_spectrum,
+    kerr_gain_factor,
     kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    nonlinear_gain_per_m,
     pmd_pieces,
     pmd_realization,
     pmd_rotate,
+    saturation_energy_j,
     shock_factor,
     signed_length_m,
+    small_signal_gain_per_m,
     split_step_sequence,
     step_sizes_m,
     uses_fast_path,
@@ -87,6 +92,19 @@ class _Disperser:
     def __init__(self, fiber: FiberLike, n_samples: int, dt_s: float) -> None:
         self._cache: dict[float, np.ndarray] = {}
         self.pmd = pmd_realization(fiber)
+        e_sat = saturation_energy_j(fiber)
+        self._saturable = None
+        if e_sat is not None:
+            g = gain_spectrum(n_samples, dt_s, fiber)
+            assert g is not None
+            # (g₀/2·G(ω), 1/E_sat, Δt/n for Parseval, polarisation axis summed too)
+            half_gain = small_signal_gain_per_m(fiber) * g / 2.0
+            self._saturable = (
+                half_gain,
+                1.0 / e_sat,
+                dt_s / n_samples,
+                fiber.polarization == "dual",
+            )
         self._moves: tuple[np.ndarray, np.ndarray] | None = None
         if self.pmd is not None:
             omega = 2.0 * np.pi * np.fft.fftfreq(n_samples, d=dt_s)
@@ -115,9 +133,36 @@ class _Disperser:
         if self.pmd is not None:
             self._moves = pmd_pieces(self.pmd, start_m, lengths_m)
 
+    def _energy(self, spectrum: np.ndarray) -> np.ndarray:
+        """Energy in the window, per batch element (Parseval), summed over polarisations."""
+        assert self._saturable is not None
+        _, _, scale, dual = self._saturable
+        e: np.ndarray = np.sum(np.abs(spectrum) ** 2, axis=-1, keepdims=True) * scale
+        out: np.ndarray = e.sum(axis=-2, keepdims=True) if dual else e
+        return out
+
+    def _saturated(self, spectrum: np.ndarray, m: float) -> np.ndarray:
+        r"""``e^{m(L̂ + g(E)G/2)}`` with :math:`g(E) = g_0/(1 + E/E_\mathrm{sat})` at the mid-step energy.
+
+        Predictor: the step with the gain of the entry energy :math:`E_0`
+        gives :math:`E_1`; the step is then taken with :math:`g((E_0+E_1)/2)`
+        (second order in the step for the saturation dynamics).
+        """
+        assert self._saturable is not None
+        half_gain, inv_sat, _, _ = self._saturable
+        base = spectrum * self.factor(m)
+        e0 = self._energy(spectrum)
+        trial = base * np.exp(m * half_gain / (1.0 + e0 * inv_sat))
+        e_mid = (e0 + self._energy(trial)) / 2.0
+        out: np.ndarray = base * np.exp(m * half_gain / (1.0 + e_mid * inv_sat))
+        return out
+
     def __call__(self, spectrum: np.ndarray, m: float, move: int | None = None) -> np.ndarray:
         if self._vectors is None:
-            out: np.ndarray = spectrum * self.factor(m)
+            if self._saturable is not None:
+                out: np.ndarray = self._saturated(spectrum, m)
+            else:
+                out = spectrum * self.factor(m)
             if self.pmd is None:
                 return out
             assert self._moves is not None and move is not None, "PMD needs set_moves() and move="
@@ -177,10 +222,11 @@ class NumpySSFMPropagator(Propagator):
         start_m: float,
     ) -> ComplexArray:
         response = kerr_power_response(a.shape[-1], dt_s, fiber)
+        eps = nonlinear_gain_per_m(fiber)
         if fiber.scheme.method == "rk4ip":
             shock = shock_factor(a.shape[-1], dt_s, fiber)
             disperse.set_moves(start_m, np.repeat(sizes / 2.0, 2))
-            return self._rk4ip(a, disperse, sizes, gamma_eff, dual, response, shock)
+            return self._rk4ip(a, disperse, sizes, gamma_eff, dual, response, shock, eps)
         if fiber.scheme.method == "ssfm-local-error":
             return self._local_error(
                 a,
@@ -192,10 +238,11 @@ class NumpySSFMPropagator(Propagator):
                 dual,
                 response,
                 attenuation_per_m(fiber) if fiber.scheme.kerr_length == "effective" else 0.0,
+                eps,
             )
         linear, kerr = split_step_sequence(fiber, direction)
         disperse.set_moves(start_m, linear)
-        return self._sequence(a, disperse, linear, kerr, gamma_eff, dual, response)
+        return self._sequence(a, disperse, linear, kerr, gamma_eff, dual, response, eps)
 
     @staticmethod
     def _uniform(
@@ -224,6 +271,7 @@ class NumpySSFMPropagator(Propagator):
         dual: bool,
         response: np.ndarray | None,
         shock: np.ndarray | None,
+        eps: float = 0.0,
     ) -> ComplexArray:
         """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), 8 FFTs per step.
 
@@ -231,8 +279,8 @@ class NumpySSFMPropagator(Propagator):
         response and 2 more with self-steepening.
         """
 
-        def kerr(x: np.ndarray) -> np.ndarray:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
-            out: np.ndarray = 1j * gamma_eff * _kerr_power(x, dual, response) * x
+        def kerr(x: np.ndarray) -> np.ndarray:  # (iγ_eff + ε)(1 + iτ∂t)[x · R*P(x)]
+            out: np.ndarray = (1j * gamma_eff + eps) * _kerr_power(x, dual, response) * x
             if shock is not None:
                 out = np.fft.ifft(np.fft.fft(out, axis=-1) * shock, axis=-1)
             return out
@@ -265,6 +313,7 @@ class NumpySSFMPropagator(Propagator):
         dual: bool,
         response: np.ndarray | None,
         alpha_eff: float,
+        eps: float = 0.0,
     ) -> ComplexArray:
         """Local-error method (Sinkin et al. 2003) in the spectral domain, 6 FFTs per 2h."""
         sign, total = np.sign(length_m), abs(length_m)
@@ -274,7 +323,8 @@ class NumpySSFMPropagator(Propagator):
 
         def kerr(spectrum: np.ndarray, h: float) -> np.ndarray:
             x = np.fft.ifft(spectrum, axis=-1)
-            x *= np.exp(1j * (gamma_eff * kerr_length(h)) * _kerr_power(x, dual, response))
+            c = kerr_length(h)
+            x *= kerr_gain_factor(_kerr_power(x, dual, response), gamma_eff * c, eps * c)
             out: np.ndarray = np.fft.fft(x, axis=-1)
             return out
 
@@ -313,12 +363,13 @@ class NumpySSFMPropagator(Propagator):
         gamma_eff: float,
         dual: bool,
         response: np.ndarray | None,
+        eps: float = 0.0,
     ) -> ComplexArray:
         """``D(m_J) N(c_J) … D(m_1) N(c_1) D(m_0)`` for any sub-step sequence."""
         spectrum = disperse(np.fft.fft(a, axis=-1), linear[0], 0)
         for j, c in enumerate(kerr):
             a = np.fft.ifft(spectrum, axis=-1)
-            a *= np.exp(1j * (gamma_eff * c) * _kerr_power(a, dual, response))
+            a *= kerr_gain_factor(_kerr_power(a, dual, response), gamma_eff * c, eps * c)
             spectrum = disperse(np.fft.fft(a, axis=-1), linear[j + 1], j + 1)
         out: ComplexArray = np.fft.ifft(spectrum, axis=-1)
         return out

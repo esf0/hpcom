@@ -8,6 +8,7 @@ Building blocks (all immutable, validated pydantic models)::
         OFDMConfig, OFDMTransmitter, OFDMReceiver,          # CP-OFDM
         PilotConfig, ConstellationConfig,                   # pilots, shaping
         Fiber, EDFA, AdditiveNoise, Link,                   # the channel
+        GainFiber, SaturableAbsorber, RingCavity,           # fiber lasers
         DigitalBackPropagation,                             # receiver DSP
         Simulation, Result, Metrics,                        # run + score
     )
@@ -29,6 +30,13 @@ from hpcom._version import __version__
 from hpcom.amplifier import EDFA, Amplifier
 from hpcom.dsp import Compensator, DigitalBackPropagation
 from hpcom.fiber import Fiber, LossSpectrum
+from hpcom.laser import (
+    GainFiber,
+    OutputCoupler,
+    RingCavity,
+    SaturableAbsorber,
+    SpectralFilter,
+)
 from hpcom.link import Link
 from hpcom.metrics import Metrics, StreamMetrics
 from hpcom.modulation import ConstantCompositionDM, ConstellationConfig
@@ -73,6 +81,7 @@ __all__ = [
     "ConstellationConfig",
     "DigitalBackPropagation",
     "Fiber",
+    "GainFiber",
     "Link",
     "LossSpectrum",
     "Metrics",
@@ -82,6 +91,7 @@ __all__ = [
     "OFDMReceiver",
     "OFDMSignal",
     "OFDMTransmitter",
+    "OutputCoupler",
     "PilotConfig",
     "PulseShapedReceiver",
     "PulseShapedTransmitter",
@@ -89,6 +99,8 @@ __all__ = [
     "ReceivedSymbols",
     "Receiver",
     "Result",
+    "RingCavity",
+    "SaturableAbsorber",
     "Scheme",
     "Simulation",
     "SimulationMetadata",
@@ -96,6 +108,7 @@ __all__ = [
     "SingleCarrierReceiver",
     "SingleCarrierSignal",
     "SingleCarrierTransmitter",
+    "SpectralFilter",
     "StreamMetrics",
     "TransmittedSignal",
     "Transmitter",

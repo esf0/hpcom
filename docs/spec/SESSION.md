@@ -94,6 +94,23 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   orders, inverse. Open: vector Raman in Manakov (needs a full CNLSE
   reference to validate the averaging), per-pol pilot sequences for
   pilot-trained MIMO, CMA/LMS adaptive equalisers.
+- Fiber lasers done (2026-10-01): `hpcom.laser` — `GainFiber` (small-signal
+  gain, Lorentzian/parabolic bandwidth, gain saturating on the window
+  energy by a mid-step predictor), `Fiber.nonlinear_gain_per_w_per_km`
+  (cubic gain / two-photon absorption, exact Kerr sub-step
+  P → P/(1 − 2εcP)), `SaturableAbsorber`, `SpectralFilter`,
+  `OutputCoupler`, `RingCavity` (converges on the output power profile).
+  numpy/jax/tf kernels agree to 1e-14; autodiff has every gain parameter
+  (reversible mode refused with saturation). Validated: gain spectrum
+  exact, saturated CW amplifier closed form (order 2 in every split-step
+  scheme), TPA exact and inverted, Pereira–Stenflo CGLE soliton (Strang 2,
+  RK4IP 4), ring-cavity CW steady state; example 12 self-starts a soliton
+  laser with Kelly sidebands at the predicted offsets. Parabolic gain
+  rejects the fourth-order compositions (backward heat equation on the
+  negative sub-steps); Lorentzian keeps them at order 4. Also fixed: the
+  TensorFlow local-error kernel failed on a field of another rank after a
+  relaxed retrace (`tf.norm` lost its scalar shape). Open: fast gain
+  dynamics, gain-fiber ASE, rate equations, quintic CGLE.
 - Laser phase noise, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.

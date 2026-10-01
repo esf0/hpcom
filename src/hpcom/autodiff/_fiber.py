@@ -68,6 +68,11 @@ class FiberParameters(NamedTuple):
     ``pmd_ps_per_sqrt_km``
         PMD coefficient (the birefringence axes of the realisation stay
         fixed by the fiber's ``pmd_seed``).
+    ``gain_db_per_m``, ``gain_bandwidth_thz``, ``saturation_energy_pj``
+        Small-signal gain, gain FWHM and saturation energy of a
+        :class:`~hpcom.laser.GainFiber`.
+    ``nonlinear_gain_per_w_per_km``
+        Cubic gain ε (negative: two-photon absorption).
     """
 
     alpha_db_per_km: Array | None
@@ -83,6 +88,10 @@ class FiberParameters(NamedTuple):
     core_beta0_offsets_per_km: Array | None = None
     core_beta1_offsets_ps_per_km: Array | None = None
     pmd_ps_per_sqrt_km: Array | None = None
+    gain_db_per_m: Array | None = None
+    gain_bandwidth_thz: Array | None = None
+    saturation_energy_pj: Array | None = None
+    nonlinear_gain_per_w_per_km: Array | None = None
 
     @classmethod
     def from_fiber(cls, fiber: Fiber) -> FiberParameters:
@@ -97,6 +106,9 @@ class FiberParameters(NamedTuple):
         beta0 = getattr(fiber, "core_beta0_offsets_per_m", None)
         skew = getattr(fiber, "core_beta1_offsets_s_per_m", None)
         spectrum = fiber.loss_spectrum
+        gain = float(getattr(fiber, "gain_db_per_m", 0.0))
+        bandwidth = getattr(fiber, "gain_bandwidth_hz", None) if gain else None
+        e_sat = getattr(fiber, "saturation_energy_j", None) if gain else None
         return cls(
             alpha_db_per_km=None if spectrum is not None else arr(fiber.alpha_db_per_km),
             betas_psn_per_km=arr(betas),
@@ -120,6 +132,14 @@ class FiberParameters(NamedTuple):
             ),
             pmd_ps_per_sqrt_km=(
                 arr(fiber.pmd_ps_per_sqrt_km) if fiber.pmd_ps_per_sqrt_km > 0 else None
+            ),
+            gain_db_per_m=arr(gain) if gain else None,
+            gain_bandwidth_thz=None if bandwidth is None else arr(bandwidth * _PS),
+            saturation_energy_pj=None if e_sat is None else arr(e_sat / _PS),
+            nonlinear_gain_per_w_per_km=(
+                arr(fiber.nonlinear_gain_per_w_per_km)
+                if fiber.nonlinear_gain_per_w_per_km != 0.0
+                else None
             ),
         )
 
@@ -162,6 +182,14 @@ class FiberParameters(NamedTuple):
             )
         if self.pmd_ps_per_sqrt_km is not None:
             changes["pmd_ps_per_sqrt_km"] = val(self.pmd_ps_per_sqrt_km)
+        if self.gain_db_per_m is not None:
+            changes["gain_db_per_m"] = val(self.gain_db_per_m)
+        if self.gain_bandwidth_thz is not None:
+            changes["gain_bandwidth_hz"] = val(self.gain_bandwidth_thz) / _PS
+        if self.saturation_energy_pj is not None:
+            changes["saturation_energy_j"] = val(self.saturation_energy_pj) * _PS
+        if self.nonlinear_gain_per_w_per_km is not None:
+            changes["nonlinear_gain_per_w_per_km"] = val(self.nonlinear_gain_per_w_per_km)
         out = fiber.replace(**changes)
         if self.loss_spectrum_db_per_km is not None and fiber.loss_spectrum is not None:
             spectrum = fiber.loss_spectrum.replace(
@@ -193,6 +221,8 @@ class _Operators(NamedTuple):
     alpha_carrier: Array  # 1/km, for the effective Kerr length
     pmd_axes: Array | None = None  # (N, 3) birefringence axes of the sections
     pmd_half_dgd: Array | None = None  # (n,) ω·Δβ₁/2 per km
+    nonlinear_gain: Array | None = None  # ε, 1/(W·km)
+    saturation: tuple[Array, Array, Array] | None = None  # (g₀G(ω)/2 per km, 1/E_sat, Δt/n) in pJ
 
 
 def _omega_ps(n: int, dt_s: float) -> np.ndarray:
@@ -256,6 +286,20 @@ def _operators(
         alpha_carrier = jnp.asarray(params.alpha_db_per_km, rdtype) * _DB
         alpha = alpha_carrier
     exponent = 1j * d - alpha / 2.0
+    saturation = None
+    if params.gain_db_per_m is not None:
+        g0 = jnp.asarray(params.gain_db_per_m, rdtype) * (_DB * _KM)  # 1/km
+        profile = jnp.ones(n, rdtype)
+        if params.gain_bandwidth_thz is not None:
+            x2 = (omega / (math.pi * params.gain_bandwidth_thz)) ** 2  # (ω/Ω_g)², Ω_g = π·FWHM
+            parabolic = getattr(fiber, "gain_shape", "lorentzian") == "parabolic"
+            profile = 1.0 - x2 / 2.0 if parabolic else 1.0 / (1.0 + x2)
+        half_gain = g0 * profile / 2.0
+        if params.saturation_energy_pj is None:
+            exponent = exponent + half_gain
+        else:
+            scale = jnp.asarray(dt_s / _PS / n, rdtype)  # Parseval: E = Σ|Ã|²·Δt/n, pJ
+            saturation = (half_gain, 1.0 / params.saturation_energy_pj, scale)
     response = None
     if params.raman_fraction is not None:
         f_r = params.raman_fraction
@@ -291,7 +335,16 @@ def _operators(
         pmd_axes = jnp.asarray(realization.axes, rdtype)
         pmd_half_dgd = omega * dgd_per_km / 2.0
     return _Operators(
-        exponent, response, shock, coupling, gamma_eff, alpha_carrier, pmd_axes, pmd_half_dgd
+        exponent,
+        response,
+        shock,
+        coupling,
+        gamma_eff,
+        alpha_carrier,
+        pmd_axes,
+        pmd_half_dgd,
+        params.nonlinear_gain_per_w_per_km,
+        saturation,
     )
 
 
@@ -387,13 +440,21 @@ def _pmd(spectrum: Array, ops: _Operators, pieces: Any, *, inverse: bool = False
 
 
 def _disperse(
-    spectrum: Array, m: Array, ops: _Operators, axis: int | None, pieces: Any = None
+    spectrum: Array,
+    m: Array,
+    ops: _Operators,
+    axis: int | None,
+    pieces: Any = None,
+    dual: bool = False,
 ) -> Array:
     """Exact linear step of ``m`` km in the spectral domain (coupling by eigen-decomposition).
 
-    With PMD, ``pieces`` are the move's birefringence pieces (:func:`_pmd`).
+    With PMD, ``pieces`` are the move's birefringence pieces (:func:`_pmd`);
+    with saturated gain, the gain of the mid-step energy (:func:`_saturated`).
     """
     out = spectrum * jnp.exp(ops.exponent * m)
+    if ops.saturation is not None:
+        out = _saturated(spectrum, out, m, ops.saturation, dual)
     if ops.pmd_axes is not None:
         return _pmd(out, ops, pieces)
     if ops.coupling is None or axis is None:
@@ -404,28 +465,64 @@ def _disperse(
     return jnp.moveaxis(y, -1, axis)
 
 
-def _kerr_step(spectrum: Array, phase: Array, ops: _Operators, dual: bool) -> Array:
-    """N(c) in the spectral domain: A ↦ A·exp(iγc·Q), a pure phase (exactly invertible)."""
+def _saturated(
+    spectrum: Array, base: Array, m: Array, saturation: tuple[Array, Array, Array], dual: bool
+) -> Array:
+    r"""``base`` (the linear step) times the saturated gain at the mid-step energy.
+
+    :math:`g(E) = g_0/(1 + E/E_\mathrm{sat})`; predictor: the gain of the
+    entry energy :math:`E_0` gives :math:`E_1`, then :math:`g((E_0+E_1)/2)`
+    — as the backends do.
+    """
+    half_gain, inv_sat, scale = saturation
+
+    def energy(x: Array) -> Array:
+        e = jnp.sum(jnp.real(x) ** 2 + jnp.imag(x) ** 2, axis=-1, keepdims=True) * scale
+        return jnp.sum(e, axis=-2, keepdims=True) if dual else e
+
+    e0 = energy(spectrum)
+    e_mid = (e0 + energy(base * jnp.exp(m * half_gain / (1.0 + e0 * inv_sat)))) / 2.0
+    return base * jnp.exp(m * half_gain / (1.0 + e_mid * inv_sat))
+
+
+def _kerr_gain_factor(p: Array, phase_per_watt: Array, gain_per_watt: Array) -> Array:
+    """:func:`hpcom.backends.base.kerr_gain_factor`: the exact step of ∂zA = (iγ + ε)PA."""
+    u = 2.0 * gain_per_watt * p
+    small = jnp.abs(u) < 1e-8
+    safe = jnp.where(small, 0.5, u)
+    log_ratio = jnp.where(small, 1.0 + u / 2.0, -jnp.log1p(-safe) / safe)
+    return jnp.exp(1j * phase_per_watt * p * log_ratio) / jnp.sqrt(1.0 - u)
+
+
+def _kerr_step(spectrum: Array, c: Array, ops: _Operators, dual: bool) -> Array:
+    """N(c), ``c`` the Kerr length (km): A ↦ A·exp(iγc·Q), with nonlinear gain the exact factor.
+
+    Both are exactly invertible (``c → −c``).
+    """
     x = jnp.fft.ifft(spectrum, axis=-1)
-    x = x * jnp.exp(1j * phase * _power(x, dual, ops.response))
+    p = _power(x, dual, ops.response)
+    if ops.nonlinear_gain is None:
+        x = x * jnp.exp(1j * (ops.gamma_eff * c) * p)
+    else:
+        x = x * _kerr_gain_factor(p, ops.gamma_eff * c, ops.nonlinear_gain * c)
     return jnp.fft.fft(x, axis=-1)
 
 
 def _sequence_step(
     spectrum: Array,
-    phase: Array,
+    c: Array,
     m: Array,
     ops: _Operators,
     dual: bool,
     axis: int | None,
     pieces: Any = None,
 ) -> Array:
-    return _disperse(_kerr_step(spectrum, phase, ops, dual), m, ops, axis, pieces)
+    return _disperse(_kerr_step(spectrum, c, ops, dual), m, ops, axis, pieces, dual)
 
 
 def _sequence_inverse_step(
     spectrum: Array,
-    phase: Array,
+    c: Array,
     m: Array,
     ops: _Operators,
     dual: bool,
@@ -434,7 +531,7 @@ def _sequence_inverse_step(
 ) -> Array:
     undone = _pmd(spectrum, ops, pieces, inverse=True) if ops.pmd_axes is not None else spectrum
     scalar = ops._replace(pmd_axes=None, pmd_half_dgd=None)
-    return _kerr_step(_disperse(undone, -m, scalar, axis), -phase, ops, dual)
+    return _kerr_step(_disperse(undone, -m, scalar, axis), -c, ops, dual)
 
 
 def _scan(step: Any, carry: Array, xs: Any, gradient: GradientMode) -> Array:
@@ -470,6 +567,8 @@ def _reversible_sequence(
     pieces: tuple[Array, Array],
 ) -> Array:
     """The split-step loop with an O(1)-memory exact adjoint (see :func:`propagate`).
+
+    ``phases`` are the Kerr lengths ``c`` of the sub-steps (km).
 
     ``pieces`` (the PMD pieces of each move, fixed) ride along the scan as
     constants; everything else gets its cotangent.
@@ -574,9 +673,9 @@ def _propagate(
     else:
         linear_m, sub_m, _ = split_step_substeps(fiber, direction)
         linear = jnp.asarray(linear_m / _KM, rdtype)
-        phases = ops.gamma_eff * _kerr_lengths_km(fiber, sub_m, ops, rdtype)
+        phases = _kerr_lengths_km(fiber, sub_m, ops, rdtype)
         sec, plen = _moves(fiber, direction, linear_m, rdtype)
-        spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], ops, axis, (sec[0], plen[0]))
+        spectrum = _disperse(jnp.fft.fft(a, axis=-1), linear[0], ops, axis, (sec[0], plen[0]), dual)
         pieces = (sec[1:], plen[1:])
         if gradient == "reversible":
             spectrum = _reversible_sequence(spectrum, ops, phases, linear[1:], dual, axis, pieces)
@@ -608,8 +707,10 @@ def _rk4ip(
     second (z + h/2 → z + h) half.
     """
 
-    def nonlinear(x: Array) -> Array:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
-        out = 1j * ops.gamma_eff * _power(x, dual, ops.response) * x
+    eps = 0.0 if ops.nonlinear_gain is None else ops.nonlinear_gain
+
+    def nonlinear(x: Array) -> Array:  # (iγ_eff + ε)(1 + iτ∂t)[x · R*P(x)]
+        out = (1j * ops.gamma_eff + eps) * _power(x, dual, ops.response) * x
         if ops.shock is not None:
             out = jnp.fft.ifft(jnp.fft.fft(out, axis=-1) * ops.shock, axis=-1)
         return out
@@ -664,7 +765,9 @@ def propagate(
       each state in the backward pass by the exact inverse step (the Kerr
       step is a pure phase and the linear step is invertible), memory
       independent of the step count, about three times the forward work.
-      Exact up to the rounding of running the span backwards.
+      Exact up to the rounding of running the span backwards. Not with
+      saturated gain (its predictor–corrector step is not exactly
+      invertible).
 
     The adaptive ``"ssfm-local-error"`` scheme is not differentiable (its
     step sequence depends on the field) and is rejected.
@@ -677,6 +780,11 @@ def propagate(
     if gradient not in ("store", "checkpoint", "reversible"):
         raise ValueError(
             f"gradient must be 'store', 'checkpoint' or 'reversible', got {gradient!r}"
+        )
+    if gradient == "reversible" and getattr(fiber, "saturation_energy_j", None) is not None:
+        raise ValueError(
+            'gradient="reversible" needs exactly invertible steps; the saturated-gain step '
+            'is not — use "store" or "checkpoint"'
         )
     if gradient == "reversible" and fiber.scheme.method == "rk4ip":
         raise ValueError(

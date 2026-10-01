@@ -49,6 +49,10 @@ Link components
 .. automodule:: hpcom.raman
    :members:
 
+.. automodule:: hpcom.laser
+   :members:
+   :show-inheritance:
+
 .. automodule:: hpcom.amplifier
    :members:
    :show-inheritance:

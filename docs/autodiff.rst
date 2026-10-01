@@ -28,7 +28,8 @@ What is differentiable
        leaf: loss, :math:`\beta_1…\beta_N`, :math:`\gamma`, Raman
        :math:`f_R, \tau_1, \tau_2, \tau_b`, shock time, loss-spectrum values,
        multicore coupling matrix, core mismatch and skew, PMD coefficient
-       (the realisation's axes stay fixed)
+       (the realisation's axes stay fixed), and for fiber lasers the gain,
+       gain bandwidth, saturation energy and nonlinear gain
    * - :func:`~hpcom.autodiff.amplify`, :func:`~hpcom.autodiff.propagate_link`
      - the field, fiber parameters, EDFA gain and noise figure (the ASE is
        reparameterised: :math:`n = \sigma(G, F)\,\xi` with :math:`\xi` drawn
@@ -133,8 +134,9 @@ gets them:
    reversible networks [Gomez2017]_. Memory does not depend on :math:`J`;
    the work is about three forward passes; the result equals the stored
    gradient to rounding (reconstruction runs the span backwards, which is
-   exact to ~1e-12 — ``docs/numerics.rst``). RK4IP is not invertible and
-   supports ``"store"`` and ``"checkpoint"``.
+   exact to ~1e-12 — ``docs/numerics.rst``). Nonlinear gain keeps the Kerr
+   step exactly invertible too. RK4IP and saturated gain are not
+   invertible and support ``"store"`` and ``"checkpoint"``.
 
 Measured compile-time temporary memory for the gradient of an 80 km SSMF span,
 :math:`2^{14}` samples (field: 0.25 MiB):

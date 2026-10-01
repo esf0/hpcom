@@ -151,6 +151,13 @@ class Fiber(HpcomModel):
     pmd_seed
         Seed of this span's realisation; :meth:`hpcom.Link.from_spans` gives
         every span its own.
+    nonlinear_gain_per_w_per_km
+        Cubic gain :math:`\varepsilon` in 1/(W·km): the term
+        :math:`+\varepsilon PA` beside the Kerr term (a distributed fast
+        saturable absorber, as in the complex Ginzburg–Landau equation);
+        negative for nonlinear loss (two-photon absorption). The Kerr
+        sub-step stays exact: :math:`P \to P/(1 - 2\varepsilon cP)`. Not with
+        Raman, self-steepening or a Kerr intensity filter.
     backend
         Registered propagator name (``"numpy"``, ``"tensorflow"``,
         ``"numpy-linear"``, …); see :mod:`hpcom.backends`.
@@ -176,6 +183,7 @@ class Fiber(HpcomModel):
     pmd_ps_per_sqrt_km: float = Field(default=0.0, ge=0)
     pmd_sections: int = Field(default=100, ge=1)
     pmd_seed: int = Field(default=0, ge=0)
+    nonlinear_gain_per_w_per_km: float = 0.0
     backend: str = "numpy"
 
     @classmethod
@@ -239,6 +247,15 @@ class Fiber(HpcomModel):
             raise ValueError(
                 "self_steepening makes the Kerr step non-integrable: use scheme='rk4ip' "
                 f"(got {self.scheme.method!r})"
+            )
+        if self.nonlinear_gain_per_w_per_km != 0.0 and (
+            self.raman is not None
+            or self.self_steepening
+            or self.scheme.kerr_filter_bandwidth_hz is not None
+        ):
+            raise ValueError(
+                "nonlinear_gain_per_w_per_km acts on the instantaneous power; it cannot be "
+                "combined with Raman, self-steepening or a Kerr intensity filter"
             )
         if self.pmd_ps_per_sqrt_km > 0:
             if self.polarization != "dual":

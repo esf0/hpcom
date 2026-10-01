@@ -245,6 +245,8 @@ def uses_fast_path(fiber: FiberLike) -> bool:
         and fiber.raman is None
         and fiber.effective_shock_time_s == 0.0
         and float(getattr(fiber, "pmd_ps_per_sqrt_km", 0.0)) == 0.0
+        and nonlinear_gain_per_m(fiber) == 0.0
+        and saturation_energy_j(fiber) is None
         and fiber.step_distribution == "uniform"
         and s.method == "ssfm"
         and s.nonlinear_position == 0.5
@@ -350,7 +352,11 @@ def linear_operator_exponent(
     for n, beta in enumerate(fiber.higher_order_betas, start=4):
         if beta:
             exponent += 1j * (beta / math.factorial(n)) * (-omega) ** n
-    return exponent - attenuation_spectrum_per_m(n_samples, dt_s, fiber) / 2.0
+    exponent = exponent - attenuation_spectrum_per_m(n_samples, dt_s, fiber) / 2.0
+    gain = gain_spectrum(n_samples, dt_s, fiber)
+    if gain is not None and saturation_energy_j(fiber) is None:
+        exponent = exponent + small_signal_gain_per_m(fiber) * gain / 2.0  # unsaturated gain
+    return exponent
 
 
 def attenuation_spectrum_per_m(
@@ -533,6 +539,73 @@ def apply_jones(
     """A frequency-independent 2×2 Jones matrix on the polarisation axis (−2) of a field."""
     out = np.asarray(np.einsum("pq,...qn->...pn", matrix, field), dtype=np.complex128)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Gain and nonlinear gain (fiber lasers and amplifiers; see hpcom.laser)
+# ---------------------------------------------------------------------------
+
+
+def gain_spectrum(n_samples: int, dt_s: float, fiber: FiberLike) -> npt.NDArray[np.float64] | None:
+    r"""Normalised gain profile :math:`G(\omega)` of a gain fiber (``None``: not a gain fiber).
+
+    Lorentzian :math:`1/(1 + (\omega/\Omega_g)^2)` or parabolic
+    :math:`1 - (\omega/\Omega_g)^2/2`, with :math:`\Omega_g = \pi\,\mathrm{FWHM}`
+    (half width at half maximum); flat (1) without a bandwidth. Grid
+    frequency :math:`\omega` is measured from the gain peak at the carrier.
+    """
+    if not float(getattr(fiber, "gain_db_per_m", 0.0)):
+        return None
+    fwhm = getattr(fiber, "gain_bandwidth_hz", None)
+    if fwhm is None:
+        return np.ones(n_samples)
+    x2 = (2.0 * np.fft.fftfreq(n_samples, d=dt_s) / fwhm) ** 2  # (ω/Ω_g)²
+    if getattr(fiber, "gain_shape", "lorentzian") == "parabolic":
+        return np.asarray(1.0 - x2 / 2.0, dtype=np.float64)
+    return np.asarray(1.0 / (1.0 + x2), dtype=np.float64)
+
+
+def small_signal_gain_per_m(fiber: FiberLike) -> float:
+    """Small-signal power gain :math:`g_0` in 1/m (0 for a passive fiber)."""
+    return float(getattr(fiber, "gain_db_per_m", 0.0)) * math.log(10.0) / 10.0
+
+
+def saturation_energy_j(fiber: FiberLike) -> float | None:
+    """Saturation energy of a gain fiber's saturable gain (``None``: unsaturated or passive)."""
+    if not small_signal_gain_per_m(fiber):
+        return None
+    value = getattr(fiber, "saturation_energy_j", None)
+    return None if value is None else float(value)
+
+
+def nonlinear_gain_per_m(fiber: FiberLike) -> float:
+    r"""Nonlinear (cubic) gain :math:`\varepsilon` in 1/(W·m): ``+ε P A`` (negative: absorption)."""
+    return float(getattr(fiber, "nonlinear_gain_per_w_per_km", 0.0)) * 1e-3
+
+
+def kerr_gain_factor(
+    power: npt.NDArray[np.float64], phase_per_watt: float, gain_per_watt: float
+) -> npt.NDArray[np.complex128]:
+    r"""Exact factor of the pointwise step :math:`\partial_z A = (i\gamma + \varepsilon)PA` over ``c``.
+
+    With ``phase_per_watt`` :math:`= \gamma c` and ``gain_per_watt``
+    :math:`= \varepsilon c`: :math:`P \to P/(1-u)`, :math:`u = 2\varepsilon cP`,
+    and the phase :math:`\gamma cP\cdot(-\ln(1-u)/u)`. Without nonlinear gain
+    it is :math:`e^{i\gamma cP}`. Exactly invertible (``c → −c``).
+    """
+    if gain_per_watt == 0.0:
+        out: npt.NDArray[np.complex128] = np.exp(1j * phase_per_watt * power)
+        return out
+    u = 2.0 * gain_per_watt * power
+    if np.any(u >= 1.0):
+        raise FloatingPointError(
+            "nonlinear gain diverges within one step (2εcP ≥ 1); use shorter steps"
+        )
+    small = np.abs(u) < 1e-8
+    safe = np.where(small, 0.5, u)
+    log_ratio = np.where(small, 1.0 + u / 2.0, -np.log1p(-safe) / safe)
+    out = (1.0 / np.sqrt(1.0 - u)) * np.exp(1j * phase_per_watt * power * log_ratio)
+    return np.asarray(out, dtype=np.complex128)
 
 
 def effective_gamma_per_m(fiber: FiberLike) -> float:

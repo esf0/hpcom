@@ -6,7 +6,8 @@ Implements exactly the sub-step sequences of the NumPy reference backend
 Kerr position, Kerr length and intensity filter — with the step loop
 compiled with :func:`tf.function`, for single- and multicore fibers, and
 RK4IP and the local-error method, with every generalised-NLSE term (Raman
-response, self-steepening). Uniform
+response, self-steepening) and the gain terms of :mod:`hpcom.laser`
+(nonlinear gain, saturated gain). Uniform
 plain single-core steps reuse one
 precomputed ``D(h)``; other sequences evaluate each linear sub-step on the
 device. Results agree with the NumPy backend to FFT rounding
@@ -33,28 +34,47 @@ from hpcom.backends.base import (
     check_field_shape,
     core_axis,
     effective_gamma_per_m,
+    gain_spectrum,
     kerr_power_response,
     linear_operator_exponent,
     multicore_linear_system,
+    nonlinear_gain_per_m,
     pmd_pieces,
     pmd_realization,
+    saturation_energy_j,
     shock_factor,
     signed_length_m,
+    small_signal_gain_per_m,
     split_step_sequence,
     step_sizes_m,
     uses_fast_path,
 )
 
 
-def _kerr(a: Any, phase_per_watt: Any, dual: bool, response: Any = None) -> Any:
+def _kerr(
+    a: Any, phase_per_watt: Any, dual: bool, response: Any = None, gain_per_watt: Any = None
+) -> Any:
     power = tf.math.real(a) ** 2 + tf.math.imag(a) ** 2
     if dual:
         power = tf.reduce_sum(power, axis=-2, keepdims=True)
     if response is not None:
         spectrum = tf.signal.fft(tf.complex(power, tf.zeros_like(power))) * response
         power = tf.math.real(tf.signal.ifft(spectrum))
+    if gain_per_watt is not None:
+        return a * _kerr_gain_factor(power, phase_per_watt, gain_per_watt)
     phase = phase_per_watt * power
     return a * tf.exp(tf.complex(tf.zeros_like(phase), phase))
+
+
+def _kerr_gain_factor(power: Any, phase_per_watt: Any, gain_per_watt: Any) -> Any:
+    """:func:`hpcom.backends.base.kerr_gain_factor` (NaN where 2εcP ≥ 1: the step diverges)."""
+    u = 2.0 * gain_per_watt * power
+    small = tf.abs(u) < 1e-8
+    safe = tf.where(small, tf.fill(tf.shape(u), tf.constant(0.5, u.dtype)), u)
+    log_ratio = tf.where(small, 1.0 + u / 2.0, -tf.math.log1p(-safe) / safe)
+    phase = phase_per_watt * power * log_ratio
+    amplitude = tf.cast(1.0 / tf.sqrt(1.0 - u), tf.complex128)
+    return amplitude * tf.exp(tf.complex(tf.zeros_like(phase), phase))
 
 
 @tf.function(reduce_retracing=True)
@@ -110,6 +130,27 @@ def _disperse(spectrum: Any, m: Any, lin: Any, axis: int | None, move: Any = Non
     return _moveaxis(tf.linalg.matmul(vectors, z[..., None])[..., 0], -1, axis)
 
 
+def _saturated(spectrum: Any, m: Any, lin: Any, sat: Any, dual: bool, move: Any) -> Any:
+    """Linear step with saturated gain at the mid-step energy (``_Disperser._saturated``).
+
+    ``sat = (g₀G(ω)/2, 1/E_sat, Δt/n)``.
+    """
+    half_gain, inv_sat, scale = sat
+
+    def energy(x: Any) -> Any:
+        power = tf.math.real(x) ** 2 + tf.math.imag(x) ** 2
+        e = tf.reduce_sum(power, axis=-1, keepdims=True) * scale
+        return tf.reduce_sum(e, axis=-2, keepdims=True) if dual else e
+
+    def gain(e: Any) -> Any:
+        return tf.cast(tf.exp(m * half_gain / (1.0 + e * inv_sat)), tf.complex128)
+
+    base = spectrum * tf.exp(lin[0] * tf.cast(m, tf.complex128))
+    e0 = energy(spectrum)
+    out = base * gain((e0 + energy(base * gain(e0))) / 2.0)
+    return _pmd_move(out, lin, move) if len(lin) == 5 else out
+
+
 @tf.function(reduce_retracing=True)
 def _ssfm_sequence(
     a: Any,
@@ -120,12 +161,29 @@ def _ssfm_sequence(
     dual: bool,
     filtered: bool,
     axis: int | None,
+    gains: Any = None,
+    sat: Any = None,
 ) -> Any:
-    """``D(m_J) N(c_J) … N(c_1) D(m_0)``: ``linear`` (J+1 lengths), ``phases`` (J, γ_eff·c)."""
-    spectrum = _disperse(tf.signal.fft(a), linear[0], lin, axis, 0)
+    """``D(m_J) N(c_J) … N(c_1) D(m_0)``: ``linear`` (J+1 lengths), ``phases`` (J, γ_eff·c).
+
+    ``gains`` (J, ε·c) adds nonlinear gain; ``sat`` saturated gain.
+    """
+
+    def disperse(spectrum: Any, j: Any) -> Any:
+        if sat is not None:
+            return _saturated(spectrum, linear[j], lin, sat, dual, j)
+        return _disperse(spectrum, linear[j], lin, axis, j)
+
+    spectrum = disperse(tf.signal.fft(a), 0)
     for i in tf.range(tf.shape(phases)[0]):
-        a = _kerr(tf.signal.ifft(spectrum), phases[i], dual, response if filtered else None)
-        spectrum = _disperse(tf.signal.fft(a), linear[i + 1], lin, axis, i + 1)
+        a = _kerr(
+            tf.signal.ifft(spectrum),
+            phases[i],
+            dual,
+            response if filtered else None,
+            None if gains is None else gains[i],
+        )
+        spectrum = disperse(tf.signal.fft(a), i + 1)
     return tf.signal.ifft(spectrum)
 
 
@@ -141,17 +199,21 @@ def _rk4ip(
     axis: int | None,
     filtered: bool,
     shocked: bool,
+    eps: Any = None,
 ) -> Any:
     """Fourth-order Runge–Kutta in the interaction picture (Hult 2007), per-step lengths."""
 
-    def kerr(x: Any) -> Any:  # iγ_eff (1 + iτ∂t)[x · R*P(x)]
+    def kerr(x: Any) -> Any:  # (iγ_eff + ε)(1 + iτ∂t)[x · R*P(x)]
         power = tf.math.real(x) ** 2 + tf.math.imag(x) ** 2
         if dual:
             power = tf.reduce_sum(power, axis=-2, keepdims=True)
         if filtered:
             spectrum = tf.signal.fft(tf.complex(power, tf.zeros_like(power))) * response
             power = tf.math.real(tf.signal.ifft(spectrum))
-        out = tf.complex(tf.zeros_like(power), gamma_eff * power) * x
+        if eps is None:
+            out = tf.complex(tf.zeros_like(power), gamma_eff * power) * x
+        else:
+            out = tf.complex(eps * power, gamma_eff * power) * x
         if shocked:
             out = tf.signal.ifft(tf.signal.fft(out) * shock)
         return out
@@ -187,18 +249,26 @@ def _local_error(
     filtered: bool,
     effective: bool,
     axis: int | None,
+    eps: Any = None,
 ) -> Any:
     """Local-error method (Sinkin et al. 2003) as a ``tf.while_loop``; same decisions as NumPy."""
 
     def kerr(spectrum: Any, h: Any) -> Any:
         length = 2.0 * tf.sinh(alpha_eff * h / 2.0) / alpha_eff if effective else h
         x = _kerr(
-            tf.signal.ifft(spectrum), gamma_eff * length, dual, response if filtered else None
+            tf.signal.ifft(spectrum),
+            gamma_eff * length,
+            dual,
+            response if filtered else None,
+            None if eps is None else eps * length,
         )
         return tf.signal.fft(x)
 
     def disperse(spectrum: Any, m: Any) -> Any:
         return _disperse(spectrum, m, lin, axis)
+
+    def _norm(x: Any) -> Any:  # a scalar for any rank (tf.norm loses it under relaxed shapes)
+        return tf.sqrt(tf.reduce_sum(tf.math.real(x) ** 2 + tf.math.imag(x) ** 2))
 
     def keep_going(z: Any, step: Any, spectrum: Any) -> Any:
         return tf.logical_and(z < total * (1.0 - 1e-14), step >= total * 1e-12)
@@ -208,7 +278,7 @@ def _local_error(
         h = sign * big / 2.0
         coarse = disperse(kerr(disperse(spectrum, h), 2.0 * h), h)
         fine = disperse(kerr(disperse(kerr(disperse(spectrum, h / 2.0), h), h), h), h / 2.0)
-        delta = tf.math.real(tf.norm(fine - coarse) / tf.norm(fine))
+        delta = _norm(fine - coarse) / _norm(fine)
         reject = delta > 2.0 * goal
         new_spectrum = tf.cond(
             reject, lambda: spectrum, lambda: (4.0 / 3.0) * fine - (1.0 / 3.0) * coarse
@@ -296,6 +366,8 @@ class TensorFlowPropagator(Propagator):
         response_t = tf.constant(
             np.ones(a.shape[-1]) if response is None else response, dtype=tf.complex128
         )
+        eps = nonlinear_gain_per_m(fiber)
+        eps_t = tf.constant(eps, tf.float64) if eps != 0.0 else None
         if fiber.scheme.method == "ssfm-local-error":
             length_m = signed_length_m(fiber, direction)
             effective = fiber.scheme.kerr_length == "effective" and attenuation_per_m(fiber) > 0
@@ -313,6 +385,7 @@ class TensorFlowPropagator(Propagator):
                 response is not None,
                 effective,
                 axis,
+                eps_t,
             )
             if float(reached) < abs(length_m) * (1.0 - 1e-12):
                 raise RuntimeError(
@@ -331,9 +404,20 @@ class TensorFlowPropagator(Propagator):
                 axis,
                 response is not None,
                 shock is not None,
+                eps_t,
             )
         else:
             linear, kerr = split_step_sequence(fiber, direction)
+            e_sat = saturation_energy_j(fiber)
+            sat = None
+            if e_sat is not None:
+                g = gain_spectrum(a.shape[-1], dt_s, fiber)
+                assert g is not None
+                sat = (
+                    tf.constant(small_signal_gain_per_m(fiber) * g / 2.0, tf.float64),
+                    tf.constant(1.0 / e_sat, tf.float64),
+                    tf.constant(dt_s / a.shape[-1], tf.float64),
+                )
             out = _ssfm_sequence(
                 tf.constant(a),
                 lin,
@@ -343,6 +427,8 @@ class TensorFlowPropagator(Propagator):
                 dual,
                 response is not None,
                 axis,
+                None if eps_t is None else tf.constant(eps * kerr, dtype=tf.float64),
+                sat,
             )
         result: ComplexArray = np.asarray(out.numpy(), dtype=np.complex128)
         if pmd is not None and direction == "forward":

@@ -3,8 +3,10 @@
 Solves the NLSE with ``γ = 0`` in closed form — one FFT, one multiply, one
 inverse FFT — using the same linear operator as the SSFM backends
 (:func:`hpcom.backends.base.linear_operator_exponent`). ``fiber.n_steps`` and
-``fiber.gamma_per_w_per_km`` are ignored. Useful as an analytic reference and
-for fast linear-regime studies.
+``fiber.gamma_per_w_per_km`` (and a nonlinear gain) are ignored; unsaturated
+gain (:class:`hpcom.laser.GainFiber`) is linear and included, saturated gain
+is rejected. Useful as an analytic reference and for fast linear-regime
+studies.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from hpcom.backends.base import (
     pmd_pieces,
     pmd_realization,
     pmd_rotate,
+    saturation_energy_j,
     signed_length_m,
 )
 
@@ -42,6 +45,11 @@ class LinearNumpyPropagator(Propagator):
     ) -> ComplexArray:
         a = np.asarray(field, dtype=np.complex128)
         check_field_shape(a, fiber)
+        if saturation_energy_j(fiber) is not None:
+            raise ValueError(
+                "saturated gain depends on the field's energy (nonlinear); the numpy-linear "
+                "backend cannot propagate it — use a nonlinear backend"
+            )
         length_m = signed_length_m(fiber, direction)
         if fiber.n_cores == 1:
             transfer = np.exp(linear_operator_exponent(a.shape[-1], dt_s, fiber) * length_m)

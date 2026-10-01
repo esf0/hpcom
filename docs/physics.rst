@@ -536,6 +536,133 @@ nonlinearity.
    Manakov equations," *J. Lightw. Technol.* 31(3), 398–406, 2013.
 
 
+Fiber lasers and gain fibers
+----------------------------
+
+:class:`~hpcom.GainFiber` adds distributed gain to the (generalised) NLSE,
+in the frequency domain
+
+.. math::
+
+   \frac{\partial\tilde A}{\partial z} = \Big[\hat L(\omega)
+      + \frac{g(E)}{2}\,G(\omega)\Big]\tilde A + \mathcal F\big[\hat NA\big],
+   \qquad g(E) = \frac{g_0}{1 + E/E_\mathrm{sat}},\quad
+   E = \int|A|^2\,dt,
+
+with the small-signal power gain :math:`g_0` (``gain_db_per_m``; the field
+gains :math:`g/2`) and the energy :math:`E` in the window, summed over
+polarisations. The profile is Lorentzian, :math:`G = 1/(1 +
+(\omega/\Omega_g)^2)`, or its parabolic expansion :math:`G = 1 -
+(\omega/\Omega_g)^2/2`, with :math:`\Omega_g = \pi\,\mathrm{FWHM}`
+(``gain_bandwidth_hz``: the Lorentzian has half its peak gain at
+:math:`\pm\mathrm{FWHM}/2`); without a bandwidth :math:`G = 1`.
+
+**Saturation** acts on the window energy: the gain follows the average
+power, not the pulse shape — slow gain, as in erbium or ytterbium, whose
+upper-state lifetime (ms) is far longer than a round trip; this is the
+master-equation picture of mode-locked lasers [Haus2000]_. For a laser,
+:math:`E_\mathrm{sat} = P_\mathrm{sat}T_R` with the window holding one round
+trip :math:`T_R`.
+
+**Nonlinear gain.** Every :class:`~hpcom.Fiber` has
+``nonlinear_gain_per_w_per_km`` :math:`\varepsilon`:
+:math:`\hat NA = (i\gamma_\mathrm{eff} + \varepsilon)PA`. Negative values are
+two-photon absorption (:math:`\varepsilon = -\beta_\mathrm{TPA}/2A_\mathrm{eff}`),
+positive ones the cubic term of a distributed fast saturable absorber. The
+Kerr sub-step stays exact — :math:`\partial_zP = 2\varepsilon P^2` — so
+
+.. math::
+
+   P(c) = \frac{P}{1 - 2\varepsilon cP},\qquad
+   \phi(c) = -\frac{\gamma_\mathrm{eff}}{2\varepsilon}\ln(1 - 2\varepsilon cP)
+   \;\xrightarrow{\varepsilon\to0}\; \gamma_\mathrm{eff}cP,
+
+exactly invertible by :math:`c \to -c`. When :math:`2\varepsilon cP \ge 1`
+the exact solution blows up within the step and ``FloatingPointError`` is
+raised. Not with Raman, self-steepening or a Kerr intensity filter.
+
+With a parabolic profile, no saturation and :math:`\varepsilon`, the
+equation is the cubic **complex Ginzburg–Landau equation**,
+
+.. math::
+
+   A_z = \delta A + \Big(b - \frac{i\beta_2}{2}\Big)A_{tt}
+       + (\varepsilon + i\gamma)|A|^2A,\qquad
+   \delta = \frac{g_0 - \alpha}{2},\quad b = \frac{g_0}{4\Omega_g^2}.
+
+**Cavity components.** :class:`~hpcom.SaturableAbsorber` (fast, power
+transmission :math:`T(P) = 1 - q_\mathrm{ns} - q_0/(1 + P/P_\mathrm{sat})`,
+applied as :math:`\sqrt{T}` with the instantaneous total power),
+:class:`~hpcom.SpectralFilter` (power transmission
+:math:`e^{-\ln2\,(2|f - f_c|/B)^{2m}}`) and :class:`~hpcom.OutputCoupler`
+also work in a :class:`~hpcom.Link`. A :class:`~hpcom.RingCavity` applies its
+elements in order every round trip, taps the output at the coupler and stops
+once the output *power profile* changes by less than ``tol`` (blind to the
+phase a pulse picks up per round trip).
+
+**Numerics.** Unsaturated gain is part of the exact linear step, so every
+scheme keeps its order. Saturated gain is applied per linear sub-step at the
+mid-step energy (predictor :math:`E_1` from the gain of the entry energy
+:math:`E_0`, then the gain of :math:`(E_0 + E_1)/2`): second order, and so
+are saturated runs in every split-step scheme; RK4IP and the local-error
+method are rejected with saturation, and the saturated step is not exactly
+invertible (backward propagation reverses it to the second-order error).
+The parabolic profile is unbounded — on the negative sub-steps of the
+Yoshida and Suzuki compositions it is a backward heat equation that
+amplifies the highest grid frequencies without limit — so those
+compositions are rejected for it; the bounded Lorentzian keeps every scheme
+at its order.
+
+**Checks** [``tests/backends/test_laser_conformance.py``, every backend;
+``tests/unit/test_laser.py``]:
+
+* unsaturated gain amplifies every frequency by exactly
+  :math:`e^{g_0G(\omega)L/2}` (1e-12), both profiles, split step, RK4IP and
+  the local-error method;
+* saturated CW amplifier against the closed form
+  :math:`\ln(P/P_0) + (P - P_0)/P_\mathrm{sat} = g_0L`: error ratio 4.0 per
+  step halving for Strang, Yoshida and Suzuki, one and two polarisations;
+* nonlinear gain and two-photon absorption without dispersion: exact (1e-12)
+  in every split-step scheme, with the effective Kerr length and the
+  local-error method, and exactly inverted backwards;
+* the chirped soliton of the cubic CGLE, :math:`A = a\,\mathrm{sech}(t/T)^{1+id}e^{i\kappa z}`
+  [PereiraStenflo1977]_: over three dispersion lengths Strang splitting
+  converges at order 2 (50 → 200 steps: 4.4e-3 → 2.8e-4) and RK4IP at
+  order 4 (2.6e-5 → 1.3e-7);
+* Lorentzian gain: Yoshida, Suzuki and RK4IP self-convergence ratio 16,
+  Strang 4;
+* ring cavity CW steady state, amplifier input
+  :math:`P_\mathrm{sat}(g_0L - \ln G)/(G - 1)` with :math:`G = 1/(1-r)`, to 2e-4;
+* every backend equals NumPy (1e-12), batch members stay independent under
+  saturation, and :mod:`hpcom.autodiff` equals NumPy with gradients equal to
+  finite differences for every gain parameter.
+
+``examples/12_mode_locked_fiber_laser.py`` starts a soliton ring laser
+(erbium-like gain fiber, SMF, fast saturable absorber, 50 % coupler) from
+noise: one 0.49 ps soliton forms within ~75 round trips, with Kelly
+sidebands [Kelly1992]_ at 1.15, 1.59, 2.00 and 2.37 THz where
+:math:`\Delta\omega_mT_0 = \sqrt{8mz_0/L - 1}` predicts 1.08, 1.63, 2.04 and
+2.37 THz, and the guiding-centre area theorem
+:math:`ET_0 = 2|\bar\beta_2|/\bar\gamma` holds to 17 % (the energy swings
+2× per round trip of 1.7 soliton periods).
+
+Not modelled: gain dynamics within the window (fast semiconductor gain),
+spontaneous emission of the gain fiber (seed noise is the user's), pump
+depletion and rate equations along the fiber, polarisation-dependent gain,
+quintic CGLE terms.
+
+.. [Haus2000] H. A. Haus, "Mode-locking of lasers," *IEEE J. Sel. Topics
+   Quantum Electron.* 6(6), 1173–1185, 2000.
+
+.. [PereiraStenflo1977] N. R. Pereira, L. Stenflo, "Nonlinear Schrödinger
+   equation including growth and damping," *Phys. Fluids* 20(10),
+   1733–1734, 1977.
+
+.. [Kelly1992] S. M. J. Kelly, "Characteristic sideband instability of
+   periodically amplified average soliton," *Electron. Lett.* 28(8),
+   806–807, 1992.
+
+
 Launch power
 ------------
 
