@@ -744,6 +744,118 @@ translate figures of merit into the per-polarisation PSD :math:`N_0`:
 ``test_osnr_noise_loading_gives_snr_equal_osnr_times_bref_over_rs``]
 
 
+Nonlinear interference models (GN, EGN)
+---------------------------------------
+
+:mod:`hpcom.nli` predicts the nonlinear interference (NLI) of a link
+without simulating it, to first order in the Kerr nonlinearity:
+:math:`A = A_\mathrm{lin} + \delta A`, and with ASE
+
+.. math:: \mathrm{SNR} = \frac{P}{P_\mathrm{ASE} + \eta P^3},\qquad
+   P_\mathrm{opt} = \Big(\frac{P_\mathrm{ASE}}{2\eta}\Big)^{1/3},\qquad
+   \mathrm{SNR}_\mathrm{opt} = \frac{P_\mathrm{opt}}{1.5\,P_\mathrm{ASE}},
+
+:math:`P` per channel, both noises counted in the channel's matched filter
+(:math:`P_\mathrm{ASE} = n_\mathrm{pol}R_s\sum_kS_k/p_k`, :math:`S_k` the ASE
+PSD per polarisation of amplifier :math:`k` and :math:`p_k` the signal power
+after it relative to the launch — the convention of the receiver's SNR).
+:func:`~hpcom.nli.predict_snr` returns all of them.
+
+**GN model** [Poggiolini2014]_. The transmitted channels are taken as
+Gaussian noise of PSD :math:`G(f)` (raised cosine per channel, both
+polarisations). The NLI PSD, referred to the link input, is
+
+.. math::
+
+   G_\mathrm{NLI}(f) = c\iint G(f_1)G(f_2)G(f_1 + f_2 - f)\,
+     \Big|\sum_s c_s(w)\Big|^2df_1\,df_2,\qquad w = (f_1 - f)(f_2 - f),
+
+   c_s(w) = \gamma_sp_s\,e^{-i4\pi^2B_sw}\,
+     \frac{1 - e^{-(\alpha_s + i4\pi^2\beta_{2,s}w)L_s}}{\alpha_s + i4\pi^2\beta_{2,s}w},
+
+with :math:`c = 16/27` (Manakov, dual polarisation) or 2 (one polarisation:
+the two Wick pairings), and per fiber :math:`s` its power :math:`p_s`
+relative to the launch and the accumulated dispersion :math:`B_s` before
+it: any sequence of fibers and amplifiers, the spans adding coherently
+(``coherent=False`` adds their powers). The link function depends on
+:math:`w` only, so
+
+.. math:: G_\mathrm{NLI}(f) = c\int\Big|\sum_sc_s(w)\Big|^2S_f(w)\,dw,\qquad
+   S_f(w) = \int G(f+u)\,G(f+w/u)\,G(f+u+w/u)\,\frac{du}{|u|}:
+
+a one-dimensional integral against a smooth function (logarithmic
+singularity at :math:`w = 0`), evaluated on a logarithmic grid near 0, a
+uniform grid that resolves the span-to-span oscillation (12 points per
+period) and, beyond, the span-averaged kernel. :math:`\eta` integrates
+:math:`G_\mathrm{NLI}` against the matched filter :math:`|H|^2` (composite
+Gauss–Legendre over the roll-offs and the flat top, where
+:math:`G_\mathrm{NLI}` falls steeply towards the channel edges).
+
+**EGN correction.** QAM is not Gaussian, and the GN model overestimates its
+NLI. ``model="egn"`` subtracts the closed-form correction of
+[Poggiolini2015]_ (their Eq. 2; dual polarisation, flat over the channel),
+proportional to :math:`\Phi = 2 - \mu_4/\mu_2^2` of the constellation
+(:func:`~hpcom.nli.modulation_phi`: 1 for QPSK, 17/25 for 16-QAM, 13/21 for
+64-QAM, 0 for Gaussian symbols; probabilistic shaping through its PMF). The
+formula is asymptotic in the number of spans; the full EGN model is
+[Carena2014]_.
+
+**First-order perturbation.** :func:`~hpcom.nli.first_order_nli` computes
+the first-order field of the actual signal,
+
+.. math:: \delta A(L) = \int_0^L e^{\hat L(L-z)}\,
+   \mathcal F\big[i\gamma_\mathrm{eff}P_\mathrm{lin}(z)A_\mathrm{lin}(z)\big]\,dz
+
+per fiber (Gauss–Legendre in :math:`\zeta = (1 - e^{-\alpha z})/\alpha`,
+where the integrand has no loss decay), carries it linearly to the
+receiver, and scores :math:`A_\mathrm{lin} + s\,\delta A` with the
+transmitter's matched receiver exactly as :class:`~hpcom.Simulation` does:
+:math:`\eta = (1/\mathrm{SNR} - 1/\mathrm{SNR}_\mathrm{lin})/(sP)^2`. Any
+modulation, shaping, pulse and channel plan; no Gaussian assumption. The
+scale :math:`s` (:math:`\|s\,\delta A\| = 10^{-4}\|A_\mathrm{lin}\|`) matters:
+the first-order field turns the mean nonlinear rotation :math:`e^{i\phi}`
+into :math:`1 + i\phi`, and at the launch power the receiver's complex gain
+would count :math:`|1 + i\phi|` as signal — 1 dB too low for three channels
+over five spans at 0 dBm.
+
+Not modelled: stimulated Raman scattering between channels, PMD, dispersion
+beyond the local :math:`\beta_2` (and :math:`\beta_3` through it), and
+higher orders of the perturbation (the regime well above the optimum
+power).
+
+**Checks** [``tests/numerical/test_nli.py``]:
+
+* the one-dimensional GN integral equals the brute-force double integral
+  (1 and 3 spans, two frequencies; 1e-7 dB at 5 spans);
+* it reproduces the published GN curve of [Poggiolini2015]_ (Fig. 1a,
+  3 × 32 GBd PM-QPSK on a 33.6 GHz grid, 100 km SMF spans): 26.67 dB at
+  1 span, 45.25 dB at 50 (read off the figure: ≈26.8, ≈45.3); the closed-form
+  EGN gives 43.86 dB at 50 spans (≈44.0);
+* one span is coherent and incoherent alike; five identical spans add 5×
+  incoherently and more coherently;
+* the first-order estimate equals the GN model for Gaussian symbols (single
+  channel and WDM, 0.2 dB) and the split-step simulation for QPSK and
+  16-QAM (0.2 dB), and does not depend on the launch power;
+* GN overestimates QPSK, 16-QAM and 64-QAM by more than 1 dB at five spans,
+  and the closed-form EGN is within 0.35 dB of the first-order truth;
+* the predicted SNR with ASE matches the simulation 3 dB below, at and
+  3 dB above the optimum launch power (0.3 dB).
+
+``research/2026-10-01-gn-egn`` compares every model with the noiseless
+simulation over 1–30 spans and four formats.
+
+.. [Poggiolini2014] P. Poggiolini, G. Bosco, A. Carena, V. Curri, Y. Jiang,
+   F. Forghieri, "The GN-model of fiber non-linear propagation and its
+   applications," *J. Lightw. Technol.* 32(4), 694–721, 2014.
+
+.. [Poggiolini2015] P. Poggiolini, Y. Jiang, A. Carena, F. Forghieri, "A simple
+   and accurate closed-form EGN model formula," arXiv:1503.04132, 2015.
+
+.. [Carena2014] A. Carena, G. Bosco, V. Curri, Y. Jiang, P. Poggiolini,
+   F. Forghieri, "EGN model of non-linear fiber propagation," *Opt. Express*
+   22(13), 16335–16362, 2014.
+
+
 Pulse shaping
 -------------
 

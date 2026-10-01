@@ -73,6 +73,12 @@ Differentiable propagation
    :members:
    :imported-members:
 
+Nonlinear interference models
+-----------------------------
+
+.. automodule:: hpcom.nli
+   :members:
+
 Simulation, results, metrics
 ----------------------------
 

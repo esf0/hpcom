@@ -22,6 +22,10 @@ datasets.
   weakly coupled multicore fibers with space-division-multiplexed transceivers
   (per-core streams, MIMO across cores); EDFAs with ASE; noise loading by SNR/OSNR;
   digital back-propagation at realistic sampling rates.
+- **NLI models** (`hpcom.nli`): the GN model integrated for any link and channel
+  plan (coherent span accumulation), the closed-form EGN correction, and the
+  first-order perturbation of the actual signal; SNR and optimum launch power
+  with ASE, validated against the split-step simulation.
 - **Fiber lasers**: gain fibers with saturable gain of finite bandwidth,
   nonlinear gain and two-photon absorption (the complex Ginzburg–Landau
   equation), saturable absorbers, filters, couplers and ring cavities.

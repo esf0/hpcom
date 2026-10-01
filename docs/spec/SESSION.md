@@ -111,6 +111,22 @@ DSP-kernel registry (python) with conformance suites in `tests/backends/`.
   TensorFlow local-error kernel failed on a field of another rank after a
   relaxed retrace (`tf.norm` lost its scalar shape). Open: fast gain
   dynamics, gain-fiber ASE, rate equations, quintic CGLE.
+- Learned DBP done (2026-10-01): `hpcom.autodiff.learned_dbp_init` /
+  `learned_dbp` — DBP with every step trainable (smooth phase and gain
+  correction per linear step on 33 knots, Kerr coefficient and real power
+  FIR per nonlinear step), initialised to `backpropagate` exactly (1e-15);
+  plugs into `demodulate(compensation=...)`. At 1 step/span (5 × 80 km,
+  6 dBm) training reaches the error of standard DBP at ~4 steps/span.
+- NLI models done (2026-10-01): `hpcom.nli` — GN reference formula for any
+  Fiber/EDFA link and RRC channel plan, reduced to one dimension in
+  w = (f1 − f)(f2 − f) (coherent span sum resolved, incoherent beyond);
+  closed-form EGN correction (Poggiolini et al. 2015, Eq. 2; dual
+  polarisation); `first_order_nli`, the first-order perturbation of the
+  actual signal scored by the actual receiver (scaled to 1e-4 so the mean
+  nonlinear rotation is not mistaken for gain); `predict_snr` with ASE and
+  the optimum power. Validated against brute force, the published GN curve,
+  and the split-step simulation (QPSK/16/64-QAM, Gaussian symbols, with
+  ASE). Open: full (integral) EGN, ISRS, closed-form GN for wide bands.
 - Laser phase noise, frequency offset — not modelled (would need
   carrier-phase recovery beyond the per-stream complex gain).
 - Rust kernel set (`hpcom.backends.rust`) — seam and conformance tests exist.
