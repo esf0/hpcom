@@ -32,6 +32,7 @@ __all__ = [
     "CNNPredistorter",
     "Constellation",
     "Decoder",
+    "EffectiveSNR",
     "Encoder",
     "FrontEnd",
     "GaussianDemapper",
@@ -366,6 +367,20 @@ class GaussianDemapper(Decoder):
             for s in range(z.shape[0])
         ]
         return sum(rates) / len(rates)
+
+
+class EffectiveSNR(Decoder):
+    """Scores the effective SNR in dB, :math:`\\langle|x|^2\\rangle/\\langle|z - x|^2\\rangle` per stream, averaged.
+
+    Not a rate: the figure of merit of DSP studies (e.g. learned DBP), and
+    the objective that minimises the mean-square error.
+    """
+
+    def rate(self, params: Params, z: Array, idx: Array, points: Array, ctx: Context) -> Array:
+        x = points[idx]
+        signal = jnp.mean(jnp.abs(x) ** 2, axis=-1)
+        error = jnp.mean(jnp.abs(z - x) ** 2, axis=-1)
+        return jnp.mean(10.0 * jnp.log10(signal / error))
 
 
 class _NeuralDecoder(Decoder, ABC):

@@ -25,7 +25,8 @@ Blocks (each fixed or trainable, with its own learning rate):
 * receiver front ends — :class:`CDC`, :class:`DBP` (single-channel or
   wideband, fixed), :class:`LearnedDBP` (every step trainable);
 * decoders — :class:`GaussianDemapper` (MI or GMI), :class:`NNDecoder`
-  (±window MLP), :class:`CNNDecoder` (long memory).
+  (±window MLP), :class:`CNNDecoder` (long memory), :class:`EffectiveSNR`
+  (scores the effective SNR in dB, for DSP studies).
 
 :class:`Trainer` runs Adam with cosine decay and a Polyak average, through
 the reversible adjoint by default. Needs JAX (``pip install "hpcom[jax]"``).
@@ -41,6 +42,7 @@ from hpcom.learn._blocks import (
     CNNPredistorter,
     Constellation,
     Decoder,
+    EffectiveSNR,
     Encoder,
     FrontEnd,
     GaussianDemapper,
@@ -60,6 +62,7 @@ __all__ = [
     "CNNPredistorter",
     "Constellation",
     "Decoder",
+    "EffectiveSNR",
     "Encoder",
     "EndToEnd",
     "Evaluation",

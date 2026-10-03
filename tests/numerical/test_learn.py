@@ -229,3 +229,12 @@ def test_system_round_trips_through_json():
     assert system.scored_channels == (1,) and learn.EndToEnd(
         transmitter=_wdm(), link=_link()
     ).scored_channels == (1,)
+
+
+def test_effective_snr_decoder_equals_the_predicted_snr():
+    """Linear link, ASE only: the effective SNR equals P/P_ASE (to the estimation error)."""
+    link = _link(spans=20, gamma=0.0)
+    tx = _sc(launch_power_per_channel_dbm=-18.0, n_symbols=4096)
+    system = learn.EndToEnd(transmitter=tx, link=link, decoder=learn.EffectiveSNR())
+    snr = learn.evaluate(system, system.init(jax.random.key(0)), blocks=8)
+    assert snr.mean == pytest.approx(nli.predict_snr(link, tx, eta_per_w2=1e-30).snr_db, abs=0.1)
