@@ -22,6 +22,11 @@ datasets.
   weakly coupled multicore fibers with space-division-multiplexed transceivers
   (per-core streams, MIMO across cores); EDFAs with ASE; noise loading by SNR/OSNR;
   digital back-propagation at realistic sampling rates.
+- **End-to-end learning** (`hpcom.learn`): systems composed of encoder,
+  pre-distorter, front end (CDC, DBP, learned DBP) and decoder blocks, trained
+  through the split-step simulation with the reversible adjoint; a benchmark
+  (`hpcom.bench`) with fixed scenarios, paired scoring on a finer simulation
+  and a leaderboard.
 - **NLI models** (`hpcom.nli`): the GN model integrated for any link and channel
   plan (coherent span accumulation), the closed-form EGN correction, and the
   first-order perturbation of the actual signal; SNR and optimum launch power

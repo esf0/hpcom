@@ -51,6 +51,7 @@ back-propagation.
    physics
    numerics
    autodiff
+   learn
    backends
    migration
 

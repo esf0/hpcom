@@ -73,6 +73,16 @@ Differentiable propagation
    :members:
    :imported-members:
 
+End-to-end learning and benchmarks
+----------------------------------
+
+.. automodule:: hpcom.learn
+   :members:
+   :imported-members:
+
+.. automodule:: hpcom.bench
+   :members: Scenario, Method, MethodResult, PowerResult, run, leaderboard, scenario
+
 Nonlinear interference models
 -----------------------------
 
