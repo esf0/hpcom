@@ -334,8 +334,8 @@ def test_blind_phase_search_recovers_laser_phase_noise_up_to_eepn(laser_hz, lo_h
     without = sim.run()
     bps = sim.evaluate(without, cdc.replace(cpr=BlindPhaseSearch(half_window=8))).metrics.snr_db
     eepn_variance = math.pi**2 * abs(spans.total_dispersion_s2) * lo_hz * tx.symbol_rate_hz
-    bound = -10 * math.log10(10 ** (-clean / 10) + eepn_variance)
+    estimate = -10 * math.log10(10 ** (-clean / 10) + eepn_variance)
     assert without.metrics.snr_db < clean - 3.0
-    assert bps > bound - 0.5
+    assert bps > estimate - 0.5
     if lo_hz >= 1e6:
         assert bps < clean - 1.0
