@@ -13,8 +13,8 @@ NLI of QAM**: by 6.9 / 3.6 / 3.1 dB at one span (QPSK / 16-QAM / 64-QAM),
 still 1.8 / 1.2 / 0.9 dB at 30 spans. The **closed-form EGN correction**
 fixes most of that from five spans on (within ±0.23 dB; QPSK +0.50 dB at
 three spans), but is 1.1–3.0 dB high at one span, as its authors state.
-For Gaussian symbols GN is within ±0.10 dB up to 10 spans and 0.22 / 0.38 dB
-high at 20 / 30 spans.
+For Gaussian symbols GN agrees with the simulation: within ±0.10 dB up to
+10 spans, and within the statistical error at 20 and 30 spans.
 
 **Correction (2026-10-04).** The first run sampled at 5 samples/symbol.
 Kerr products of the 135 GHz band reach ±203 GHz and aliased into the
@@ -74,11 +74,14 @@ in the first-order regime, and far above its own numerical noise.
    0.3–0.9 dB high).
 5. **GN for Gaussian symbols** agrees with the simulation within ±0.10 dB
    up to 10 spans. (The first run's "open residual" of −0.08 … −0.26 dB was
-   the aliasing.) At 20 and 30 spans GN reads 0.22 and 0.38 dB high. The GN
-   integral has converged there (4× the channel nodes: +0.004 dB; 16× the
-   points: 0.000 dB), and the first-order estimate agrees with the
-   simulation. The cause is open; `block_length.py` tests whether the
-   periodic simulated block (spectral lines 7.8 MHz apart) is the cause.
+   the aliasing.) At 20 and 30 spans GN reads 0.22 and 0.38 dB above the
+   mean of the 4 blocks, but for Gaussian symbols η scatters by about
+   0.4 dB from block to block there. With 8 blocks the first-order η at
+   30 spans is 42.43 ± 0.15 dB, GN 42.45 dB (`block_length.py`). The GN
+   integral has converged (4× the channel nodes: +0.004 dB; 16× the
+   points: 0.000 dB). Longer blocks (16384 symbols, spectral lines 2 MHz
+   apart instead of 7.8 MHz) change nothing beyond the error
+   (42.21 ± 0.26 dB).
 
 Cross-check with the literature (`tests/numerical/test_nli.py`): the GN
 integral reproduces the published GN curve of Poggiolini et al. 2015
