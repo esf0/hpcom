@@ -99,8 +99,9 @@ simulation (four times the training steps). A
    * - Scenario
      - System
    * - ``sc-dp-10x80``
-     - one 32 GBd dual-polarisation channel, RRC 0.1, 256 points, 10 × 80 km
-       SSMF, EDFA NF 5 dB
+     - one 32 GBd dual-polarisation channel, RRC 0.1, 1024 points (DBP
+       reaches 9.1 bit/symbol: 256 points would cap it at 8), 10 × 80 km SSMF,
+       EDFA NF 5 dB, −1 to +9 dBm
    * - ``wdm5-dp-10x80``
      - 5 × 32 GBd dual-polarisation on a 50 GHz grid (centre channel scored),
        256 points, same link

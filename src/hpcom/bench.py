@@ -116,9 +116,10 @@ SCENARIOS: dict[str, Scenario] = {
     for s in (
         Scenario(
             name="sc-dp-10x80",
-            description="one 32 GBd dual-polarisation channel, 256 points, 10 × 80 km SSMF, EDFA NF 5 dB",
+            description="one 32 GBd dual-polarisation channel, 1024 points, 10 × 80 km SSMF, "
+            "EDFA NF 5 dB",
             transmitter=SingleCarrierTransmitter(
-                modulation_order=256,
+                modulation_order=1024,
                 symbol_rate_hz=32e9,
                 n_symbols=2048,
                 samples_per_symbol=4,
@@ -126,7 +127,7 @@ SCENARIOS: dict[str, Scenario] = {
             ),
             fiber=_ssmf(80.0),
             spans=10,
-            powers_dbm=(-1.0, 1.0, 3.0, 5.0),
+            powers_dbm=(-1.0, 1.0, 3.0, 5.0, 7.0, 9.0),
         ),
         Scenario(
             name="wdm5-dp-10x80",
