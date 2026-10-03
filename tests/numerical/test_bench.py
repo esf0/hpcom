@@ -43,6 +43,27 @@ def test_standard_scenarios_build_their_links_and_transmitters():
         bench.scenario("nope")
 
 
+@pytest.mark.parametrize(
+    ("name", "samples_per_symbol", "ok"),
+    [
+        ("wdm5-dp-10x80", 16, True),
+        ("wdm5-dp-10x80", 8, False),
+        ("jovanovic2023", 8, False),
+        ("sc-dp-10x80", 4, True),
+        ("sc-dp-10x80", 2, False),
+    ],
+)
+def test_scenarios_sample_at_twice_the_occupied_bandwidth(name, samples_per_symbol, ok):
+    """Kerr products reach ±1.5 B: below 2 B samples/s they alias into the signal band."""
+    s = bench.scenario(name)
+    tx = s.transmitter.replace(samples_per_symbol=samples_per_symbol)
+    if ok:
+        assert s.replace(transmitter=tx).transmitter.samples_per_symbol == samples_per_symbol
+    else:
+        with pytest.raises(ValueError, match="alias"):
+            s.replace(transmitter=tx)
+
+
 def test_methods_are_named_block_sets():
     assert {"qam+cdc", "gs+cdc", "gs+wldbp2", "qam+ffdbp"} <= set(bench.METHODS)
     m = bench.METHODS["gs+wldbp2"]

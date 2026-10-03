@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from hpcom import learn
 from hpcom._model import HpcomModel, Polymorphic
@@ -38,7 +39,7 @@ from hpcom.amplifier import EDFA
 from hpcom.fiber import Fiber
 from hpcom.link import Link
 from hpcom.numerics import Scheme
-from hpcom.transmitter import SingleCarrierTransmitter, Transmitter
+from hpcom.transmitter import PulseShapedTransmitter, SingleCarrierTransmitter, Transmitter
 from hpcom.wdm import WDMConfig, WDMTransmitter
 
 __all__ = [
@@ -91,6 +92,29 @@ class Scenario(HpcomModel):
     evaluation_blocks: int = Field(default=16, ge=1)
     evaluation_seed: int = 1_000_000
 
+    @model_validator(mode="after")
+    def _alias_free(self) -> Scenario:
+        """The sampling rate is at least twice the occupied bandwidth B.
+
+        Kerr products of a band B reach ±1.5 B. At a lower sampling rate they
+        alias back into the signal band and add spurious interference (5 × 32
+        GBd at 8 samples/symbol: −0.08 bit/4D at the optimum).
+        """
+        tx = self.transmitter
+        if not isinstance(tx, PulseShapedTransmitter):
+            raise ValueError("a scenario needs a pulse-shaped transmitter")
+        occupied = (1.0 + tx.roll_off) * tx.symbol_rate_hz
+        if isinstance(tx, WDMTransmitter):
+            occupied += tx.wdm.total_bandwidth_hz
+        sampling = tx.samples_per_symbol * tx.symbol_rate_hz
+        if sampling < 2.0 * occupied:
+            raise ValueError(
+                f"sampling rate {sampling / 1e9:.0f} GHz is below twice the occupied bandwidth "
+                f"({occupied / 1e9:.0f} GHz): Kerr products alias into the signal band; "
+                f"use at least {math.ceil(2.0 * occupied / tx.symbol_rate_hz)} samples/symbol"
+            )
+        return self
+
     def link(self, evaluation: bool = False) -> Link:
         steps = self.evaluation_steps_per_span if evaluation else self.steps_per_span
         span = self.fiber.with_steps(
@@ -138,7 +162,7 @@ SCENARIOS: dict[str, Scenario] = {
                 modulation_order=256,
                 symbol_rate_hz=32e9,
                 n_symbols=2048,
-                samples_per_symbol=8,
+                samples_per_symbol=16,
                 polarization="dual",
                 wdm=WDMConfig(n_channels=5, spacing_hz=50e9),
             ),
@@ -155,7 +179,7 @@ SCENARIOS: dict[str, Scenario] = {
                 modulation_order=64,
                 symbol_rate_hz=32e9,
                 n_symbols=2000,
-                samples_per_symbol=8,
+                samples_per_symbol=16,
                 roll_off=0.01,
                 polarization="dual",
                 wdm=WDMConfig(n_channels=5, spacing_hz=50e9),

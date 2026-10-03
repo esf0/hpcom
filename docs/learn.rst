@@ -87,7 +87,11 @@ Benchmark scenarios
 
 A :class:`~hpcom.bench.Scenario` fixes the transmitter, the link, the
 power sweep, the scored channels, the evaluation blocks and the scoring
-simulation (four times the training steps). A
+simulation (four times the training steps). Its sampling rate must be at
+least twice the occupied bandwidth :math:`B`: the Kerr products of the
+signal reach :math:`\pm 1.5\,B`, and at a lower rate they alias back into
+the signal band (5 × 32 GBd at 8 samples/symbol loses 0.08 bit/4D at the
+optimum of ``jovanovic2023``). A
 :class:`~hpcom.bench.Method` is a set of blocks.
 :func:`~hpcom.bench.run` trains a method at every power and scores it;
 :func:`~hpcom.bench.leaderboard` ranks the results.
@@ -104,10 +108,11 @@ simulation (four times the training steps). A
        EDFA NF 5 dB, −3 to +9 dBm
    * - ``wdm5-dp-10x80``
      - 5 × 32 GBd dual-polarisation on a 50 GHz grid (centre channel scored),
-       256 points, same link, −5 to +5 dBm per channel
+       16 samples/symbol, 256 points, same link, −5 to +5 dBm per channel
    * - ``jovanovic2023``
      - the system of Jovanovic et al. (JLT 2023): 5 × 32 GBd
-       dual-polarisation, RRC 0.01, 64 points, 10 × 100 km SSMF with
+       dual-polarisation, RRC 0.01, 16 samples/symbol, 64 points,
+       10 × 100 km SSMF with
        D = 16.464 ps/(nm·km) and γ = 1.3 /W/km
 
 Standard methods (:data:`~hpcom.bench.METHODS`): ``qam+cdc``, ``gs+cdc``,
