@@ -104,3 +104,36 @@ def test_command_line_appends_results(tmp_path, monkeypatch):
     saved = [bench.MethodResult.model_validate(r) for r in json.loads(out.read_text())]
     assert {r.method for r in saved} == {"qam+cdc", "qam+dbp1"}
     assert saved[0].best.power_dbm == 4.0
+    # another power for qam+cdc is added to its rows; the repeated one is identical
+    args = ["--scenario", "tiny", "--method", "qam+cdc", "--steps", "1", "--powers", "4", "0"]
+    bench.main([*args, "--out", str(out)])
+    merged = {
+        r.method: r
+        for r in (bench.MethodResult.model_validate(x) for x in json.loads(out.read_text()))
+    }
+    assert [r.power_dbm for r in merged["qam+cdc"].rows] == [0.0, 4.0]
+    assert merged["qam+cdc"].rows[1].rate_scored == saved[0].rows[0].rate_scored
+    assert merged["qam+dbp1"] == saved[1]
+
+
+def test_leaderboard_marks_an_optimum_at_the_edge_of_the_sweep():
+    def result(method, rates):
+        rows = tuple(
+            bench.PowerResult(
+                power_dbm=p,
+                rate=r,
+                rate_stderr=0.0,
+                rate_scored=r,
+                rate_scored_stderr=0.0,
+                train_seconds=1.0,
+            )
+            for p, r in zip((-1.0, 1.0, 3.0), rates, strict=True)
+        )
+        return bench.MethodResult(scenario="s", method=method, rows=rows)
+
+    inside, edge = result("inside", (5.0, 6.0, 5.5)), result("edge", (5.0, 5.5, 5.8))
+    assert not inside.best_at_edge and edge.best_at_edge
+    table = bench.leaderboard([inside, edge])
+    assert "+3.0 dBm (edge)" in table and "+1.0 dBm |" in table
+    with pytest.raises(ValueError, match="same scenario"):
+        inside.merged(edge)

@@ -101,7 +101,7 @@ simulation (four times the training steps). A
    * - ``sc-dp-10x80``
      - one 32 GBd dual-polarisation channel, RRC 0.1, 1024 points (DBP
        reaches 9.1 bit/symbol: 256 points would cap it at 8), 10 × 80 km SSMF,
-       EDFA NF 5 dB, −1 to +9 dBm
+       EDFA NF 5 dB, −3 to +9 dBm
    * - ``wdm5-dp-10x80``
      - 5 × 32 GBd dual-polarisation on a 50 GHz grid (centre channel scored),
        256 points, same link, −5 to +5 dBm per channel
@@ -123,6 +123,10 @@ span from the input (:data:`~hpcom.bench.DBP1_SCHEME`; +0.9 to
 .. code-block:: bash
 
    python -m hpcom.bench --scenario wdm5-dp-10x80 --method qam+cdc gs+cdc gs+wldbp2 --out results.json
+
+Re-running a method into the same ``--out`` file adds its new powers
+(``--powers``) to the stored ones. The leaderboard marks a best power at
+the edge of the sweep "(edge)": the optimum may lie outside it.
 
 [``tests/numerical/test_learn.py``, ``tests/numerical/test_bench.py``:
 the Gaussian-demapper rate of QAM over a linear link equals the MI of QAM

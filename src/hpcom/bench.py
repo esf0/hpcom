@@ -128,7 +128,7 @@ SCENARIOS: dict[str, Scenario] = {
             ),
             fiber=_ssmf(80.0),
             spans=10,
-            powers_dbm=(-1.0, 1.0, 3.0, 5.0, 7.0, 9.0),
+            powers_dbm=(-3.0, -1.0, 1.0, 3.0, 5.0, 7.0, 9.0),
         ),
         Scenario(
             name="wdm5-dp-10x80",
@@ -253,6 +253,19 @@ class MethodResult(HpcomModel):
     def best(self) -> PowerResult:
         return max(self.rows, key=lambda r: r.rate_scored)
 
+    @property
+    def best_at_edge(self) -> bool:
+        """The best power is the lowest or highest evaluated: the optimum may lie outside."""
+        powers = [r.power_dbm for r in self.rows]
+        return len(powers) > 1 and self.best.power_dbm in (min(powers), max(powers))
+
+    def merged(self, other: MethodResult) -> MethodResult:
+        """Rows of both, ``other``'s where a power is in both (same scenario and method)."""
+        if (other.scenario, other.method) != (self.scenario, self.method):
+            raise ValueError("can only merge results of the same scenario and method")
+        rows = {r.power_dbm: r for r in self.rows} | {r.power_dbm: r for r in other.rows}
+        return self.model_copy(update={"rows": tuple(rows[k] for k in sorted(rows))})
+
 
 def run(
     scenario: Scenario,
@@ -300,7 +313,11 @@ def run(
 
 
 def leaderboard(results: Sequence[MethodResult]) -> str:
-    """Markdown table per scenario: best scored rate (and its power), best first."""
+    """Markdown table per scenario: best scored rate (and its power), best first.
+
+    A best power at the edge of the evaluated sweep is marked "(edge)": the
+    method's optimum may lie outside it.
+    """
     lines = []
     for name in sorted({r.scenario for r in results}):
         rows = sorted((r for r in results if r.scenario == name), key=lambda r: -r.best.rate_scored)
@@ -315,7 +332,7 @@ def leaderboard(results: Sequence[MethodResult]) -> str:
             t = sum(x.train_seconds for x in r.rows) / len(r.rows)
             lines.append(
                 f"| {r.method} | {b.rate_scored:.3f} | {b.rate_scored_stderr:.3f} | "
-                f"{b.power_dbm:+.1f} dBm | {t:.0f} s |"
+                f"{b.power_dbm:+.1f} dBm{' (edge)' if r.best_at_edge else ''} | {t:.0f} s |"
             )
         lines.append("")
     return "\n".join(lines)
@@ -341,7 +358,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             learn.Trainer(steps=args.steps),
             powers_dbm=args.powers,
         )
-        results = [r for r in results if (r.scenario, r.method) != (result.scenario, result.method)]
+        key = (result.scenario, result.method)
+        for stored in (r for r in results if (r.scenario, r.method) == key):
+            result = stored.merged(result)  # new powers are added, repeated ones replaced
+        results = [r for r in results if (r.scenario, r.method) != key]
         results.append(result)
         best = result.best
         print(
