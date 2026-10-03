@@ -30,6 +30,13 @@ from hpcom._version import __version__
 from hpcom.amplifier import EDFA, Amplifier
 from hpcom.dsp import Compensator, DigitalBackPropagation
 from hpcom.fiber import Fiber, LossSpectrum
+from hpcom.impairments import (
+    IQImbalance,
+    LaserPhaseNoise,
+    LocalOscillator,
+    MachZehnderModulator,
+    Quantizer,
+)
 from hpcom.laser import (
     GainFiber,
     OutputCoupler,
@@ -82,8 +89,12 @@ __all__ = [
     "DigitalBackPropagation",
     "Fiber",
     "GainFiber",
+    "IQImbalance",
+    "LaserPhaseNoise",
     "Link",
+    "LocalOscillator",
     "LossSpectrum",
+    "MachZehnderModulator",
     "Metrics",
     "MulticoreFiber",
     "OFDMConfig",
@@ -95,6 +106,7 @@ __all__ = [
     "PilotConfig",
     "PulseShapedReceiver",
     "PulseShapedTransmitter",
+    "Quantizer",
     "RamanResponse",
     "ReceivedSymbols",
     "Receiver",

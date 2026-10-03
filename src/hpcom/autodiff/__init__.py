@@ -7,7 +7,7 @@ propagators, differentiable with :func:`jax.grad`, compilable with
 * :func:`propagate` — one fiber span (scalar, Manakov, multicore; every
   fixed-step scheme; generalised-NLSE terms);
 * :func:`amplify`, :func:`propagate_link` — EDFAs with reparameterised ASE
-  from a JAX PRNG key, whole links;
+  from a JAX PRNG key, whole links (with :mod:`hpcom.impairments` elements);
 * :func:`backpropagate`, :func:`compensate` — digital back-propagation with
   a trainable link model and nonlinearity scale;
 * :func:`learned_dbp_init`, :func:`learned_dbp` — DBP with every step

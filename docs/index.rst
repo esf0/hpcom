@@ -50,6 +50,7 @@ back-propagation.
    concepts
    physics
    numerics
+   impairments
    autodiff
    learn
    backends

@@ -60,6 +60,9 @@ Link components
 .. automodule:: hpcom.noise
    :members:
 
+.. automodule:: hpcom.impairments
+   :members:
+
 .. automodule:: hpcom.link
    :members:
 

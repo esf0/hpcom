@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from hpcom._typing import StepDistribution
 from hpcom.amplifier import EDFA
 from hpcom.autodiff._fiber import _PS, Array, FiberParameters, GradientMode, propagate
+from hpcom.autodiff._impairments import IMPAIRMENTS, apply_impairment, is_random
 from hpcom.dsp.compensation import DigitalBackPropagation
 from hpcom.fiber import Fiber
 from hpcom.link import Link
@@ -44,22 +45,25 @@ class AmplifierParameters(NamedTuple):
         return cls(gain_db=jnp.asarray(amplifier.gain_db, dtype), noise_figure_db=nf)
 
 
-#: One entry per link element: :class:`FiberParameters` or :class:`AmplifierParameters`.
-LinkParameters = tuple[FiberParameters | AmplifierParameters, ...]
+#: One entry per link element: :class:`FiberParameters`, :class:`AmplifierParameters`, or
+#: ``None`` for a transceiver impairment (:mod:`hpcom.impairments`; nothing to train).
+LinkParameters = tuple[FiberParameters | AmplifierParameters | None, ...]
 
 
 def link_parameters(link: Link) -> LinkParameters:
     """The parameters of every element of ``link``, in order."""
-    out: list[FiberParameters | AmplifierParameters] = []
+    out: list[FiberParameters | AmplifierParameters | None] = []
     for el in link.elements:
         if isinstance(el, Fiber):
             out.append(FiberParameters.from_fiber(el))
         elif isinstance(el, EDFA):
             out.append(AmplifierParameters.from_amplifier(el))
+        elif isinstance(el, IMPAIRMENTS):
+            out.append(None)
         else:
             raise TypeError(
-                f"{type(el).__name__} has no differentiable model; links of Fiber and EDFA "
-                "elements are supported"
+                f"{type(el).__name__} has no differentiable model; links of Fiber, EDFA and "
+                "hpcom.impairments elements are supported"
             )
     return tuple(out)
 
@@ -105,20 +109,27 @@ def propagate_link(
     params: LinkParameters | None = None,
     gradient: GradientMode = "store",
 ) -> Array:
-    """:meth:`hpcom.Link.propagate` as a JAX function (Fiber and EDFA elements).
+    """:meth:`hpcom.Link.propagate` as a JAX function (Fiber, EDFA and :mod:`hpcom.impairments` elements).
 
-    Every noisy amplifier draws from its own split of ``key``.
+    Every noisy amplifier and every random impairment (laser or LO phase
+    noise) draws from its own split of ``key``, in link order.
     """
     ps = link_parameters(link) if params is None else params
-    n_noisy = sum(isinstance(el, EDFA) and not el.is_noiseless for el in link.elements)
+
+    def random(el: object) -> bool:
+        return (isinstance(el, EDFA) and not el.is_noiseless) or is_random(el)
+
+    n_noisy = sum(random(el) for el in link.elements)
     keys = list(jax.random.split(key, n_noisy)) if key is not None and n_noisy else []
     x = jnp.asarray(field)
     for el, p in zip(link.elements, ps, strict=True):
+        k = keys.pop(0) if random(el) and keys else None
         if isinstance(el, Fiber):
             x = propagate(x, el, dt_s, params=p, gradient=gradient)  # type: ignore[arg-type]
         elif isinstance(el, EDFA):
-            k = keys.pop(0) if not el.is_noiseless and keys else None
             x = amplify(x, el, dt_s, key=k, params=p)  # type: ignore[arg-type]
+        elif isinstance(el, IMPAIRMENTS):
+            x = apply_impairment(el, x, dt_s, k)
         else:
             raise TypeError(f"{type(el).__name__} has no differentiable model")
     return x
@@ -198,6 +209,8 @@ def backpropagate(
         elif isinstance(el, EDFA):
             gain = 10.0 ** (jnp.asarray(p.gain_db) / 10.0)  # type: ignore[union-attr]
             x = x / jnp.sqrt(gain).astype(jnp.real(x).dtype)
+        elif isinstance(el, IMPAIRMENTS):
+            continue  # DBP does not model transceiver impairments (apply_inverse: identity)
         else:
             raise TypeError(f"{type(el).__name__} has no differentiable model")
     if frequency_offset_hz == 0.0:

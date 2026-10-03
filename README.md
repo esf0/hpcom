@@ -22,6 +22,10 @@ datasets.
   weakly coupled multicore fibers with space-division-multiplexed transceivers
   (per-core streams, MIMO across cores); EDFAs with ASE; noise loading by SNR/OSNR;
   digital back-propagation at realistic sampling rates.
+- **Transceiver impairments** (`hpcom.impairments`): laser and local-oscillator
+  phase noise, LO frequency offset, IQ imbalance, DAC/ADC quantisation and the
+  Mach–Zehnder transfer as link elements, each checked against its closed-form
+  theory and differentiable in JAX (straight-through quantiser).
 - **End-to-end learning** (`hpcom.learn`): systems composed of encoder,
   pre-distorter, front end (CDC, DBP, learned DBP) and decoder blocks, trained
   through the split-step simulation with the reversible adjoint; a benchmark
