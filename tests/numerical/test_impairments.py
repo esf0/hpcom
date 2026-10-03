@@ -304,9 +304,11 @@ def test_blind_phase_search_recovers_laser_phase_noise_up_to_eepn(laser_hz, lo_h
     * the transmitter laser's noise passes the fibre and the CD compensator
       (net zero dispersion) unchanged, and BPS removes it;
     * the LO's noise enters before the CD compensator, which converts it into
-      equalisation-enhanced phase noise (EEPN). No CPR removes all of it. The
-      penalty is at most that of additive noise of variance
+      equalisation-enhanced phase noise (EEPN). No CPR removes all of it. Over
+      5 spans the penalty is below that of additive noise of variance
       σ² = π² |β₂L| Δν_LO / T_s [ShiehHo2008]: BPS removes part of the phase.
+      (The formula is a first-order estimate: over 10 spans the measured
+      penalty is larger.)
     """
     from hpcom import BlindPhaseSearch
 

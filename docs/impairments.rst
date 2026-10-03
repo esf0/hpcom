@@ -66,7 +66,9 @@ relative to the signal power. Carrier-phase recovery
 transmitter laser's noise and part of the EEPN, but not all of it: over
 5 × 80 km SSMF at 32 GBd, a 1 MHz LO costs 1.3 dB of a 23.6 dB SNR after
 blind phase search (2.1 dB for the formula above), a 1 MHz transmitter
-laser 0.3 dB.
+laser 0.3 dB. The formula is a first-order estimate, not a bound: over
+10 × 80 km the same LO costs 2.8 dB of 20.4 dB (2.1 dB for the formula),
+without cycle slips.
 
 If the receiver removes only the block's mean phase (a data-aided complex
 gain, no carrier-phase recovery), the residual phase variance over a block
@@ -164,8 +166,8 @@ JSON and run DBP; in a simulation the IQ image adds like noise at
 JAX equals NumPy to :math:`10^{-12}` (x64) for the deterministic elements,
 gradients through the whole impaired link are finite, the quantiser's
 gradient is the identity's; with blind phase search in the receiver, the
-transmitter laser's noise is removed (0.5 dB) and the LO's leaves an EEPN
-penalty above 1 dB at 1 MHz, within the bound above.]
+transmitter laser's noise is removed (0.5 dB) and, over 5 × 80 km, the
+LO's leaves an EEPN penalty above 1 dB at 1 MHz and below the formula's.]
 
 .. [ShiehHo2008] W. Shieh, K.-P. Ho, "Equalization-enhanced phase noise for
    coherent-detection systems using electronic digital signal processing,"
