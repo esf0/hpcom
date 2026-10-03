@@ -1,0 +1,212 @@
+[
+ {
+  "system": "3ch",
+  "spans": 1,
+  "quantity": "GN",
+  "paper": 26.7,
+  "hpcom": 26.673053364480815
+ },
+ {
+  "system": "3ch",
+  "spans": 1,
+  "quantity": "closed-form EGN",
+  "paper": 24.5,
+  "hpcom": 24.500047026868256
+ },
+ {
+  "system": "3ch",
+  "spans": 1,
+  "quantity": "simulation",
+  "paper": 21.2,
+  "hpcom": 20.903705828451166
+ },
+ {
+  "system": "3ch",
+  "spans": 2,
+  "quantity": "GN",
+  "paper": 30.0,
+  "hpcom": 29.96882810459773
+ },
+ {
+  "system": "3ch",
+  "spans": 2,
+  "quantity": "closed-form EGN",
+  "paper": 27.9,
+  "hpcom": 27.971614450048676
+ },
+ {
+  "system": "3ch",
+  "spans": 2,
+  "quantity": "simulation",
+  "paper": 26.8,
+  "hpcom": 26.552482015034133
+ },
+ {
+  "system": "3ch",
+  "spans": 5,
+  "quantity": "GN",
+  "paper": 34.3,
+  "hpcom": 34.33558570672216
+ },
+ {
+  "system": "3ch",
+  "spans": 5,
+  "quantity": "closed-form EGN",
+  "paper": 32.5,
+  "hpcom": 32.54953051347073
+ },
+ {
+  "system": "3ch",
+  "spans": 5,
+  "quantity": "simulation",
+  "paper": 32.2,
+  "hpcom": 32.11819132786792
+ },
+ {
+  "system": "3ch",
+  "spans": 10,
+  "quantity": "GN",
+  "paper": 37.6,
+  "hpcom": 37.6318187106774
+ },
+ {
+  "system": "3ch",
+  "spans": 10,
+  "quantity": "closed-form EGN",
+  "paper": 36.0,
+  "hpcom": 35.98430197082269
+ },
+ {
+  "system": "3ch",
+  "spans": 10,
+  "quantity": "simulation",
+  "paper": 35.9,
+  "hpcom": 35.84813780623001
+ },
+ {
+  "system": "3ch",
+  "spans": 20,
+  "quantity": "GN",
+  "paper": 40.9,
+  "hpcom": 40.912910657832946
+ },
+ {
+  "system": "3ch",
+  "spans": 20,
+  "quantity": "closed-form EGN",
+  "paper": 39.4,
+  "hpcom": 39.38484842324388
+ },
+ {
+  "system": "3ch",
+  "spans": 20,
+  "quantity": "simulation",
+  "paper": 39.4,
+  "hpcom": 39.39059376596934
+ },
+ {
+  "system": "3ch",
+  "spans": 50,
+  "quantity": "GN",
+  "paper": 45.3,
+  "hpcom": 45.23182502439484
+ },
+ {
+  "system": "3ch",
+  "spans": 50,
+  "quantity": "closed-form EGN",
+  "paper": 43.9,
+  "hpcom": 43.83934229389134
+ },
+ {
+  "system": "3ch",
+  "spans": 50,
+  "quantity": "simulation",
+  "paper": 44.2,
+  "hpcom": 43.81450345961844
+ },
+ {
+  "system": "15ch",
+  "spans": 1,
+  "quantity": "GN",
+  "paper": 29.5,
+  "hpcom": 29.50332437488221
+ },
+ {
+  "system": "15ch",
+  "spans": 1,
+  "quantity": "closed-form EGN",
+  "paper": 27.5,
+  "hpcom": 27.533843765868603
+ },
+ {
+  "system": "15ch",
+  "spans": 2,
+  "quantity": "GN",
+  "paper": 32.7,
+  "hpcom": 32.665670123555785
+ },
+ {
+  "system": "15ch",
+  "spans": 2,
+  "quantity": "closed-form EGN",
+  "paper": 30.8,
+  "hpcom": 30.781087805876794
+ },
+ {
+  "system": "15ch",
+  "spans": 5,
+  "quantity": "GN",
+  "paper": 36.9,
+  "hpcom": 36.85784092138551
+ },
+ {
+  "system": "15ch",
+  "spans": 5,
+  "quantity": "closed-form EGN",
+  "paper": 35.1,
+  "hpcom": 35.08463624973693
+ },
+ {
+  "system": "15ch",
+  "spans": 10,
+  "quantity": "GN",
+  "paper": 40.1,
+  "hpcom": 40.03046496901441
+ },
+ {
+  "system": "15ch",
+  "spans": 10,
+  "quantity": "closed-form EGN",
+  "paper": 38.4,
+  "hpcom": 38.336867589216304
+ },
+ {
+  "system": "15ch",
+  "spans": 20,
+  "quantity": "GN",
+  "paper": 43.3,
+  "hpcom": 43.19874040946034
+ },
+ {
+  "system": "15ch",
+  "spans": 20,
+  "quantity": "closed-form EGN",
+  "paper": 41.6,
+  "hpcom": 41.578509140124574
+ },
+ {
+  "system": "15ch",
+  "spans": 50,
+  "quantity": "GN",
+  "paper": 47.5,
+  "hpcom": 47.381937986611774
+ },
+ {
+  "system": "15ch",
+  "spans": 50,
+  "quantity": "closed-form EGN",
+  "paper": 45.9,
+  "hpcom": 45.85081248996916
+ }
+]
