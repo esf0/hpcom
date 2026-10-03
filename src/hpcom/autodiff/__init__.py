@@ -17,7 +17,9 @@ propagators, differentiable with :func:`jax.grad`, compilable with
 * :func:`demodulate` — the receiver chain, with DBP or any JAX function as
   its compensation stage;
 * :func:`information_rates`, :func:`bit_llrs`, :func:`snr_db` — MI, GMI and
-  soft demapping as training objectives.
+  soft demapping as training objectives;
+* :func:`jacobian_singular_values` — how much a link amplifies input
+  perturbations and back-propagated gradients.
 
 The configuration objects (:class:`~hpcom.Fiber`, :class:`~hpcom.Link`, …)
 fix the structure; the continuous parameters are pytrees —
@@ -69,6 +71,7 @@ from hpcom.autodiff._link import (
     link_parameters,
     propagate_link,
 )
+from hpcom.autodiff._sensitivity import JacobianSpectrum, jacobian_singular_values
 from hpcom.autodiff._transceiver import (
     CompensateFn,
     TransmitterParameters,
@@ -86,6 +89,7 @@ __all__ = [
     "CompensateFn",
     "FiberParameters",
     "GradientMode",
+    "JacobianSpectrum",
     "LearnedDBP",
     "LearnedDBPParameters",
     "LinkParameters",
@@ -97,6 +101,7 @@ __all__ = [
     "constellation",
     "demodulate",
     "information_rates",
+    "jacobian_singular_values",
     "learned_dbp",
     "learned_dbp_init",
     "link_parameters",

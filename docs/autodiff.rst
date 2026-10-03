@@ -335,6 +335,31 @@ to −18.3 dB, close to standard DBP with 4 steps/span (−19.5 dB)
 [``tests/numerical/test_learned_dbp.py``].
 
 
+Gradient sensitivity: do gradients explode?
+-------------------------------------------
+
+:func:`~hpcom.autodiff.jacobian_singular_values` returns the leading
+singular values of the Jacobian of any field-to-field map — for a link,
+the largest gain of an input perturbation, and (transposed) of a gradient
+flowing back to the transmitter. It runs a block subspace iteration with
+forward- and reverse-mode products and never forms the Jacobian.
+
+Every split step is symplectic in the real coordinates: the Kerr step
+:math:`A \mapsto Ae^{i\kappa P}` is the exact flow of the Hamiltonian
+:math:`\kappa P^2/2` (Manakov included), the dispersion step is unitary,
+and loss and gain only scale the field. A link whose amplifiers restore
+the launch power is therefore symplectic, and its singular values pair up,
+:math:`\sigma_i\sigma_{2n+1-i} = 1`: gradients that grow in one direction
+shrink by the same factor in another, and a linear transparent link has
+every :math:`\sigma = 1` — no vanishing or exploding from depth alone.
+Growth comes from the physics (nonlinear sensitivity, rising with power and
+length). [``tests/numerical/test_sensitivity.py``: the randomized values
+and vectors equal the full SVD; pairing to 1e-10 for scalar and Manakov
+links; linear links unitary to 1e-10; :math:`\sigma_\mathrm{max}` grows with
+power.] ``research/2026-10-03-gradient-sensitivity`` measures
+:math:`\sigma_\mathrm{max}` against launch power and the number of spans.
+
+
 Example: end-to-end learning
 ----------------------------
 
