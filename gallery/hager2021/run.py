@@ -5,10 +5,11 @@ Single polarisation, 10.7 GBd, Gaussian symbols, RRC 0.1, 25 × 80 km SSMF
 2 samples/symbol; effective SNR. The paper compares linear equalisation,
 DBP with one step per span (frequency domain) and its learned DBP with
 77 FIR taps in total. hpcom: CD compensation, ``DBP(steps_per_span=1)``
-and ``LearnedDBP(steps_per_span=1)`` (every step's frequency response,
-Kerr coefficient and power filter trained; not tap-constrained), trained
-on the effective SNR through the split-step simulation and scored on a
-4× finer one.
+(effective-length Kerr step at mid-span, the default) and
+``LearnedDBP(steps_per_span=1)`` (every step's frequency response, Kerr
+coefficient and power filter trained; not tap-constrained), trained on the
+effective SNR through the split-step simulation and scored on a 4× finer
+one.
 
 Run (GPU)::
 

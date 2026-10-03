@@ -112,8 +112,13 @@ simulation (four times the training steps). A
 
 Standard methods (:data:`~hpcom.bench.METHODS`): ``qam+cdc``, ``gs+cdc``,
 ``qam+dbp1``, ``qam+dbp4``, ``gs+ldbp1``, ``qam+wdbp2``, ``gs+wldbp2`` and
-``qam+ffdbp`` (ideal full-field DBP with the forward steps). From a shell,
-e.g. on a compute node:
+``qam+ffdbp`` (ideal full-field DBP with the forward steps). The DBP
+baselines are tuned, so that a learned method is not compared with a weak
+DBP: every Kerr step uses its effective length (the default of
+:class:`~hpcom.learn.DBP`), and with one step per span it sits 0.15 of the
+span from the input (:data:`~hpcom.bench.DBP1_SCHEME`; +0.9 to
++1.6 bit/symbol over a whole-step Kerr length at mid-span in
+``sc-dp-10x80``). From a shell, e.g. on a compute node:
 
 .. code-block:: bash
 

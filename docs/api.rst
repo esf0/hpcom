@@ -84,7 +84,7 @@ End-to-end learning and benchmarks
    :imported-members:
 
 .. automodule:: hpcom.bench
-   :members: Scenario, Method, MethodResult, PowerResult, run, leaderboard, scenario
+   :members: Scenario, Method, MethodResult, PowerResult, run, leaderboard, scenario, SCENARIOS, METHODS, DBP1_SCHEME
 
 Nonlinear interference models
 -----------------------------

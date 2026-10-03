@@ -37,6 +37,7 @@ from hpcom._model import HpcomModel, Polymorphic
 from hpcom.amplifier import EDFA
 from hpcom.fiber import Fiber
 from hpcom.link import Link
+from hpcom.numerics import Scheme
 from hpcom.transmitter import SingleCarrierTransmitter, Transmitter
 from hpcom.wdm import WDMConfig, WDMTransmitter
 
@@ -195,19 +196,26 @@ class Method(HpcomModel):
         return out
 
 
+#: The Kerr step of one-step-per-span DBP: effective length, 0.15 of the span from its input
+#: (the best position for 32 GBd over 80 km spans: +0.86 bit/symbol at +3 dBm and +1.6 at
+#: +7 dBm over a whole-step Kerr length at mid-span in ``sc-dp-10x80``).
+DBP1_SCHEME = Scheme(kerr_length="effective", nonlinear_position=0.15)
+
 #: Standard baselines: ``qam+cdc``, ``gs+cdc``, ``qam+dbp1``, ``qam+dbp4``, ``gs+ldbp1``,
 #: ``qam+wdbp2``, ``gs+wldbp2``, ``qam+ffdbp`` (ideal full-field DBP with the forward steps).
+#: DBP uses effective-length Kerr steps (:class:`hpcom.learn.DBP`; one step per span:
+#: :data:`DBP1_SCHEME`); full-field DBP the forward scheme, as the exact inverse.
 METHODS: dict[str, Method] = {
     m.name: m
     for m in (
         Method(name="qam+cdc"),
         Method(name="gs+cdc", encoder=learn.Constellation()),
-        Method(name="qam+dbp1", front_end=learn.DBP(steps_per_span=1)),
+        Method(name="qam+dbp1", front_end=learn.DBP(steps_per_span=1, scheme=DBP1_SCHEME)),
         Method(name="qam+dbp4", front_end=learn.DBP(steps_per_span=4)),
         Method(
             name="gs+ldbp1",
             encoder=learn.Constellation(),
-            front_end=learn.LearnedDBP(steps_per_span=1),
+            front_end=learn.LearnedDBP(steps_per_span=1, scheme=DBP1_SCHEME),
         ),
         Method(name="qam+wdbp2", front_end=learn.DBP(steps_per_span=2, wideband=True)),
         Method(
@@ -215,7 +223,10 @@ METHODS: dict[str, Method] = {
             encoder=learn.Constellation(),
             front_end=learn.LearnedDBP(steps_per_span=2, wideband=True),
         ),
-        Method(name="qam+ffdbp", front_end=learn.DBP(steps_per_span=None, wideband=True)),
+        Method(
+            name="qam+ffdbp",
+            front_end=learn.DBP(steps_per_span=None, wideband=True, scheme=None),
+        ),
     )
 }
 

@@ -30,11 +30,13 @@ from hpcom import (  # noqa: E402
     SingleCarrierTransmitter,
     WDMConfig,
     WDMTransmitter,
+    bench,
     learn,
     nli,
 )
 from hpcom.metrics import information_rates  # noqa: E402
 from hpcom.modulation.dm import maxwell_boltzmann  # noqa: E402
+from hpcom.numerics import Scheme  # noqa: E402
 
 
 def _ps16() -> ConstellationConfig:
@@ -90,18 +92,44 @@ def test_gaussian_demapper_rate_equals_qam_mi_at_the_predicted_snr():
     assert rate == pytest.approx(mi, abs=0.02)
 
 
+@pytest.mark.parametrize(
+    "scheme",
+    ["default", None, Scheme(kerr_length="effective", nonlinear_position=0.15)],
+    ids=["effective-kerr", "fiber-scheme", "effective-kerr-near-input"],
+)
 @pytest.mark.parametrize("wideband", [False, True])
-def test_learned_dbp_starts_as_dbp(wideband):
+def test_learned_dbp_starts_as_dbp(wideband, scheme):
     link = _link(polarization="dual")
     tx = _wdm(polarization="dual", launch_power_per_channel_dbm=4.0)
+    kw = {} if scheme == "default" else {"scheme": scheme}
     fixed = learn.EndToEnd(
-        transmitter=tx, link=link, front_end=learn.DBP(steps_per_span=2, wideband=wideband)
+        transmitter=tx, link=link, front_end=learn.DBP(steps_per_span=2, wideband=wideband, **kw)
     )
-    learned = fixed.replace(front_end=learn.LearnedDBP(steps_per_span=2, wideband=wideband))
+    learned = fixed.replace(front_end=learn.LearnedDBP(steps_per_span=2, wideband=wideband, **kw))
     key = jax.random.key(3)
     a = jax.jit(fixed.rate_fn())(fixed.init(key), key)
     b = jax.jit(learned.rate_fn())(learned.init(key), key)
     assert float(b) == pytest.approx(float(a), abs=2e-4)
+
+
+def test_dbp_kerr_step_uses_the_effective_length_by_default():
+    """The default equals ``DigitalBackPropagation`` with ``Scheme(kerr_length="effective")``.
+
+    One step per span, 32 GBd, high power: the effective-length Kerr step
+    near the span input (``bench.DBP1_SCHEME``) beats the whole-step Kerr
+    length at mid-span.
+    """
+    link = _link(spans=6)
+    tx = _sc(launch_power_per_channel_dbm=6.0)
+    near_input = learn.EndToEnd(
+        transmitter=tx, link=link, front_end=learn.DBP(steps_per_span=1, scheme=bench.DBP1_SCHEME)
+    )
+    whole_step = near_input.replace(front_end=learn.DBP(steps_per_span=1, scheme=Scheme()))
+    a = learn.evaluate(near_input, near_input.init(jax.random.key(0)), blocks=2)
+    b = learn.evaluate(whole_step, whole_step.init(jax.random.key(0)), blocks=2)
+    assert a.mean > b.mean + 0.1
+    stage = learn.DBP(steps_per_span=1).stage(near_input.context())
+    assert stage.scheme == Scheme(kerr_length="effective") and stage.steps_per_span == 1
 
 
 def test_neural_decoder_starts_at_the_gaussian_demapper():

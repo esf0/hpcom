@@ -21,6 +21,7 @@ from hpcom.autodiff import information_rates, learned_dbp, learned_dbp_init
 from hpcom.autodiff._fiber import Array
 from hpcom.dsp.compensation import DigitalBackPropagation
 from hpcom.link import Link
+from hpcom.numerics import Scheme
 from hpcom.receiver import PulseShapedReceiver
 from hpcom.transmitter import PulseShapedTransmitter
 
@@ -252,23 +253,39 @@ class DBP(FrontEnd):
     ``steps_per_span=None`` the forward steps — ideal full-field DBP).
     Otherwise each scored channel alone, low-passed to
     ``bandwidth_factor·R_s`` at ``samples_per_symbol``.
+
+    ``scheme``: the back-propagation's split-step scheme. By default each
+    Kerr step uses the step's effective length at mid-step (second order;
+    the best of these choices with several steps per span). A Kerr phase
+    over the whole step length instead loses 3 to 12 dB of effective SNR at
+    one step per span and 10.7 GBd (``gallery/hager2021``). With one step
+    per span, move the Kerr step towards the span input too
+    (``nonlinear_position``): the best position was 0.15 at 32 GBd
+    (:data:`hpcom.bench.DBP1_SCHEME`) and 0.25 at 10.7 GBd. ``None``: the
+    fibers' own scheme — with ``steps_per_span=None``, the exact inverse of
+    the forward simulation.
     """
 
     steps_per_span: int | None = Field(default=4, ge=1)
     wideband: bool = False
     samples_per_symbol: int = Field(default=2, ge=1)
     bandwidth_factor: float = Field(default=1.1, gt=0)
+    scheme: Scheme | None = Scheme(kerr_length="effective")
 
     def stage(self, ctx: Context) -> DigitalBackPropagation:
         if self.wideband:
             return DigitalBackPropagation(
-                link=ctx.link, steps_per_span=self.steps_per_span, samples_per_symbol=None
+                link=ctx.link,
+                steps_per_span=self.steps_per_span,
+                samples_per_symbol=None,
+                scheme=self.scheme,
             )
         return DigitalBackPropagation(
             link=ctx.link,
             steps_per_span=self.steps_per_span,
             samples_per_symbol=self.samples_per_symbol,
             bandwidth_hz=self.bandwidth_factor * ctx.transmitter.symbol_rate_hz,
+            scheme=self.scheme,
         )
 
     def receiver(self, ctx: Context) -> PulseShapedReceiver:
@@ -308,6 +325,7 @@ class LearnedDBP(DBP):
             n,
             dt,
             steps_per_span=self.steps_per_span,
+            scheme=self.scheme,
             frequency_offset_hz=offset,
             knots=self.knots,
             intensity_taps=self.intensity_taps,
@@ -321,6 +339,7 @@ class LearnedDBP(DBP):
             n,
             dt,
             steps_per_span=self.steps_per_span,
+            scheme=self.scheme,
             frequency_offset_hz=offset,
             knots=self.knots,
             intensity_taps=self.intensity_taps,
