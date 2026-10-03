@@ -33,11 +33,16 @@ def main(folder: Path) -> None:
         return next(r for r in rows if r["method"] == method and r["power_dbm"] == power)
 
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
-    for m in methods:
+    off_scale = []
+    for i, m in enumerate(methods):
         label, color, ls = LABELS[m]
         r = [np.asarray(get(m, p)["rates_fine"]) for p in powers]
+        if min(x.mean() for x in r) < 5.3:  # e.g. fixed DBP with too few steps: listed, not drawn
+            off_scale.append(f"{label}: " + " / ".join(f"{x.mean():.2f}" for x in r))
+            continue
         ax.errorbar(
-            powers,
+            np.asarray(powers)
+            + 0.04 * (i - len(methods) / 2),  # small offsets: overlapping curves stay visible
             [x.mean() for x in r],
             yerr=[x.std() / np.sqrt(x.size) for x in r],
             color=color,
@@ -55,6 +60,17 @@ def main(folder: Path) -> None:
     )
     ax.grid(alpha=0.3)
     ax.legend(fontsize=7, loc="lower left")
+    if off_scale:
+        ax.text(
+            0.01,
+            0.98,
+            "below the axis — " + "; ".join(off_scale),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=6,
+            color="0.35",
+        )
     fig.tight_layout()
     fig.savefig(folder / "rate_vs_power.png", dpi=150)
 
