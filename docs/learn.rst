@@ -104,7 +104,7 @@ simulation (four times the training steps). A
        EDFA NF 5 dB, −1 to +9 dBm
    * - ``wdm5-dp-10x80``
      - 5 × 32 GBd dual-polarisation on a 50 GHz grid (centre channel scored),
-       256 points, same link
+       256 points, same link, −5 to +5 dBm per channel
    * - ``jovanovic2023``
      - the system of Jovanovic et al. (JLT 2023): 5 × 32 GBd
        dual-polarisation, RRC 0.01, 64 points, 10 × 100 km SSMF with

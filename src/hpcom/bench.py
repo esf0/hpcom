@@ -143,7 +143,7 @@ SCENARIOS: dict[str, Scenario] = {
             ),
             fiber=_ssmf(80.0),
             spans=10,
-            powers_dbm=(-3.0, -1.0, 1.0, 3.0),
+            powers_dbm=(-5.0, -3.0, -1.0, 1.0, 3.0, 5.0),
         ),
         Scenario(
             name="jovanovic2023",
