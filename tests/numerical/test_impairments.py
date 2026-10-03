@@ -291,3 +291,49 @@ def test_jax_random_impairments_and_gradients():
         np.testing.assert_allclose(
             np.asarray(ad.propagate_link(x, plain, DT, key=k)), np.asarray(manual), atol=1e-14
         )
+
+
+@pytest.mark.parametrize(
+    ("laser_hz", "lo_hz"),
+    [(1e6, 0.0), (1e5, 1e5), (0.0, 1e6), (0.0, 3e6), (1e6, 1e6)],
+)
+def test_blind_phase_search_recovers_laser_phase_noise_up_to_eepn(laser_hz, lo_hz):
+    """Laser and LO phase noise in a 5 × 80 km link; the receiver has CDC and BPS.
+
+    * one complex gain per block cannot follow the phase (several dB lost);
+    * the transmitter laser's noise passes the fibre and the CD compensator
+      (net zero dispersion) unchanged, and BPS removes it;
+    * the LO's noise enters before the CD compensator, which converts it into
+      equalisation-enhanced phase noise (EEPN). No CPR removes all of it. The
+      penalty is at most that of additive noise of variance
+      σ² = π² |β₂L| Δν_LO / T_s [ShiehHo2008]: BPS removes part of the phase.
+    """
+    from hpcom import BlindPhaseSearch
+
+    fiber = Fiber.ssmf(80.0, n_steps=20, polarization="dual")
+    spans = Link.from_spans(5, fiber, EDFA(gain_db=fiber.loss_db, noise_figure_db=5.0))
+    noisy = Link(
+        elements=(
+            LaserPhaseNoise(linewidth_hz=laser_hz, polarization="dual"),
+            *spans.elements,
+            LocalOscillator(linewidth_hz=lo_hz, polarization="dual"),
+        )
+    )
+    tx = SingleCarrierTransmitter(
+        modulation_order=16,
+        symbol_rate_hz=32e9,
+        n_symbols=8192,
+        polarization="dual",
+        launch_power_per_channel_dbm=-2.0,
+    )
+    cdc = tx.matched_receiver(cd_compensation_s2=spans.total_dispersion_s2)
+    clean = Simulation(transmitter=tx, link=spans, receiver=cdc, seed=1).run().metrics.snr_db
+    sim = Simulation(transmitter=tx, link=noisy, receiver=cdc, seed=1)
+    without = sim.run()
+    bps = sim.evaluate(without, cdc.replace(cpr=BlindPhaseSearch(half_window=8))).metrics.snr_db
+    eepn_variance = math.pi**2 * abs(spans.total_dispersion_s2) * lo_hz * tx.symbol_rate_hz
+    bound = -10 * math.log10(10 ** (-clean / 10) + eepn_variance)
+    assert without.metrics.snr_db < clean - 3.0
+    assert bps > bound - 0.5
+    if lo_hz >= 1e6:
+        assert bps < clean - 1.0

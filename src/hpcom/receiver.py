@@ -56,6 +56,18 @@ Processing chain of every receiver:
        polarisation rotation, PMD and residual linear ISI; it is the
        least-squares limit of the adaptive (CMA/LMS) equalisers of real
        receivers.
+   ``"cma"``, ``"lms"`` (pulse-shaped receivers)
+       The same butterfly FIR, adapted symbol by symbol as in a real
+       receiver (:mod:`hpcom.dsp.adaptive`, settings ``adaptive=``): blind
+       constant-modulus algorithm, or CMA pre-convergence followed by
+       decision-directed (or data-aided) LMS. A complex gain follows, chosen
+       as for ``"auto"``; with the transmitted signal the order of the
+       outputs is identified first.
+
+   **Carrier-phase recovery** (pulse-shaped receivers, ``cpr=``, e.g.
+   :class:`~hpcom.dsp.BlindPhaseSearch`) runs per stream on the
+   symbol-rate samples — after any butterfly FIR, before the complex gain,
+   which then removes the constant phase ambiguity of the blind estimate.
 4. **Hard decision** to the nearest constellation point, then bit labels —
    or distribution-matcher decoding when ``dm`` is set.
 """
@@ -64,7 +76,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Literal, TypedDict
+from typing import ClassVar, Literal, TypedDict
 
 import numpy as np
 import numpy.typing as npt
@@ -80,8 +92,10 @@ from hpcom._model import (
 )
 from hpcom._pulse import Convolution, matched_filter, matched_filter_samples
 from hpcom._typing import ComplexArray, Polarization
+from hpcom.dsp.adaptive import AdaptiveEqualizer, adaptive_equalize
 from hpcom.dsp.compensation import Compensator
 from hpcom.dsp.frontend import lowpass, resample
+from hpcom.dsp.phase import BlindPhaseSearch, blind_phase_search
 from hpcom.modulation.spec import ModulationSpec
 from hpcom.pilots import PilotConfig
 from hpcom.transmitter import (
@@ -92,9 +106,9 @@ from hpcom.transmitter import (
 )
 
 #: An equaliser that is actually applied (``"auto"`` resolves to one of these).
-ResolvedEqualizer = Literal["none", "unit_power", "pilot", "data_aided", "mimo"]
+ResolvedEqualizer = Literal["none", "unit_power", "pilot", "data_aided", "mimo", "cma", "lms"]
 #: Equaliser selection (see the module docstring).
-EqualizerMode = Literal["auto", "none", "unit_power", "pilot", "data_aided", "mimo"]
+EqualizerMode = Literal["auto", "none", "unit_power", "pilot", "data_aided", "mimo", "cma", "lms"]
 
 
 class Detection(TypedDict):
@@ -187,7 +201,8 @@ class Receiver(ModulationSpec, ABC):
         fields ``(n_cores, …, n)``).
     equalize
         Per-stream complex-gain equaliser: ``"auto"`` (default), ``"none"``,
-        ``"unit_power"``, ``"pilot"`` or ``"data_aided"`` (module docstring).
+        ``"unit_power"``, ``"pilot"`` or ``"data_aided"``; pulse-shaped
+        receivers also ``"mimo"``, ``"cma"``, ``"lms"`` (module docstring).
     cd_compensation_s2
         Accumulated ``Σ β₂L`` (s²) to remove; ``link.total_dispersion_s2``.
     cd_compensation_s3
@@ -199,6 +214,18 @@ class Receiver(ModulationSpec, ABC):
     equalize: EqualizerMode = "auto"
     cd_compensation_s2: float = 0.0
     cd_compensation_s3: float = 0.0
+
+    #: Whether the receiver has the butterfly FIR of ``"cma"``/``"lms"``.
+    _adaptive_equalizers: ClassVar[bool] = False
+
+    @model_validator(mode="after")
+    def _validate_equalizer(self) -> Receiver:
+        if self.equalize in ("cma", "lms") and not self._adaptive_equalizers:
+            raise ValueError(
+                f"equalize={self.equalize!r} is for pulse-shaped receivers "
+                f"({type(self).__name__} has no butterfly FIR)"
+            )
+        return self
 
     @abstractmethod
     def receive(
@@ -322,6 +349,11 @@ class Receiver(ModulationSpec, ABC):
         """The concrete equaliser for :attr:`equalize` (``"auto"`` resolution order in module docs)."""
         if self.equalize != "auto":
             return self.equalize
+        return self._auto_gain(has_pilots, has_reference)
+
+    @staticmethod
+    def _auto_gain(has_pilots: bool, has_reference: bool) -> ResolvedEqualizer:
+        """The complex gain ``"auto"`` resolves to."""
         if has_pilots:
             return "pilot"
         return "data_aided" if has_reference else "unit_power"
@@ -447,11 +479,16 @@ class PulseShapedReceiver(Receiver, ABC):
     ``cd_compensation_s2``/``_s3`` (which must then be 0). The matched filter
     then runs at the stage's ``samples_per_symbol``.
 
-    ``mimo_taps`` (odd) is the length of the ``equalize="mimo"`` FIR, in
-    samples at 2 samples/symbol (1 when the matched filter runs at 1).
+    ``mimo_taps`` (odd) is the length of the butterfly FIR
+    (``equalize="mimo"``, ``"cma"``, ``"lms"``), in samples at 2
+    samples/symbol (1 when the matched filter runs at 1).
     ``mimo_across_cores`` makes it one joint :math:`2M\times2M` (dual
     polarisation) filter over all cores — for coupled-core fibers — instead
-    of an independent 2×2 per core.
+    of an independent 2×2 per core. ``adaptive`` holds the CMA/LMS settings.
+
+    ``cpr`` (optional) is the carrier-phase recovery, e.g.
+    :class:`~hpcom.dsp.BlindPhaseSearch`, run on every stream's symbol-rate
+    samples (pilot slots included) before the complex gain.
     """
 
     samples_per_symbol: int = Field(default=8, ge=2)
@@ -462,6 +499,10 @@ class PulseShapedReceiver(Receiver, ABC):
     compensation: Polymorphic[Compensator] | None = None
     mimo_taps: int = Field(default=15, ge=1)
     mimo_across_cores: bool = False
+    adaptive: AdaptiveEqualizer = AdaptiveEqualizer()
+    cpr: BlindPhaseSearch | None = None
+
+    _adaptive_equalizers: ClassVar[bool] = True
 
     @model_validator(mode="after")
     def _validate_pulse_rx(self) -> PulseShapedReceiver:
@@ -590,9 +631,9 @@ class PulseShapedReceiver(Receiver, ABC):
         reference_data: npt.NDArray[np.complex128] | None,
         samples_per_symbol: int,
     ) -> Detection:
-        """Matched filter at ``samples_per_symbol`` → split data/pilot slots → :meth:`_detect`."""
-        if self.equalize == "mimo":
-            return self._demodulate_mimo(streams, reference_data, samples_per_symbol)
+        """Matched filter at ``samples_per_symbol`` (and butterfly FIR) → :meth:`_detect_slots`."""
+        if self.equalize in ("mimo", "cma", "lms"):
+            return self._demodulate_butterfly(streams, reference_data, samples_per_symbol)
         slots = matched_filter(
             streams,
             samples_per_symbol,
@@ -600,17 +641,45 @@ class PulseShapedReceiver(Receiver, ABC):
             self.pulse_span_symbols,
             self.convolution,
         )
+        return self._detect_slots(slots, reference_data)
+
+    def _detect_slots(
+        self,
+        slots: npt.NDArray[np.complex128],
+        reference_data: npt.NDArray[np.complex128] | None,
+        equalizer: ResolvedEqualizer | None = None,
+    ) -> Detection:
+        """Carrier-phase recovery → split data/pilot slots → :meth:`_detect`.
+
+        ``equalizer`` names a butterfly FIR already applied: ``"mimo"`` keeps
+        unit gain (unless ``cpr`` rotated the samples), ``"cma"``/``"lms"``
+        are followed by the complex gain ``"auto"`` resolves to.
+        """
+        if self.cpr is not None:
+            cfg = self.resolved_constellation
+            slots, _ = blind_phase_search(slots, cfg.points, self.cpr, self.data_symbol_energy)
         n_slots = slots.shape[-1]
-        if self.pilots is None:
-            return self._detect(slots, reference_data=reference_data)
-        p_idx = self.pilots.pilot_indices(n_slots)
-        d_idx = self.pilots.data_indices(n_slots)
-        pilot_values = np.full(p_idx.size, self.pilots.symbol, dtype=np.complex128)
+        raw_pilots = pilot_values = None
+        data = slots
+        if self.pilots is not None:
+            data = slots[..., self.pilots.data_indices(n_slots)]
+            p_idx = self.pilots.pilot_indices(n_slots)
+            raw_pilots = slots[..., p_idx]
+            pilot_values = np.full(p_idx.size, self.pilots.symbol, dtype=np.complex128)
+        gain = None
+        if equalizer == "mimo" and self.cpr is None:
+            gain = np.ones(data.shape[:-1], dtype=np.complex128)
+        elif equalizer is not None:
+            has_pilots = raw_pilots is not None and raw_pilots.shape[-1] > 0
+            mode = self._auto_gain(has_pilots, reference_data is not None)
+            gain = self._estimate_gain(mode, data, raw_pilots, pilot_values, reference_data)
         return self._detect(
-            slots[..., d_idx],
-            raw_pilots=slots[..., p_idx],
+            data,
+            raw_pilots=raw_pilots,
             pilot_values=pilot_values,
             reference_data=reference_data,
+            gain=gain,
+            equalizer=equalizer,
         )
 
     @property
@@ -620,13 +689,13 @@ class PulseShapedReceiver(Receiver, ABC):
         pol = ((1 if cores else 0),) if self.polarization == "dual" else ()
         return ((0,) if cores and self.mimo_across_cores else ()) + pol
 
-    def _demodulate_mimo(
+    def _demodulate_butterfly(
         self,
         streams: npt.NDArray[np.complex128],
         reference_data: npt.NDArray[np.complex128] | None,
         samples_per_symbol: int,
     ) -> Detection:
-        """Matched filter → 2 samples/symbol → least-squares butterfly FIR → :meth:`_detect`."""
+        """Matched filter → 2 samples/symbol → butterfly FIR → :meth:`_detect_slots`."""
         filtered = matched_filter_samples(
             streams, samples_per_symbol, self.roll_off, self.pulse_span_symbols, self.convolution
         )
@@ -637,26 +706,32 @@ class PulseShapedReceiver(Receiver, ABC):
             per, filtered = 2, filtered[..., :: samples_per_symbol // 2]
         else:
             per, filtered = 2, resample(filtered, 2 * n_slots)
-        if reference_data is None:
-            raise ValueError(
-                'equalize="mimo" is trained on the transmitted data: '
-                "receive(field, dt_s, reference=sent)"
-            )
         train = np.arange(n_slots) if self.pilots is None else self.pilots.data_indices(n_slots)
-        targets = np.asarray(reference_data, dtype=np.complex128)
-        slots = mimo_equalize(filtered, per, self.mimo_taps, self._mimo_modes, train, targets)
-        gain = np.ones(slots.shape[:-1], dtype=np.complex128)
-        if self.pilots is None:
-            return self._detect(slots, gain=gain, equalizer="mimo", reference_data=reference_data)
-        d_idx = self.pilots.data_indices(n_slots)
-        p_idx = self.pilots.pilot_indices(n_slots)
-        return self._detect(
-            slots[..., d_idx],
-            raw_pilots=slots[..., p_idx],
-            pilot_values=np.full(p_idx.size, self.pilots.symbol, dtype=np.complex128),
-            gain=gain,
-            equalizer="mimo",
+        targets = None if reference_data is None else np.asarray(reference_data, np.complex128)
+        if self.equalize == "mimo":
+            if targets is None:
+                raise ValueError(
+                    'equalize="mimo" is trained on the transmitted data: '
+                    "receive(field, dt_s, reference=sent)"
+                )
+            slots = mimo_equalize(filtered, per, self.mimo_taps, self._mimo_modes, train, targets)
+            return self._detect_slots(slots, reference_data, "mimo")
+        assert self.equalize in ("cma", "lms")
+        cfg = self.resolved_constellation
+        slots = adaptive_equalize(
+            filtered,
+            per,
+            self.mimo_taps,
+            self._mimo_modes,
+            self.equalize,
+            self.adaptive,
+            cfg.points,
+            cfg.pmf,
+            train,
+            targets,
+            self.cpr,
         )
+        return self._detect_slots(slots, reference_data, self.equalize)
 
 
 def mimo_equalize(

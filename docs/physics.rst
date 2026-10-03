@@ -999,6 +999,147 @@ Receivers and equalisation
    decisions are not a valid codeword cannot be inverted; its bits are set to
    zero and ``dm_block_valid`` is ``False`` (pre-FEC, the block is lost).
 
+Pulse-shaped receivers can add the DSP of a real coherent receiver between
+steps 2 and 3: a butterfly FIR (``equalize="mimo"``, ``"cma"``, ``"lms"``)
+and carrier-phase recovery (``cpr=``), in this order. The complex gain of
+step 3 follows — after ``"cma"``/``"lms"``, or any ``cpr``, the gain
+``auto`` would choose — and removes what the blind stages leave ambiguous
+(a constant phase, a multiple of :math:`\pi/2`).
+
+Adaptive butterfly equalisers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The matched-filter output at :math:`S = 2` samples/symbol (1 if the matched
+filter runs at 1) feeds a butterfly FIR of :math:`T` = ``mimo_taps`` taps
+per mode — 2×2 for dual polarisation, per channel (all cores jointly with
+``mimo_across_cores``):
+
+.. math::
+
+   y_p[k] = \sum_q \mathbf w_{pq}^\mathsf T\mathbf u_q[k],\qquad
+   \mathbf u_q[k] = \big(x_q[Sk + j]\big)_{j=-(T-1)/2}^{(T-1)/2}.
+
+``"mimo"`` fits :math:`\mathbf w` by least squares to the transmitted data
+(the genie limit). ``"cma"`` and ``"lms"`` adapt it symbol by symbol,
+:math:`\mathbf w_{pq} \leftarrow \mathbf w_{pq} + \mu\,e_p\,\bar{\mathbf u}_q[k]`,
+from a centre spike on the diagonal, the input scaled to the constellation
+energy, ``passes`` sweeps over the (periodic) block per stage
+(:class:`~hpcom.dsp.AdaptiveEqualizer`):
+
+* **CMA** [Godard1980]_, blind: :math:`e_p = y_p\,(R^2 - |y_p|^2)`,
+  :math:`R^2 = E|a|^4/E|a|^2`. The minima of
+  :math:`E(R^2 - |y|^2)^2` are the inverse channel up to one phase per
+  output and an order of the outputs. On a multi-ring constellation
+  :math:`|a|^2 \ne R^2` even at the solution, so the error never vanishes:
+  a misadjustment that grows with :math:`\mu` and the SNR.
+* **LMS**, after CMA pre-convergence: :math:`e_p = \hat a_p - y_p`
+  (decision-directed, :math:`\hat a_p` the nearest point; or
+  ``lms_reference="data"``, the transmitted symbol). The constant phase
+  CMA leaves is removed from the taps first: blind,
+  :math:`\tfrac14\arg\big(\langle y_p^4\rangle / E[a^4]\big)` (up to
+  :math:`\pi/2`); data-aided, the least-squares phase. With ``cpr`` the
+  carrier phase :math:`\hat\theta_{p,k}` of the CMA output stays in the
+  loop instead — decision on :math:`y_pe^{-i\hat\theta_{p,k}}`, error
+  :math:`\hat a_pe^{i\hat\theta_{p,k}} - y_p` — so that the taps do not
+  chase the laser phase [Savory2010]_.
+
+With the transmitted signal, the order of the outputs is identified after
+CMA (each transmitted mode takes the output that correlates with it most),
+as a training header does; the taps themselves never see the data.
+
+Carrier-phase recovery
+^^^^^^^^^^^^^^^^^^^^^^
+
+Laser phase noise is a Wiener process: :math:`\theta(t + \Delta t) -
+\theta(t) \sim \mathcal N(0, 2\pi\Delta\nu\,\Delta t)` for the summed
+linewidth :math:`\Delta\nu` of transmitter and local oscillator. Over a
+block of :math:`n` symbols it wanders by :math:`\sqrt{2\pi\Delta\nu T_s n}`
+— a radian for :math:`\Delta\nu T_s = 10^{-4}` and :math:`n = 16384` — so
+one complex gain per block cannot follow it. **Blind phase search**
+[Pfau2009]_ (:class:`~hpcom.dsp.BlindPhaseSearch`) estimates it per
+symbol: for :math:`B` test phases over one symmetry period,
+:math:`\varphi_b = (b/B - 1/2)\,2\pi/S` (:math:`S = 4` for square QAM),
+
+.. math::
+
+   \hat\theta_k = \operatorname*{arg\,min}_{\varphi_b}
+   \sum_{j=-N}^{N} \big|r_{k+j}e^{-i\varphi_b} - \hat a(r_{k+j}e^{-i\varphi_b})\big|^2,
+
+unwrapped with period :math:`2\pi/S`, and the samples are rotated back by
+:math:`e^{-i\hat\theta_k}`. A slip of the unwrapping (a cycle slip) shifts
+all later symbols by :math:`2\pi/S`; the gain of step 3 removes only a
+constant shift. The phase error has three parts — additive noise averaged
+over the window, the phase walk inside the window, and the test-phase
+spacing :math:`\delta = 2\pi/(SB)`:
+
+.. math::
+
+   \langle(\hat\theta - \theta)^2\rangle \approx
+   \frac{1}{2\,\mathrm{SNR}\,(2N+1)} + \sigma^2\frac{N(N+1)}{3(2N+1)}
+   + \frac{\delta^2}{12},\qquad \sigma^2 = 2\pi\Delta\nu T_s,
+
+hence an optimum :math:`N` for each linewidth and SNR.
+
+**Differentiable.** In :func:`hpcom.autodiff.demodulate` the adaptive
+equalisers are a :func:`jax.lax.scan` over the symbols: the gradient goes
+through every tap update, and decisions and the mode order are piecewise
+constant, so it equals finite differences. The phase-search pick is
+piecewise constant too, but the derotation depends on it, so it is
+replaced by a **straight-through** estimator: the forward value is the hard
+search (equal to NumPy); the gradient is that of the circular mean
+:math:`\tfrac1S\arg\sum_b w_be^{iS\varphi_b}` with
+:math:`w = \mathrm{softmax}\big(-D_b/(\tau\bar D)\big)` (:math:`D_b` the
+windowed distances, :math:`\bar D` their mean, :math:`\tau` =
+``temperature``, 0.05). It follows a common rotation of the input
+(:math:`d\hat\theta/d\alpha = 1` to 1e-3 at 20 dB, 16-QAM), as the true
+phase estimate should — a gradient finite differences cannot give.
+
+**Checks** [``tests/numerical/test_receiver_dsp.py``]:
+
+.. list-table::
+   :widths: 30 70
+
+   * - Phase noise
+     - Laser phase noise on the field, 16384 symbols: one gain per block
+       loses > 10 dB; BPS comes within 0.5 dB of the phase-noise-free SNR,
+       BER ≤ 1e-3, for QPSK at :math:`\Delta\nu T_s = 10^{-3}` (14 dB,
+       :math:`N = 4`), 16-QAM at :math:`10^{-4}` (20 dB, :math:`N = 6`;
+       with and without pilots) and 64-QAM at :math:`10^{-5}` (26 dB,
+       :math:`B = 64`).
+   * - Phase error
+     - RMS error of :math:`\hat\theta` within a factor 1.5 of the formula
+       above (measured ratio 0.90–1.01), no cycle slip — QPSK to 64-QAM,
+       :math:`\Delta\nu T_s = 0` to :math:`10^{-3}`.
+   * - CMA
+     - On 10 × 80 km at 0.2 ps/√km (PMD, EDFA noise) and on a rotation past
+       45° with 5 ps DGD: within 0.5 dB (QPSK) of the least-squares FIR;
+       16-QAM within 1.5 dB at 17 dB SNR, 2.5 dB at 20 dB (misadjustment).
+       Without the transmitted data the output is the same up to the order
+       of the modes.
+   * - LMS
+     - 16-QAM on the PMD link: ≥ 0.3 dB above CMA, within 0.5 dB of least
+       squares (decision-directed and data-aided). With CMA → BPS (LMS:
+       phase in the loop) on rotation + DGD + :math:`\Delta\nu T_s =
+       10^{-4}`: within 0.5 dB of the SNR without phase noise.
+   * - JAX
+     - ``autodiff.demodulate`` equals the receiver (x64) to 1e-12 with CMA,
+       LMS, BPS and their combinations (pilots; WDM channel groups; 1e-7
+       after the least-squares FIR, as without BPS); the
+       gradient of the GMI in the PMD coefficient and launch power through
+       CMA/LMS equals finite differences to 1e-4; with BPS it is finite.
+
+.. [Godard1980] D. N. Godard, "Self-recovering equalization and carrier
+   tracking in two-dimensional data communication systems," *IEEE Trans.
+   Commun.* 28(11), 1867–1875, 1980.
+
+.. [Pfau2009] T. Pfau, S. Hoffmann, R. Noé, "Hardware-efficient coherent
+   digital receiver concept with feedforward carrier recovery for M-QAM
+   constellations," *J. Lightw. Technol.* 27(8), 989–999, 2009.
+
+.. [Savory2010] S. J. Savory, "Digital coherent optical receivers:
+   algorithms and subsystems," *IEEE J. Sel. Topics Quantum Electron.*
+   16(5), 1164–1179, 2010.
+
 
 Digital back-propagation
 ------------------------

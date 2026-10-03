@@ -22,7 +22,9 @@ from jax.scipy.special import logsumexp
 from hpcom._pulse import _circular_responses, fir_taps
 from hpcom.autodiff._fiber import Array
 from hpcom.autodiff._link import LinkParameters, compensate
+from hpcom.dsp.adaptive import constant_modulus_radius, fourth_moment, taps_index
 from hpcom.dsp.compensation import DigitalBackPropagation
+from hpcom.dsp.phase import BlindPhaseSearch
 from hpcom.modulation.shaping import ConstellationConfig
 from hpcom.receiver import PulseShapedReceiver
 from hpcom.transmitter import PulseShapedTransmitter
@@ -241,36 +243,43 @@ def _matched_filter(receiver: PulseShapedReceiver, x: Array, sps: int) -> Array:
     return _matched_filter_samples(receiver, x, sps)[..., ::sps]
 
 
-def _mimo(
-    receiver: PulseShapedReceiver, streams: Array, sps: int, reference: Array | None
-) -> Array:
-    """:func:`hpcom.receiver.mimo_equalize` after the matched filter, in JAX (normal equations)."""
-    if reference is None:
-        raise ValueError('equalize="mimo" is trained on the transmitted data: pass reference=')
+def _butterfly_input(receiver: PulseShapedReceiver, streams: Array, sps: int) -> tuple[Array, int]:
+    """Matched filter, then 2 samples/symbol (1 if ``sps`` is 1): ``(samples, per)``."""
     filtered = _matched_filter_samples(receiver, streams, sps)
     n_slots = filtered.shape[-1] // sps
     if sps == 1:
-        per = 1
-    elif sps % 2 == 0:
-        per, filtered = 2, filtered[..., :: sps // 2]
-    else:
-        per, filtered = 2, _resample(filtered, 2 * n_slots)
-    ref = jnp.asarray(reference)
-    lead = filtered.shape[:-1]
-    n_lead = len(lead)
+        return filtered, 1
+    if sps % 2 == 0:
+        return filtered[..., :: sps // 2], 2
+    return _resample(filtered, 2 * n_slots), 2
+
+
+def _modes_first(receiver: PulseShapedReceiver, x: Array) -> tuple[Array, tuple[int, ...]]:
+    """``(*lead, n)`` → ``(groups, modes, n)`` and the transposition used (see ``mimo_equalize``)."""
+    n_lead = x.ndim - 1
     modes = receiver._mimo_modes
     others = [a for a in range(n_lead) if a not in modes]
     order = (*others, *modes, n_lead)
-    x, t = jnp.transpose(filtered, order), jnp.transpose(ref, order)
-    group_shape = tuple(lead[a] for a in others)
-    mode_shape = tuple(lead[a] for a in modes)
-    n_modes = math.prod(mode_shape)
-    n_samples = x.shape[-1]
-    half = (receiver.mimo_taps - 1) // 2
-    index = (per * np.arange(n_slots)[:, None] + np.arange(-half, half + 1)) % n_samples
+    n_modes = math.prod(x.shape[a] for a in modes)
+    return jnp.transpose(x, order).reshape(-1, n_modes, x.shape[-1]), order
+
+
+def _modes_back(y: Array, like: tuple[int, ...], order: tuple[int, ...]) -> Array:
+    """Inverse of :func:`_modes_first` for ``(groups, modes, n)`` → ``(*like, n)``."""
+    shape = tuple(like[a] for a in order[:-1])
+    return jnp.transpose(y.reshape(*shape, y.shape[-1]), np.argsort(order))
+
+
+def _mimo(receiver: PulseShapedReceiver, x: Array, per: int, reference: Array | None) -> Array:
+    """:func:`hpcom.receiver.mimo_equalize` in JAX (normal equations)."""
+    if reference is None:
+        raise ValueError('equalize="mimo" is trained on the transmitted data: pass reference=')
+    n_slots = x.shape[-1] // per
+    flat_x, order = _modes_first(receiver, x)
+    flat_t, _ = _modes_first(receiver, jnp.asarray(reference))
+    n_modes = flat_x.shape[1]
+    index = taps_index(x.shape[-1], per, receiver.mimo_taps)
     train = np.arange(n_slots) if receiver.pilots is None else receiver.pilots.data_indices(n_slots)
-    flat_x = x.reshape(-1, n_modes, n_samples)
-    flat_t = t.reshape(-1, n_modes, t.shape[-1])
 
     def one(xc: Array, tc: Array) -> Array:
         r = xc[:, index].transpose(1, 0, 2).reshape(n_slots, n_modes * receiver.mimo_taps)
@@ -278,8 +287,138 @@ def _mimo(
         taps = jnp.linalg.solve(jnp.conj(rt.T) @ rt, jnp.conj(rt.T) @ tc.T)
         return (r @ taps).T
 
-    y = jax.vmap(one)(flat_x, flat_t).reshape(*group_shape, *mode_shape, n_slots)
-    return jnp.transpose(y, np.argsort(order))
+    return _modes_back(jax.vmap(one)(flat_x, flat_t), x.shape[:-1], order)
+
+
+def _adaptive(receiver: PulseShapedReceiver, x: Array, per: int, reference: Array | None) -> Array:
+    """:func:`hpcom.dsp.adaptive_equalize` in JAX: the symbol loop as :func:`jax.lax.scan`."""
+    settings = receiver.adaptive
+    cfg = receiver.resolved_constellation
+    pts = jnp.asarray(cfg.points, x.dtype)
+    energy = float(np.dot(cfg.pmf, np.abs(cfg.points) ** 2))
+    flat, order = _modes_first(receiver, x)
+    n_groups, n_modes, n_samples = flat.shape
+    flat = flat * jnp.sqrt(energy / jnp.mean(jnp.abs(flat) ** 2, axis=(1, 2), keepdims=True))
+    index = taps_index(n_samples, per, receiver.mimo_taps)
+    n_slots = index.shape[0]
+    regress = jnp.moveaxis(flat[:, :, index], 2, 0)  # (n, G, D, T)
+    data_aided = receiver.equalize == "lms" and settings.lms_reference == "data"
+    known = np.zeros(n_slots, dtype=bool)
+    full_t = jnp.zeros((n_groups, n_modes, n_slots), x.dtype)
+    if reference is not None:
+        train = (
+            np.arange(n_slots) if receiver.pilots is None else receiver.pilots.data_indices(n_slots)
+        )
+        full_t = full_t.at[:, :, train].set(_modes_first(receiver, jnp.asarray(reference))[0])
+        known[train] = True
+    elif data_aided:
+        raise ValueError('lms_reference="data" needs reference= (the sent data symbols)')
+    centre = (receiver.mimo_taps - 1) // 2
+    taps0 = np.zeros((n_groups, n_modes, n_modes, receiver.mimo_taps), dtype=np.complex128)
+    taps0[:, np.arange(n_modes), np.arange(n_modes), centre] = 1.0
+    r2 = constant_modulus_radius(cfg.points, cfg.pmf)
+
+    def sweep(taps: Array, carrier: Array | None) -> tuple[Array, Array]:
+        cma = carrier is None
+        step = settings.cma_step if cma else settings.lms_step
+        c_k = (
+            jnp.ones((n_slots, n_groups, n_modes), x.dtype) if cma else jnp.moveaxis(carrier, 2, 0)
+        )
+        xs = (regress, jnp.moveaxis(full_t, 2, 0), jnp.asarray(known), c_k)
+
+        def body(w: Array, inputs: tuple[Array, Array, Array, Array]) -> tuple[Array, Array]:
+            u, sent, is_known, c = inputs
+            y = jnp.einsum("gpqt,gqt->gp", w, u)
+            if cma:
+                e = step * y * (r2 - jnp.abs(y) ** 2)
+            else:
+                z = y * jnp.conj(c)
+                want = pts[jnp.argmin(jnp.abs(z[..., None] - pts) ** 2, axis=-1)]
+                if data_aided:
+                    want = jnp.where(is_known, sent, want)
+                e = step * (want * c - y)
+            return w + e[:, :, None, None] * jnp.conj(u)[:, None, :, :], y
+
+        ys = jnp.zeros((n_slots, n_groups, n_modes), x.dtype)
+        for _ in range(settings.passes):
+            taps, ys = jax.lax.scan(body, taps, xs)
+        return taps, jnp.moveaxis(ys, 0, 2)
+
+    taps, out = sweep(jnp.asarray(taps0, x.dtype), None)
+    if reference is not None:  # identify the modes
+        corr = jnp.abs(jnp.einsum("gpn,gqn->gpq", out[:, :, known], jnp.conj(full_t[:, :, known])))
+        source = jnp.argmax(jax.lax.stop_gradient(corr), axis=1)
+        taps = jnp.take_along_axis(taps, source[:, :, None, None], axis=1)
+        out = jnp.take_along_axis(out, source[:, :, None], axis=1)
+    if receiver.equalize == "lms":
+        carrier = jnp.ones_like(out)
+        if receiver.cpr is not None:  # carrier phase in the LMS loop
+            theta = _phase_search(receiver.cpr, cfg.points, energy, out)
+            if data_aided:
+                fit = jnp.sum(
+                    out[:, :, known]
+                    * jnp.exp(-1j * theta[:, :, known])
+                    * jnp.conj(full_t[:, :, known]),
+                    axis=-1,
+                )
+                theta = theta + jnp.angle(fit)[:, :, None]
+            carrier = jnp.exp(1j * theta)
+        else:
+            if data_aided:
+                fit = jnp.sum(out[:, :, known] * jnp.conj(full_t[:, :, known]), axis=-1)
+                rotation = jnp.angle(fit)
+            else:
+                m4 = fourth_moment(cfg.points, cfg.pmf)
+                rotation = (
+                    jnp.angle(jnp.mean(out**4, axis=-1) / m4) / 4.0
+                    if m4
+                    else jnp.zeros(out.shape[:2], jnp.real(out).dtype)
+                )
+            taps = taps * jnp.exp(-1j * rotation)[:, :, None, None]
+        _, out = sweep(taps, carrier)
+    return _modes_back(out, x.shape[:-1], order)
+
+
+def _phase_search(cpr: BlindPhaseSearch, points: np.ndarray, energy: float, x: Array) -> Array:
+    r""":func:`hpcom.dsp.blind_phase_search`'s phase; hard forward, soft (softmax) gradient.
+
+    The forward values are those of the hard search (and of NumPy). The
+    hard pick is piecewise constant in the samples — no gradient — so the
+    phase's gradient is that of the circular mean of the test phases under
+    :math:`\mathrm{softmax}(-D_b/(\tau\bar D))` (:math:`D_b` the windowed
+    distances, :math:`\bar D` their mean, :math:`\tau` the temperature):
+    a straight-through estimator.
+    """
+    pts = jnp.asarray(points, x.dtype)
+    unit = x / jnp.sqrt(jnp.mean(jnp.abs(x) ** 2, axis=-1, keepdims=True) / energy)
+    phis = cpr.test_phase_grid()
+
+    def distance(c: Array) -> Array:
+        z = unit * c
+        nearest = pts[jnp.argmin(jnp.abs(z[..., None] - pts) ** 2, axis=-1)]
+        return jnp.abs(z - nearest) ** 2
+
+    d = jax.lax.map(distance, jnp.asarray(np.exp(-1j * phis), x.dtype))  # (B, *streams, n)
+    windowed = d
+    for j in range(1, cpr.half_window + 1):
+        windowed = windowed + (jnp.roll(d, j, axis=-1) + jnp.roll(d, -j, axis=-1))
+    s = cpr.symmetry
+    grid = jnp.asarray(phis, jnp.real(x).dtype)
+    hard = jnp.unwrap(s * grid[jnp.argmin(windowed, axis=0)], axis=-1) / s
+    mean = jax.lax.stop_gradient(jnp.mean(windowed, axis=0))
+    weights = jax.nn.softmax(-windowed / (cpr.temperature * mean), axis=0)
+    expand = (slice(None),) + (None,) * (windowed.ndim - 1)
+    circle = jnp.asarray(np.exp(1j * s * phis), x.dtype)[expand]
+    soft = jnp.angle(jnp.sum(weights * circle, axis=0)) / s
+    return jax.lax.stop_gradient(hard) + soft - jax.lax.stop_gradient(soft)
+
+
+def _blind_phase_search(receiver: PulseShapedReceiver, slots: Array) -> Array:
+    """The receiver's carrier-phase recovery (``cpr``) on ``(*streams, n)`` symbols."""
+    assert receiver.cpr is not None
+    points = receiver.resolved_constellation.points
+    phase = _phase_search(receiver.cpr, points, receiver.data_symbol_energy, slots)
+    return slots * jnp.exp(-1j * phase)
 
 
 def _cd_compensate(receiver: PulseShapedReceiver, x: Array, dt_s: float) -> Array:
@@ -354,7 +493,12 @@ def demodulate(
     ``reference`` — the transmitted data symbols ``(*streams, n_data)`` —
     feeds the data-aided equaliser (``equalize="auto"`` without pilots)
     and trains the ``equalize="mimo"`` butterfly FIR (by the normal
-    equations, differentiable).
+    equations, differentiable). ``equalize="cma"``/``"lms"`` run the
+    adaptive FIR symbol by symbol (:func:`jax.lax.scan`; the gradient
+    flows through every tap update) and ``cpr`` the blind phase search,
+    whose gradient is a soft relaxation (straight-through, see
+    :class:`~hpcom.dsp.BlindPhaseSearch`); the values equal the NumPy
+    receiver's.
     With ``receiver.compensation`` set, the stage is ``compensation`` (any
     JAX function ``(samples, dt_s, frequency_offset_hz) → samples``, e.g. a
     neural network) or, by default, the receiver's
@@ -392,12 +536,20 @@ def demodulate(
                 [run(streams[..., c, :], dt_c, float(f)) for c, f in enumerate(offsets)], axis=-2
             )
         sps = sps_out
-    if receiver.equalize == "mimo":
-        slots = _mimo(receiver, streams, sps, reference)
-        if receiver.pilots is None:
-            return slots
-        return slots[..., receiver.pilots.data_indices(slots.shape[-1])]
-    slots = _matched_filter(receiver, streams, sps)
+    if receiver.equalize in ("mimo", "cma", "lms"):
+        x, per = _butterfly_input(receiver, streams, sps)
+        if receiver.equalize == "mimo":
+            slots = _mimo(receiver, x, per, reference)
+            if receiver.cpr is None:
+                if receiver.pilots is None:
+                    return slots
+                return slots[..., receiver.pilots.data_indices(slots.shape[-1])]
+        else:
+            slots = _adaptive(receiver, x, per, reference)
+    else:
+        slots = _matched_filter(receiver, streams, sps)
+    if receiver.cpr is not None:
+        slots = _blind_phase_search(receiver, slots)
     return _equalize(receiver, slots, reference)
 
 
@@ -410,7 +562,7 @@ def _equalize(receiver: PulseShapedReceiver, slots: Array, reference: Array | No
         data = slots[..., pilots.data_indices(n_slots)]
         raw_pilots = slots[..., pilots.pilot_indices(n_slots)]
     mode = receiver.equalize
-    if mode == "auto":
+    if mode in ("auto", "mimo", "cma", "lms"):  # the gain after a butterfly FIR is "auto"'s
         mode = (
             "pilot"
             if raw_pilots is not None

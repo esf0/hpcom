@@ -28,7 +28,7 @@ from __future__ import annotations
 from hpcom import _legacy_alias
 from hpcom._version import __version__
 from hpcom.amplifier import EDFA, Amplifier
-from hpcom.dsp import Compensator, DigitalBackPropagation
+from hpcom.dsp import AdaptiveEqualizer, BlindPhaseSearch, Compensator, DigitalBackPropagation
 from hpcom.fiber import Fiber, LossSpectrum
 from hpcom.impairments import (
     IQImbalance,
@@ -81,8 +81,10 @@ _legacy_alias.install()
 
 __all__ = [
     "EDFA",
+    "AdaptiveEqualizer",
     "AdditiveNoise",
     "Amplifier",
+    "BlindPhaseSearch",
     "Compensator",
     "ConstantCompositionDM",
     "ConstellationConfig",

@@ -54,9 +54,19 @@ phase. Without dispersion a transmitter laser and an LO of linewidths
 :math:`\Delta\nu_1 + \Delta\nu_2`. With dispersion they differ: the
 transmitter's phase noise passes through the fiber and the receiver's CD
 compensation, which cancel, while the LO's passes through the CD
-compensation alone and becomes equalisation-enhanced phase noise. A link
-ending in the LO, followed by a receiver with CD compensation, applies them
-in this order.
+compensation alone and becomes equalisation-enhanced phase noise (EEPN)
+[ShiehHo2008]_. A link ending in the LO, followed by a receiver with CD
+compensation, applies them in this order. EEPN acts like additive noise of
+variance
+
+.. math:: \sigma^2_\mathrm{EEPN} = \frac{\pi^2\,|\beta_2 L|\,\Delta\nu_\mathrm{LO}}{T_s}
+
+relative to the signal power. Carrier-phase recovery
+(:class:`~hpcom.dsp.BlindPhaseSearch`, :doc:`physics`) removes the
+transmitter laser's noise and part of the EEPN, but not all of it: over
+5 × 80 km SSMF at 32 GBd, a 1 MHz LO costs 1.3 dB of a 23.6 dB SNR after
+blind phase search (2.1 dB for the formula above), a 1 MHz transmitter
+laser 0.3 dB.
 
 If the receiver removes only the block's mean phase (a data-aided complex
 gain, no carrier-phase recovery), the residual phase variance over a block
@@ -153,4 +163,10 @@ JSON and run DBP; in a simulation the IQ image adds like noise at
 :math:`-\mathrm{IRR}` (0.3 dB), phase noise and an LO offset cost SNR;
 JAX equals NumPy to :math:`10^{-12}` (x64) for the deterministic elements,
 gradients through the whole impaired link are finite, the quantiser's
-gradient is the identity's.]
+gradient is the identity's; with blind phase search in the receiver, the
+transmitter laser's noise is removed (0.5 dB) and the LO's leaves an EEPN
+penalty above 1 dB at 1 MHz, within the bound above.]
+
+.. [ShiehHo2008] W. Shieh, K.-P. Ho, "Equalization-enhanced phase noise for
+   coherent-detection systems using electronic digital signal processing,"
+   *Opt. Express* 16(20), 15718–15727 (2008).
