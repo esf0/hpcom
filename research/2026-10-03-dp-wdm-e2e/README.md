@@ -54,6 +54,18 @@ The gains of learned DBP over fixed DBP at few steps per span are
 therefore upper bounds. Comparisons with fixed DBP at 16 steps/span and
 with full-field DBP (forward steps) are not affected.
 
+**Sampling note (2026-10-04).** This study sampled the WDM field at 8
+samples/symbol. Kerr products of the 235 GHz band reach ±353 GHz, and
+at 256 GHz they alias into the scored centre channel. Measured on the same
+kind of system: η is 0.2–0.6 dB too high at 5 samples/symbol (3 channels,
+first-order model, 1–10 spans), and 64-QAM loses 0.08 bit/4D at
+8 samples/symbol (5 channels, `jovanovic2023`). So the absolute rates here
+are biased low. Full-field DBP cannot invert aliased products, so its
+ceiling may be understated too. All methods share the same grid, so
+differences between methods are probably less affected; they were not
+re-measured. Alias-free: sampling rate ≥ 1.5 B + B_channel/2 for the centre
+channel (`hpcom.bench` requires ≥ 2 B).
+
 ## Results
 
 Rate of the centre channel on the 4× finer simulation (200 steps/span),

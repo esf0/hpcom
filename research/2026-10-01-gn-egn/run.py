@@ -34,12 +34,14 @@ FORMATS = {"qpsk": 4, "16qam": 16, "64qam": 64, "gaussian": 64}
 
 
 def transmitter(order: int, power_dbm: float, n_symbols: int) -> WDMTransmitter:
+    # 10 samples/symbol: Kerr products of the 135 GHz band reach ±203 GHz; at 5 samples/symbol
+    # (the first run) they aliased into the centre channel and raised η by 0.2-0.6 dB.
     return WDMTransmitter(
         modulation_order=order,
         symbol_rate_hz=32e9,
         n_symbols=n_symbols,
         polarization="dual",
-        samples_per_symbol=5,
+        samples_per_symbol=10,
         launch_power_per_channel_dbm=power_dbm,
         wdm=WDMConfig(n_channels=3, spacing_hz=50e9),
     )

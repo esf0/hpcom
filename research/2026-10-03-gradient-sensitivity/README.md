@@ -87,6 +87,11 @@ At the optimum launch power (first-order NLI model with EDFA NF 5 dB,
 Top 8 singular values only (at +9 dBm σ₈ is 20–60 % below σ₁: many
 directions are amplified, not one); noiseless link (ASE adds, it does not
 change J); PMD and Raman not included; one 1024-symbol block per point.
+The 3-channel field was sampled at 5 samples/symbol, below the alias-free
+rate (Kerr products of the 135 GHz band reach ±203 GHz; 160 GHz sampling).
+Aliased products raise the first-order NLI by 0.2–0.6 dB there, so the
+3-channel singular values may be slightly too large. They were not
+re-measured (note added 2026-10-04).
 
 ## Reproduce
 
