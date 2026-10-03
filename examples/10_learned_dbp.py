@@ -1,7 +1,11 @@
 """10 — Learned digital back-propagation with ``hpcom.autodiff``.
 
 One step per span is the cheapest DBP, and with the link's own parameters
-it is poor: the Kerr step lumps a whole span's nonlinearity at one point.
+and the default Kerr step (a phase over the whole step length at the
+mid-step power) it is poor. Most of what the training finds here is the
+span's effective length: the learned γ scale ≈ 1.6 is 21 km / 12.7 km.
+``Scheme(kerr_length="effective")`` gives that without training (the
+default of :class:`hpcom.learn.DBP`).
 Here the receiver's link model is *trained* instead: per-span γ and β₂ of
 the back-propagation, by L-BFGS on exact gradients of the mean-square error
 between the back-propagated field and the transmitted one (the approach of

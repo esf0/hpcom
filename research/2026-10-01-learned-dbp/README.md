@@ -20,6 +20,15 @@ with ±84 symbols of memory adds only ~0.02 bit/symbol over learned points
 alone: the neighbours' interference is not predictable from the centre
 channel's own symbols.
 
+**Correction (2026-10-03).** The fixed ("standard") DBP here put each Kerr
+phase over the whole step length at the mid-step power. At coarse steps
+that is a weak DBP: with effective-length Kerr steps (now the default of
+`hpcom.learn.DBP`) one step per span gains 0.9–1.6 bit/symbol at 32 GBd
+when the Kerr step also sits near the span input (`hpcom.bench.DBP1_SCHEME`).
+The gains of learned DBP over fixed DBP at few steps per span are
+therefore upper bounds. Comparisons with fixed DBP at 16 steps/span and
+with full-field DBP (forward steps) are not affected.
+
 ## Results
 
 Rate of the centre channel on the 4× finer simulation, bit/symbol (paired
