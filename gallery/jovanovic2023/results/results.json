@@ -1,0 +1,78 @@
+[
+ {
+  "scenario": "jovanovic2023",
+  "method": "qam+cdc",
+  "rows": [
+   {
+    "power_dbm": -1.5,
+    "rate": 5.161409467458725,
+    "rate_stderr": 0.0045420294162344,
+    "rate_scored": 5.175445914268494,
+    "rate_scored_stderr": 0.004757409815910352,
+    "train_seconds": 3.5966135850176215
+   },
+   {
+    "power_dbm": -0.5,
+    "rate": 5.283148527145386,
+    "rate_stderr": 0.006130772387835959,
+    "rate_scored": 5.308005630970001,
+    "rate_scored_stderr": 0.0060532782863156965,
+    "train_seconds": 3.057487081969157
+   },
+   {
+    "power_dbm": 0.5,
+    "rate": 5.3187631368637085,
+    "rate_stderr": 0.007550327790552856,
+    "rate_scored": 5.356894850730896,
+    "rate_scored_stderr": 0.007331941257844774,
+    "train_seconds": 3.1396320280618966
+   },
+   {
+    "power_dbm": 1.5,
+    "rate": 5.247028172016144,
+    "rate_stderr": 0.007733715402113403,
+    "rate_scored": 5.308666229248047,
+    "rate_scored_stderr": 0.008561074809157571,
+    "train_seconds": 3.1726464258972555
+   }
+  ]
+ },
+ {
+  "scenario": "jovanovic2023",
+  "method": "gs+cdc",
+  "rows": [
+   {
+    "power_dbm": -1.5,
+    "rate": 5.284523278474808,
+    "rate_stderr": 0.005212109777743646,
+    "rate_scored": 5.29770627617836,
+    "rate_scored_stderr": 0.005421172311180184,
+    "train_seconds": 125.36912390193902
+   },
+   {
+    "power_dbm": -0.5,
+    "rate": 5.4053292870521545,
+    "rate_stderr": 0.00660296178550346,
+    "rate_scored": 5.428561598062515,
+    "rate_scored_stderr": 0.006457186286259922,
+    "train_seconds": 124.50858391891234
+   },
+   {
+    "power_dbm": 0.5,
+    "rate": 5.436027348041534,
+    "rate_stderr": 0.006903978861200093,
+    "rate_scored": 5.471848726272583,
+    "rate_scored_stderr": 0.00657271401908984,
+    "train_seconds": 125.28411371889524
+   },
+   {
+    "power_dbm": 1.5,
+    "rate": 5.367046594619751,
+    "rate_stderr": 0.006695917761312361,
+    "rate_scored": 5.423137575387955,
+    "rate_scored_stderr": 0.00734513573856916,
+    "train_seconds": 124.97345247515477
+   }
+  ]
+ }
+]

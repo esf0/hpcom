@@ -133,6 +133,118 @@ Re-running a method into the same ``--out`` file adds its new powers
 (``--powers``) to the stored ones. The leaderboard marks a best power at
 the edge of the sweep "(edge)": the optimum may lie outside it.
 
+Leaderboard
+-----------
+
+Results of 4 October 2026 (``benchmarks/leaderboard/results``): 2000
+training steps per power on an RTX 3070. The rate is the best over the
+power sweep on the scoring simulation, in bit/symbol per polarisation,
+± the standard error over the 16 paired blocks. Every best power is
+inside its sweep.
+
+.. list-table:: ``sc-dp-10x80`` (one channel, 1024 points)
+   :header-rows: 1
+   :widths: 30 25 20 25
+
+   * - Method
+     - Rate
+     - At
+     - Training per power
+   * - ``qam+dbp4``
+     - 9.070 ± 0.005
+     - +7 dBm
+     - —
+   * - ``gs+ldbp1``
+     - 8.344 ± 0.008
+     - +5 dBm
+     - 111 s
+   * - ``qam+dbp1``
+     - 7.551 ± 0.006
+     - +3 dBm
+     - —
+   * - ``gs+cdc``
+     - 6.872 ± 0.009
+     - −1 dBm
+     - 98 s
+   * - ``qam+cdc``
+     - 6.566 ± 0.007
+     - −1 dBm
+     - —
+
+.. list-table:: ``wdm5-dp-10x80`` (5 channels, centre scored, 256 points)
+   :header-rows: 1
+   :widths: 30 25 20 25
+
+   * - Method
+     - Rate
+     - At
+     - Training per power
+   * - ``qam+ffdbp`` (ideal)
+     - 7.355 ± 0.005
+     - +3 dBm
+     - —
+   * - ``gs+wldbp2``
+     - 6.971 ± 0.013
+     - +1 dBm
+     - 146 s
+   * - ``gs+ldbp1``
+     - 6.881 ± 0.018
+     - +1 dBm
+     - 140 s
+   * - ``qam+dbp4``
+     - 6.724 ± 0.019
+     - +1 dBm
+     - —
+   * - ``gs+cdc``
+     - 6.585 ± 0.010
+     - −1 dBm
+     - 123 s
+   * - ``qam+cdc``
+     - 6.369 ± 0.010
+     - −1 dBm
+     - —
+   * - ``qam+wdbp2``
+     - 5.426 ± 0.008
+     - −3 dBm
+     - —
+
+.. list-table:: ``jovanovic2023`` (5 channels, centre scored, 64 points)
+   :header-rows: 1
+   :widths: 30 25 20 25
+
+   * - Method
+     - Rate
+     - At
+     - Training per power
+   * - ``gs+cdc``
+     - 5.472 ± 0.007
+     - +0.5 dBm
+     - 125 s
+   * - ``qam+cdc``
+     - 5.357 ± 0.007
+     - +0.5 dBm
+     - —
+
+What the numbers say:
+
+* **One channel.** Fixed DBP with 4 steps per span is the best method,
+  2.5 bit/symbol above CD compensation. Learned DBP at one step per span
+  with learned points (8.34) lies between tuned one-step DBP (7.55) and
+  4-step DBP (9.07).
+* **Five channels.** Single-channel DBP gains only 0.36 bit/symbol: the
+  neighbours' interference dominates. Learned wideband DBP at 2 steps per
+  span with learned points (6.97) is the best practical method. It closes
+  half the gap between learned points with CD compensation (6.59) and ideal
+  full-field DBP (7.36). Fixed wideband DBP with the same 2 steps per span
+  is 0.94 bit/symbol *below* CD compensation: over a 250 GHz band it needs
+  many more steps (with three channels, 16 steps per span were needed to
+  pass single-channel DBP with 4, ``research/2026-10-01-learned-dbp``).
+* **Learned points** add 0.31 (one channel) and 0.22 (five channels)
+  bit/symbol to QAM with CD compensation. In ``jovanovic2023`` they add
+  0.115 bit/symbol per polarisation (0.23 bit/4D); the paper reports
+  0.21 bit/4D, and both rates agree with its Fig. 5 within 0.01 bit/4D at
+  the optimum (``gallery/jovanovic2023``).
+
 [``tests/numerical/test_learn.py``, ``tests/numerical/test_bench.py``:
 the Gaussian-demapper rate of QAM over a linear link equals the MI of QAM
 on the AWGN channel at the predicted SNR (0.02 bit/symbol); learned DBP
