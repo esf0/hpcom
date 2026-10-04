@@ -242,8 +242,9 @@ What the numbers say:
 * **Learned points** add 0.31 (one channel) and 0.22 (five channels)
   bit/symbol to QAM with CD compensation. In ``jovanovic2023`` they add
   0.115 bit/symbol per polarisation (0.23 bit/4D); the paper reports
-  0.21 bit/4D, and both rates agree with its Fig. 5 within 0.01 bit/4D at
-  the optimum (``gallery/jovanovic2023``).
+  0.21 bit/4D. At the optimum the QAM rate equals the paper's Fig. 5
+  (10.71 bit/4D) and the learned one is 0.02 bit/4D above it
+  (``gallery/jovanovic2023``).
 
 [``tests/numerical/test_learn.py``, ``tests/numerical/test_bench.py``:
 the Gaussian-demapper rate of QAM over a linear link equals the MI of QAM
