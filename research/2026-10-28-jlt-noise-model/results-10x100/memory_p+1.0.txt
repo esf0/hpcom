@@ -1,0 +1,7 @@
++1.0 dBm  SNR_ss 20.04 dB  SNR_noise 16.95 dB  SMD BER 3.962e-03  (all distortion removed: 5.932e-04)
+triplet conditional mean           explains   4.7%   genie SMD BER 3.756e-03
+perturbation |m|,|n| <=  1 (10 terms) explains   5.0%   genie SMD BER 3.746e-03
+perturbation |m|,|n| <=  2 (26 terms) explains  10.5%   genie SMD BER 3.450e-03
+perturbation |m|,|n| <=  5 (122 terms) explains  26.8%   genie SMD BER 2.711e-03
+perturbation |m|,|n| <= 10 (442 terms) explains  42.6%   genie SMD BER 2.094e-03
+perturbation |m|,|n| <= 20 (1682 terms) explains  56.8%   genie SMD BER 1.646e-03

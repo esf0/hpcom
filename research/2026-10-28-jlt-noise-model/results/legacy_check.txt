@@ -1,0 +1,15 @@
+== legacy (paper data, 1 block): 4096 symbols  SNR_ss 17.21 dB  SNR_noise 19.22 dB  mean dist 3.2e-03
+   linear ISI k=-5..5: explains  -1.2%;  |h_k| = 0.001 0.003 0.002 0.004 0.002 0.000 0.004 0.002 0.002 0.003 0.001
+   perturbation M=1: explains   2.9%
+   perturbation M=2: explains   8.3%
+   perturbation M=4: explains  19.0%
+== hpcom v1, 4096-symbol block: 4096 symbols  SNR_ss 18.27 dB  SNR_noise 18.98 dB  mean dist 2.2e-03
+   linear ISI k=-5..5: explains  -0.8%;  |h_k| = 0.001 0.001 0.001 0.001 0.002 0.009 0.003 0.003 0.002 0.000 0.000
+   perturbation M=1: explains   1.9%
+   perturbation M=2: explains   4.9%
+   perturbation M=4: explains  14.1%
+== hpcom v1, 65536-symbol run: 65536 symbols  SNR_ss 17.57 dB  SNR_noise 19.11 dB  mean dist 4.2e-04
+   linear ISI k=-5..5: explains   0.0%;  |h_k| = 0.001 0.001 0.000 0.001 0.003 0.000 0.002 0.001 0.001 0.000 0.001
+   perturbation M=1: explains   2.3%
+   perturbation M=2: explains   6.8%
+   perturbation M=4: explains  16.5%
