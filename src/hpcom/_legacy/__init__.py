@@ -1,7 +1,7 @@
 """Legacy hpcom modules (pre-v1).
 
 Preserved for one release to ease migration. Will be removed in v2.
-New code should use the public API at ``hpcom.*`` (see ``docs/spec/hpcom-v1.md``).
+New code should use the public API at ``hpcom.*`` (see ``docs/migration.rst``).
 
 Submodules are imported best-effort: if a legacy module fails to import (e.g.
 because an external dep like ``ssfm-gpu`` is missing or has drifted), it is
@@ -16,7 +16,7 @@ import warnings
 
 warnings.warn(
     "hpcom._legacy is deprecated and will be removed in v2. "
-    "Migrate to the new hpcom public API; see docs/spec/hpcom-v1.md.",
+    "Migrate to the new hpcom public API; see docs/migration.rst.",
     DeprecationWarning,
     stacklevel=2,
 )

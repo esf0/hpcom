@@ -9,7 +9,7 @@ this file will be deleted at that point.
 import pytest
 
 pytest.skip(
-    "Legacy OFDM script — replaced by Phase 5 OFDM v1 tests (see docs/spec/hpcom-v1-tasks.md).",
+    "Legacy OFDM script — replaced by the v1 OFDM tests (tests/unit/test_ofdm_*.py).",
     allow_module_level=True,
 )
 
