@@ -17,9 +17,12 @@ Install
 
 .. code-block:: bash
 
-   pip install hpcom              # NumPy backend
-   pip install "hpcom[jax-cuda]"  # + JAX backend on NVIDIA GPUs (CPU: "hpcom[jax]")
-   pip install "hpcom[tf-gpu]"    # + TensorFlow backend with CUDA (CPU: "hpcom[tf]")
+   pip install "hpcom @ git+https://github.com/esf0/hpcom"              # NumPy backend
+   pip install "hpcom[jax-cuda] @ git+https://github.com/esf0/hpcom"    # + JAX on NVIDIA GPUs (CPU: [jax])
+   pip install "hpcom[tf-gpu] @ git+https://github.com/esf0/hpcom"      # + TensorFlow with CUDA (CPU: [tf])
+
+Version 0.2 is not on PyPI yet: ``pip install hpcom`` gives the pre-v1
+version 0.1.13.
 
 Quick start
 -----------
@@ -38,10 +41,11 @@ Quick start
    result = Simulation(transmitter=tx, link=link, receiver=rx, seed=0).run()
    print(result)   # Result(ber=..., snr=... dB, evm=..., gmi=... b/sym, ...)
 
-Runnable scenarios live in ``examples/``: back-to-back BER vs theory, a
-launch-power sweep over an amplified link, Manakov propagation, dataset
-generation, a custom waveform, WDM, OFDM, probabilistic shaping and digital
-back-propagation.
+Recipes for single tasks are in ``cookbook/`` of the repository: optimum
+launch power (EGN and split step), CDC against DBP, phase noise and blind
+phase search, datasets and replay, fitting fiber parameters with gradients,
+end-to-end learning of a constellation, benchmark scoring. Full scripts are
+in ``examples/``.
 
 .. toctree::
    :maxdepth: 2
