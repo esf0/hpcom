@@ -41,6 +41,7 @@ legacy = [
   "ssfm-gpu>=0.1.4",
 ]
 docs = [
+  "jax>=0.4.30",  # autodoc imports hpcom.autodiff, hpcom.learn and hpcom.bench
   "sphinx>=7",
   "furo>=2024.1",
   "sphinx-autodoc-typehints>=2",
