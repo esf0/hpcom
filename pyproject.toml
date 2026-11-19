@@ -100,7 +100,9 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.10"
+# numpy >= 2.5 ships stubs with Python 3.12 syntax; mypy cannot read them as 3.10.
+# 3.10 compatibility is checked by ruff (target-version) and the py3.10 test jobs.
+python_version = "3.12"
 strict = true
 files = ["src/hpcom"]
 exclude = ["src/hpcom/_legacy/.*"]

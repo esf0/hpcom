@@ -206,15 +206,23 @@ def _richardson(f: Callable[[float], float], h: float) -> float:
 
 
 def _finite_difference(f: Callable[[float], float], scale: float) -> tuple[float, float]:
-    """Richardson differences at steps scale·10⁻³…10⁻⁸; the most stable adjacent pair.
+    """Richardson differences at steps scale·10⁻¹…10⁻⁸; the most stable adjacent pair.
 
     Returns the estimate and its spread (truncation dominates at large
     steps, rounding at small ones; the plateau between is the derivative).
+    The estimate is the pair's larger step: its rounding error is smaller.
+    The range starts at 10⁻¹ because a zero-valued parameter gets the floor
+    scale (1e-2): the fiber loss of ``saturated-gain-dual-log`` (0 dB/km)
+    has its plateau at steps 1e-3 and 1e-4 only. With the range from 10⁻³,
+    two rounding-limited estimates that agreed by chance passed for the
+    plateau; AD and FD then differed by 8e-6 relative under JAX 0.12.
+    For a nonzero parameter, the 10 % step has a large truncation error,
+    so its pair is never the most stable.
     """
-    estimates = [_richardson(f, scale * 10.0**-k) for k in range(3, 9)]
+    estimates = [_richardson(f, scale * 10.0**-k) for k in range(1, 9)]
     spreads = [abs(a - b) for a, b in itertools.pairwise(estimates)]
     best = int(np.argmin(spreads))
-    return estimates[best + 1], spreads[best]
+    return estimates[best], spreads[best]
 
 
 @pytest.mark.parametrize("name", list(CASES), ids=list(CASES))

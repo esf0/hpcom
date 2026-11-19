@@ -162,10 +162,6 @@ mode-locked fiber laser.
 - GN model with inter-channel stimulated Raman scattering (ISRS).
 - Learned DBP with a limited number of filter taps.
 - Rust kernels. The backend interfaces for them are ready.
-- JAX 0.12: one gradient test fails
-  (`test_gradients_equal_finite_differences_for_every_parameter[saturated-gain-dual-log]`).
-  The gradient of the fiber loss differs from the finite difference by
-  8e-6 relative. With JAX 0.11.2 all tests pass.
 
 ## Development
 

@@ -604,8 +604,8 @@ def kerr_gain_factor(
     small = np.abs(u) < 1e-8
     safe = np.where(small, 0.5, u)
     log_ratio = np.where(small, 1.0 + u / 2.0, -np.log1p(-safe) / safe)
-    out = (1.0 / np.sqrt(1.0 - u)) * np.exp(1j * phase_per_watt * power * log_ratio)
-    return np.asarray(out, dtype=np.complex128)
+    factor = (1.0 / np.sqrt(1.0 - u)) * np.exp(1j * phase_per_watt * power * log_ratio)
+    return np.asarray(factor, dtype=np.complex128)
 
 
 def effective_gamma_per_m(fiber: FiberLike) -> float:
